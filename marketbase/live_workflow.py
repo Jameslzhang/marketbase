@@ -3,9 +3,11 @@
 
 from __future__ import annotations
 
-from datetime import datetime, time as clock_time
+from datetime import datetime, time as clock_time, timezone, timedelta
+import json
 import re
 import time
+from pathlib import Path
 from typing import Callable, Iterable
 
 import pandas as pd
@@ -35,7 +37,7 @@ def acquire_live_snapshot(
 ) -> tuple[pd.DataFrame, dict[str, object]]:
     """Fetch a complete live snapshot and merge slower reference attributes."""
     if primary_fetcher is None or reference_fetcher is None:
-        from alphasift.snapshot import fetch_cn_snapshot
+        from marketbase.snapshot import fetch_cn_snapshot
 
         primary_fetcher = primary_fetcher or (lambda: fetch_cn_snapshot("sina"))
         reference_fetcher = reference_fetcher or (
@@ -103,7 +105,7 @@ def fetch_reference_snapshot_with_bse_fallback(
 ) -> pd.DataFrame:
     """Fetch reference fields, refreshing cached BSE symbols via Tencent on outage."""
     if fetcher is None:
-        from alphasift.snapshot import fetch_cn_snapshot
+        from marketbase.snapshot import fetch_cn_snapshot
 
         fetcher = fetch_cn_snapshot
     bse_fetcher = bse_fetcher or fetch_tencent_bse_snapshot
@@ -429,3 +431,261 @@ def _is_cn_market_session(value: datetime) -> bool:
         return False
     local_time = value.timetz().replace(tzinfo=None)
     return clock_time(9, 15) <= local_time <= clock_time(15, 30)
+
+
+# ── BSE (北交所) standalone snapshot collection ──────────────────────────
+
+_BSE_CODE_PATTERN = re.compile(r"^(4|8|9)\d{5}$")
+_MIN_BSE_ROWS = 200
+_BSE_UNIVERSE_CACHE = "bse_universe.json"
+
+
+def collect_bse_snapshot(
+    *,
+    cache_dir: str | Path,
+    observed_at: datetime | None = None,
+    bse_codes: list[str] | None = None,
+    timeout: float = 15.0,
+) -> tuple[pd.DataFrame, dict[str, object]]:
+    """Collect BSE snapshot independently of SH/SZ collection.
+
+    Returns (bse_frame, audit) where audit contains:
+      bj_expected, bj_actual, bj_missing, source, errors
+    """
+    root = Path(cache_dir)
+    observed = (observed_at or datetime.now().astimezone())
+    if observed.tzinfo is None:
+        observed = observed.astimezone()
+
+    codes = bse_codes or _load_bse_universe(root)
+    audit: dict[str, object] = {
+        "bj_expected": len(codes),
+        "bj_actual": 0,
+        "bj_missing": 0,
+        "source": "",
+        "errors": [],
+        "generated_at": observed.isoformat(),
+    }
+
+    if not codes:
+        audit["errors"].append("no BSE code list available")
+        return pd.DataFrame(), audit
+
+    # 1. Try Tencent
+    try:
+        frame, tencent_errors = _fetch_tencent_bse(codes, timeout=timeout)
+        if len(frame) >= _MIN_BSE_ROWS:
+            audit["bj_actual"] = len(frame)
+            audit["source"] = "tencent"
+            audit["errors"] = tencent_errors
+            _persist_bse_universe(root, frame)
+            return frame, audit
+        audit["errors"].extend(tencent_errors)
+        audit["errors"].append(f"tencent BSE rows={len(frame)} below min={_MIN_BSE_ROWS}")
+    except Exception as exc:
+        audit["errors"].append(f"tencent: {exc}")
+
+    # 2. Try Sina
+    try:
+        frame, sina_errors = _fetch_sina_bse(codes, timeout=timeout)
+        if len(frame) >= _MIN_BSE_ROWS:
+            audit["bj_actual"] = len(frame)
+            audit["source"] = "sina_bse"
+            audit["errors"] = sina_errors
+            _persist_bse_universe(root, frame)
+            return frame, audit
+        audit["errors"].extend(sina_errors)
+        audit["errors"].append("sina_bse_untested: insufficient rows")
+    except Exception as exc:
+        audit["errors"].append(f"sina_bse_untested: {exc}")
+
+    # 3. Fall back to last cached BSE snapshot
+    cached = _load_cached_bse_snapshot(root)
+    if not cached.empty:
+        audit["bj_actual"] = len(cached)
+        audit["source"] = "bse_cache_stale"
+        audit["bj_missing"] = max(0, len(codes) - len(cached))
+        audit["errors"].append("using stale BSE cache")
+        return cached, audit
+
+    audit["bj_missing"] = len(codes)
+    audit["errors"].append("BSE collection failed: no source available")
+    return pd.DataFrame(), audit
+
+
+def _load_bse_universe(cache_dir: Path) -> list[str]:
+    path = cache_dir / _BSE_UNIVERSE_CACHE
+    if not path.is_file():
+        return []
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        codes = payload.get("codes", [])
+        return [c for c in codes if isinstance(c, str) and _BSE_CODE_PATTERN.fullmatch(c)]
+    except (OSError, json.JSONDecodeError):
+        return []
+
+
+def _persist_bse_universe(cache_dir: Path, frame: pd.DataFrame) -> None:
+    if frame.empty or "code" not in frame.columns:
+        return
+    codes = sorted(
+        c for c in frame["code"].astype(str).str.strip()
+        if _BSE_CODE_PATTERN.fullmatch(c)
+    )
+    if not codes:
+        return
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "schema_version": 1,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "count": len(codes),
+        "codes": codes,
+    }
+    (cache_dir / _BSE_UNIVERSE_CACHE).write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
+
+def _load_cached_bse_snapshot(cache_dir: Path) -> pd.DataFrame:
+    snapshot_path = cache_dir / "market_snapshot.json"
+    if not snapshot_path.is_file():
+        return pd.DataFrame()
+    try:
+        payload = json.loads(snapshot_path.read_text(encoding="utf-8"))
+        rows = payload.get("rows", [])
+    except (OSError, json.JSONDecodeError):
+        return pd.DataFrame()
+    if not isinstance(rows, list):
+        return pd.DataFrame()
+    frame = pd.DataFrame(rows)
+    if "code" not in frame.columns:
+        return pd.DataFrame()
+    codes = frame["code"].astype(str).str.strip()
+    bse_mask = codes.str.fullmatch(_BSE_CODE_PATTERN.pattern, na=False)
+    return frame.loc[bse_mask].copy()
+
+
+def _fetch_tencent_bse(
+    codes: list[str],
+    *,
+    batch_size: int = 60,
+    attempts: int = 3,
+    timeout: float = 15.0,
+) -> tuple[pd.DataFrame, list[str]]:
+    errors: list[str] = []
+    refreshed: list[dict[str, object]] = []
+
+    for offset in range(0, len(codes), batch_size):
+        batch = codes[offset : offset + batch_size]
+        symbols = ",".join(f"bj{code}" for code in batch)
+        text = ""
+        last_error = ""
+        for attempt in range(1, max(1, attempts) + 1):
+            try:
+                response = requests.get(
+                    "https://qt.gtimg.cn/q=" + symbols,
+                    headers={"User-Agent": "Mozilla/5.0", "Referer": "https://gu.qq.com/"},
+                    timeout=timeout,
+                )
+                response.raise_for_status()
+                text = response.content.decode("gb18030", errors="ignore")
+                break
+            except Exception as exc:
+                last_error = str(exc)
+                if attempt < max(1, attempts):
+                    time.sleep(0.2 * attempt)
+        if not text:
+            errors.append(f"batch {offset}: {last_error}")
+            continue
+
+        for match in re.finditer(r'v_bj(\d{6})="([^"]*)";', text):
+            code, body = match.groups()
+            fields = body.split("~")
+            price = _quote_float(fields, 3)
+            if price <= 0:
+                continue
+            refreshed.append({
+                "code": code,
+                "name": fields[1].strip() if len(fields) > 1 else "",
+                "price": price,
+                "change_pct": _quote_float(fields, 32),
+                "volume": _quote_float(fields, 36),
+                "amount": _quote_amount(fields),
+                "turnover_rate": _quote_float(fields, 38),
+                "volume_ratio": float("nan"),
+                "quote_time": _quote_time(fields),
+                "source": "tencent_bse",
+                "market": "bj",
+            })
+
+    if not refreshed:
+        return pd.DataFrame(), errors
+    frame = pd.DataFrame(refreshed)
+    frame = frame.drop_duplicates("code", keep="last").reset_index(drop=True)
+    return frame, errors
+
+
+def _fetch_sina_bse(
+    codes: list[str],
+    *,
+    timeout: float = 15.0,
+) -> tuple[pd.DataFrame, list[str]]:
+    errors: list[str] = []
+    refreshed: list[dict[str, object]] = []
+    batch_size = 50
+
+    for offset in range(0, len(codes), batch_size):
+        batch = codes[offset : offset + batch_size]
+        symbols = ",".join(f"bj{code}" for code in batch)
+        try:
+            response = requests.get(
+                "https://hq.sinajs.cn/list=" + symbols,
+                headers={
+                    "User-Agent": "Mozilla/5.0",
+                    "Referer": "https://finance.sina.com.cn/",
+                },
+                timeout=timeout,
+            )
+            response.raise_for_status()
+            text = response.content.decode("gb18030", errors="ignore")
+        except Exception as exc:
+            errors.append(f"sina batch {offset}: {exc}")
+            continue
+
+        for line in text.split("\n"):
+            line = line.strip()
+            if not line:
+                continue
+            match = re.match(r'var hq_str_bj(\d{6})="([^"]*)"', line)
+            if not match:
+                continue
+            code, body = match.groups()
+            fields = body.split(",")
+            if len(fields) < 3:
+                continue
+            price = _quote_float(fields, 3)
+            if price <= 0:
+                continue
+            refreshed.append({
+                "code": code,
+                "name": fields[0].strip() if fields else "",
+                "price": price,
+                "change_pct": 0.0 if len(fields) <= 4 else _pct_from_sina(fields),
+                "volume": _quote_float(fields, 8),
+                "amount": _quote_float(fields, 9),
+                "turnover_rate": _quote_float(fields, 10) if len(fields) > 10 else 0.0,
+                "volume_ratio": float("nan"),
+                "quote_time": "",
+                "source": "sina_bse",
+                "market": "bj",
+            })
+
+    if not refreshed:
+        return pd.DataFrame(), errors
+    frame = pd.DataFrame(refreshed)
+    frame = frame.drop_duplicates("code", keep="last").reset_index(drop=True)
+    return frame, errors
+
+
+def _pct_from_sina(fields: list[str]) -> float:
+    return _quote_float(fields, 4)

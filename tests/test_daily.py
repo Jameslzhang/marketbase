@@ -6,15 +6,15 @@ import time
 import pandas as pd
 import pytest
 
-import alphasift.daily as daily
-from alphasift.daily import daily_source_health_snapshot, fetch_daily_history
+import marketbase.daily as daily
+from marketbase.daily import daily_source_health_snapshot, fetch_daily_history
 
 
 @pytest.fixture(autouse=True)
 def clear_daily_source_health():
-    daily._SOURCE_HEALTH.clear()
+    daily._source_health.reset()
     yield
-    daily._SOURCE_HEALTH.clear()
+    daily._source_health.reset()
 
 
 def _history(source: str = "test") -> pd.DataFrame:
@@ -109,8 +109,8 @@ def test_fetch_daily_history_uses_stale_cache_after_sources_fail(tmp_path, monke
 
 
 def test_daily_source_health_temporarily_disables_repeated_failures(monkeypatch):
-    monkeypatch.setattr(daily, "_SOURCE_HEALTH_FAILURE_THRESHOLD", 2)
-    monkeypatch.setattr(daily, "_SOURCE_HEALTH_COOLDOWN_SECONDS", 60)
+    daily._source_health.failure_threshold = 2
+    daily._source_health.cooldown_seconds = 60
     monkeypatch.setattr(daily, "_fetch_daily_akshare", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("down")))
 
     for _ in range(2):
@@ -130,7 +130,7 @@ def test_source_health_order_preserves_default_ties():
 
 
 def test_source_health_order_moves_disabled_source_later():
-    daily._SOURCE_HEALTH["tencent"] = {
+    daily._source_health._health["tencent"] = {
         "failures": 3.0,
         "disabled_until": time.monotonic() + 60,
     }

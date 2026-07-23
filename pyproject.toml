@@ -3,7 +3,7 @@ requires = ["setuptools>=68.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "alphasift"
+name = "marketbase"
 version = "0.2.0"
 description = "A 股客观行情、日线、分钟线、基础映射与数据审计管线"
 readme = "README.md"
@@ -33,14 +33,14 @@ full = [
 dev = ["pytest", "ruff"]
 
 [project.scripts]
-alphasift = "alphasift.cli:main"
+marketbase = "local_workflow:main"
 
 [tool.setuptools]
 include-package-data = true
 py-modules = ["local_workflow"]
 
 [tool.setuptools.packages.find]
-include = ["alphasift*"]
+include = ["marketbase*"]
 
 [tool.setuptools.data-files]
 "." = ["SKILL.md", "LICENSE"]

@@ -2,7 +2,7 @@ from datetime import datetime, timedelta, timezone
 
 import pandas as pd
 
-from alphasift.neutral_indicators import compute_daily_indicators, compute_vwap
+from marketbase.indicators import compute_daily_indicators, compute_vwap
 
 
 def make_daily(rows: int = 250) -> pd.DataFrame:

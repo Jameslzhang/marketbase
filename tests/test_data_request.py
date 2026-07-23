@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from alphasift.data_request import (
+from marketbase.data_request import (
     DataRequest,
     DailyRequest,
     MinuteRequest,

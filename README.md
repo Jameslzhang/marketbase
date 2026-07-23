@@ -1,6 +1,6 @@
-# AlphaSift
+# MarketBase
 
-AlphaSift is a local pipeline for collecting objective A-share market data.
+MarketBase is a local pipeline for collecting objective A-share market data.
 It collects a three-market snapshot, up to 250 trading days of daily history,
 neutral technical indicators, classification mappings, and data-audit records.
 It supplies data only; interpretation and decisions belong to a separate Codex
@@ -17,9 +17,9 @@ pip install ".[data-cn]"
 ## Collect
 
 ```bash
-alphasift --data-root ./data collect
+marketbase --data-root ./data collect
 # Equivalent source-tree command
-python -m alphasift.cli --data-root ./data collect
+python -m marketbase.cli --data-root ./data collect
 ```
 
 The collection creates a timestamped run directory and maintains caches and
@@ -44,7 +44,7 @@ from cached daily bars; the classification file holds basic mappings only.
 Create `codex_data_request.json` in the data root and run:
 
 ```bash
-alphasift --data-root ./data fulfill-request
+marketbase --data-root ./data fulfill-request
 ```
 
 The command validates the request and atomically writes
@@ -57,7 +57,7 @@ not provided.
 
 Optional providers include Tencent and Sina HTTP endpoints, AkShare, Baostock,
 and Tushare. Configure `TUSHARE_TOKEN` only when using Tushare. Providers can be
-rate-limited, unavailable, delayed, or return incomplete data; AlphaSift records
+rate-limited, unavailable, delayed, or return incomplete data; MarketBase records
 such errors and may use a cached last-good snapshot where supported. Inspect
 `data_audit.json` before relying on a run.
 

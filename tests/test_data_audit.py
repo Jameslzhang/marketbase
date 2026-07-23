@@ -2,7 +2,7 @@ from datetime import datetime, timedelta, timezone
 
 import pandas as pd
 
-from alphasift.data_audit import audit_market_snapshot
+from marketbase.data_audit import audit_market_snapshot
 
 
 OBSERVED_AT = datetime(2026, 7, 22, 10, 0, tzinfo=timezone(timedelta(hours=8)))

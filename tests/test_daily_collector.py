@@ -7,7 +7,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from alphasift.daily_collector import (
+from marketbase.daily_collector import (
     DailyCollectionReport,
     DailyProgressEvent,
     collect_daily_universe,
@@ -105,7 +105,7 @@ def test_first_success_writes_normalized_cache_and_checkpoint(tmp_path):
 
 
 def test_runtime_timestamps_are_not_frozen_to_the_collection_baseline(tmp_path, monkeypatch):
-    from alphasift import daily_collector
+    from marketbase import daily_collector
 
     cache_root, checkpoint_path = _paths(tmp_path)
     runtime_times = [
@@ -352,7 +352,7 @@ def test_read_daily_cache_rejects_strict_metadata_violations(tmp_path, field, va
     ],
 )
 def test_malformed_checkpoint_is_rebuilt_as_empty_state(tmp_path, mutation):
-    from alphasift import daily_collector
+    from marketbase import daily_collector
 
     _, checkpoint_path = _paths(tmp_path)
     payload = {
@@ -516,7 +516,7 @@ def test_lookback_must_be_between_one_and_250(tmp_path, lookback):
 
 
 def test_atomic_cache_and_checkpoint_write_failure_keeps_existing_files(tmp_path, monkeypatch):
-    from alphasift import daily_collector
+    from marketbase import daily_collector
 
     cache_root, checkpoint_path = _paths(tmp_path)
     cache_root.mkdir()

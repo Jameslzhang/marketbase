@@ -9,15 +9,17 @@ import json
 import os
 from pathlib import Path
 import tempfile
+import time
 
 import pandas as pd
 
-from alphasift.data_audit import _neutralize_error, audit_market_snapshot
-from alphasift.live_workflow import (
+from marketbase.data_audit import _neutralize_error, audit_market_snapshot
+from marketbase.live_workflow import (
     acquire_live_snapshot,
+    collect_bse_snapshot,
     fetch_reference_snapshot_with_bse_fallback,
 )
-from alphasift.snapshot import fetch_cn_snapshot
+from marketbase.snapshot import fetch_cn_snapshot
 
 
 OUTPUT_FIELDS = (
@@ -32,6 +34,8 @@ OUTPUT_FIELDS = (
     "quote_time",
     "observed_at",
     "source",
+    "industry",
+    "concepts",
 )
 _NUMERIC_FIELDS = (
     "price",
@@ -40,6 +44,7 @@ _NUMERIC_FIELDS = (
     "turnover_rate",
     "volume_ratio",
 )
+_TEXT_FIELDS = ("name", "industry", "concepts")
 _MARKET_ORDER = {"sh": 0, "sz": 1, "bj": 2}
 
 
@@ -62,7 +67,10 @@ def collect_market_snapshot(
     reference_fetcher: Callable[[], pd.DataFrame] | None = None,
     min_rows: int = 1000,
 ) -> MarketCollectionResult:
-    """Collect a current three-market snapshot without interpreting the data."""
+    """Collect SH/SZ mainstream markets, then independently collect BSE.
+
+    BSE failure never blocks SH/SZ output.
+    """
     observed_at = now or datetime.now().astimezone()
     if observed_at.tzinfo is None:
         observed_at = observed_at.astimezone()
@@ -70,6 +78,7 @@ def collect_market_snapshot(
     cached_reference = _read_cached_rows(destination)
     captured: dict[str, pd.DataFrame] = {}
 
+    # --- SH/SZ primary + reference (existing pipeline without BSE) ---
     def load_primary() -> pd.DataFrame:
         frame = primary_fetcher() if primary_fetcher is not None else fetch_cn_snapshot("sina")
         captured["primary"] = frame
@@ -83,14 +92,15 @@ def collect_market_snapshot(
         captured["reference"] = frame
         return frame
 
-    _emit(progress, observed_at, "acquisition_started")
+    _emit(progress, observed_at, "开始获取沪深行情快照")
     frame, acquisition = acquire_live_snapshot(
         primary_fetcher=load_primary,
         reference_fetcher=load_reference,
         now=observed_at,
         min_rows=min_rows,
+        required_markets=("sh", "sz") if primary_fetcher is None else (),  # only enforce for default flow
     )
-    result = _normalize_output(
+    shsz_result = _normalize_output(
         frame,
         observed_at=observed_at,
         primary=captured.get("primary", pd.DataFrame()),
@@ -98,19 +108,49 @@ def collect_market_snapshot(
         primary_source=str(acquisition["primary_source"]),
         reference_source=str(acquisition["reference_source"]),
     )
-    if result.empty:
+
+    # --- BSE: independent collection ---
+    _emit(progress, observed_at, "开始获取北交所行情")
+    bse_frame = pd.DataFrame()
+    bse_audit: dict[str, object] = {}
+    # Extract BSE codes from the SH/SZ reference snapshot to seed the collector
+    bse_codes = _extract_bse_codes(captured.get("reference", pd.DataFrame()))
+    if not bse_codes:
+        bse_codes = _extract_bse_codes(shsz_result)
+    try:
+        bse_frame, bse_audit = collect_bse_snapshot(
+            cache_dir=destination.parent,
+            observed_at=observed_at,
+            bse_codes=bse_codes if bse_codes else None,
+        )
+        _emit(progress, observed_at,
+              f"北交所覆盖 {bse_audit['bj_actual']}/{bse_audit['bj_expected']} "
+              f"来源 {bse_audit['source']}")
+        for err in bse_audit.get("errors", []):
+            _emit(progress, observed_at, f"北交所 {err}")
+    except Exception as exc:
+        _emit(progress, observed_at, f"北交所采集失败: {_neutralize_error(exc)}")
+        bse_audit = {"bj_expected": 0, "bj_actual": 0, "bj_missing": 0, "source": "", "errors": [str(exc)]}
+
+    # --- Merge SH/SZ + BSE ---
+    merged = _merge_shsz_bse(shsz_result, bse_frame, observed_at)
+    if merged.empty:
         raise RuntimeError("live snapshot contains no usable market rows")
+
     provider_errors = _provider_errors(acquisition, captured.get("reference"))
+    provider_errors.extend(str(e) for e in bse_audit.get("errors", []) if str(e))
     audit = audit_market_snapshot(
-        result,
+        merged,
         observed_at=observed_at,
         provider_errors=provider_errors,
         raw_frame=_audit_evidence_frame(
             captured.get("primary", pd.DataFrame()),
             captured.get("reference", pd.DataFrame()),
-            result,
+            merged,
         ),
     )
+    audit["bse_audit"] = bse_audit
+
     report = {
         key: value
         for key, value in acquisition.items()
@@ -118,33 +158,30 @@ def collect_market_snapshot(
     }
     report.update(
         {
-            "output_rows": len(result),
+            "output_rows": len(merged),
             "market_counts": audit["market_counts"],
             "coverage_gaps": audit["coverage_gaps"],
             "provider_errors": audit["provider_errors"],
+            "bse_audit": bse_audit,
         }
     )
-    _emit(progress, observed_at, f"acquisition_rows={len(result)}")
-    _emit(
-        progress,
-        observed_at,
-        "market_coverage=" + _coverage_text(audit["market_counts"]),
-    )
+    _emit(progress, observed_at, f"获取到 {len(merged)} 条行情")
+    _emit(progress, observed_at, f"市场覆盖 {_coverage_text(audit['market_counts'])}")
     if report["reference_source"] != "efinance":
-        _emit(progress, observed_at, f"reference_source={report['reference_source']}")
+        _emit(progress, observed_at, f"参考数据源 {report['reference_source']}")
     for error in audit["provider_errors"]:
-        _emit(progress, observed_at, f"provider_error={error}")
+        _emit(progress, observed_at, f"数据源异常 {error}")
 
     try:
-        _write_cache(destination, observed_at, result, report, audit)
+        _write_cache(destination, observed_at, merged, report, audit)
         report["cache_written"] = True
     except OSError as exc:
         report["cache_written"] = False
         report["cache_error"] = _neutralize_error(exc)
-        _emit(progress, observed_at, "cache_write_error")
+        _emit(progress, observed_at, "缓存写入失败")
 
     return MarketCollectionResult(
-        frame=result,
+        frame=merged,
         audit=audit,
         report=report,
         cache_path=destination,
@@ -167,6 +204,8 @@ def _normalize_output(
     output = output.loc[output["market"].notna()].copy()
     output = output.drop_duplicates("code", keep="last")
     output["name"] = _text_column(output, "name")
+    for field in ("industry", "concepts"):
+        output[field] = _text_column(output, field)
     for field in _NUMERIC_FIELDS:
         output[field] = pd.to_numeric(output.get(field), errors="coerce")
     output["quote_time"] = _quote_time_column(output)
@@ -273,6 +312,33 @@ def _audit_evidence_frame(
     return evidence
 
 
+def _merge_shsz_bse(
+    shsz: pd.DataFrame, bse: pd.DataFrame, observed_at: datetime
+) -> pd.DataFrame:
+    """Merge mainstream SH/SZ with independently collected BSE rows."""
+    if shsz.empty and bse.empty:
+        return pd.DataFrame()
+    if bse.empty or "code" not in bse.columns:
+        return shsz
+    # Normalize BSE columns to match OUTPUT_FIELDS
+    bse_out = bse.copy()
+    bse_out["code"] = bse_out["code"].astype(str).str.strip().str.zfill(6)
+    bse_out["market"] = "bj"
+    bse_out["observed_at"] = observed_at.isoformat()
+    for field in _NUMERIC_FIELDS:
+        if field not in bse_out.columns:
+            bse_out[field] = None
+    for field in OUTPUT_FIELDS:
+        if field not in bse_out.columns:
+            bse_out[field] = None
+    bse_out = bse_out.loc[:, OUTPUT_FIELDS]
+    result = pd.concat([shsz, bse_out], ignore_index=True, sort=False)
+    result = result.drop_duplicates("code", keep="last").reset_index(drop=True)
+    result["_market_order"] = result["market"].map(_MARKET_ORDER)
+    result = result.sort_values(["_market_order", "code"], kind="stable")
+    return result.reset_index(drop=True)
+
+
 def _coverage_text(market_counts: object) -> str:
     counts = market_counts if isinstance(market_counts, dict) else {}
     return ",".join(f"{market}:{int(counts.get(market, 0))}" for market in ("sh", "sz", "bj"))
@@ -282,7 +348,16 @@ def _emit(
     progress: Callable[[str], None] | None, observed_at: datetime, message: str
 ) -> None:
     if progress is not None:
-        progress(f"{observed_at.isoformat()} {message}")
+        progress(message)
+
+
+def _extract_bse_codes(frame: pd.DataFrame) -> list[str]:
+    """Extract BSE (北交所) codes from a snapshot frame."""
+    if frame.empty or "code" not in frame.columns:
+        return []
+    codes = frame["code"].astype(str).str.strip().str.zfill(6)
+    bse_mask = codes.str.match(r"^(4|8|9)\d{5}$", na=False)
+    return sorted(codes.loc[bse_mask].unique().tolist())
 
 
 def _read_cached_rows(path: Path) -> pd.DataFrame:
@@ -292,6 +367,18 @@ def _read_cached_rows(path: Path) -> pd.DataFrame:
     except (OSError, ValueError, TypeError):
         return pd.DataFrame()
     return pd.DataFrame(rows) if isinstance(rows, list) else pd.DataFrame()
+
+
+def _atomic_replace(temp_path: Path, target_path: Path, *, retries: int = 5, delay: float = 0.1) -> None:
+    """Atomically replace *target_path* with *temp_path*, retrying on Windows lock errors."""
+    for attempt in range(retries):
+        try:
+            os.replace(temp_path, target_path)
+            return
+        except PermissionError:
+            if attempt == retries - 1:
+                raise
+            time.sleep(delay * (2 ** attempt))
 
 
 def _write_cache(
@@ -317,7 +404,7 @@ def _write_cache(
         ) as handle:
             json.dump(payload, handle, ensure_ascii=False, allow_nan=False)
             temp_path = Path(handle.name)
-        os.replace(temp_path, path)
+        _atomic_replace(temp_path, path)
     except OSError:
         if temp_path is not None:
             temp_path.unlink(missing_ok=True)

@@ -1,8 +1,8 @@
-# AlphaSift 客观数据管线设计
+# MarketBase 客观数据管线设计
 
 ## 目标
 
-将 AlphaSift 本地运行端重构为客观市场数据服务。本地项目只负责采集、校验、缓存和返回数据；Codex 负责动态候选并集、指标解释、排序、拒绝、交易计划、概率估计和最终标的选择。
+将 MarketBase 本地运行端重构为客观市场数据服务。本地项目只负责采集、校验、缓存和返回数据；Codex 负责动态候选并集、指标解释、排序、拒绝、交易计划、概率估计和最终标的选择。
 
 ## 职责边界
 
@@ -46,7 +46,7 @@ Codex 写入 `codex_data_request.json` 后直接调用该命令，用户不需�
 
 ```text
 local_workflow.py
-alphasift/
+marketbase/
   market_collector.py
   daily_collector.py
   minute_collector.py

@@ -1,0 +1,7 @@
+interface:
+  display_name: "MarketBase"
+  short_description: "Collect objective A-share market data, daily history, neutral indicators, mappings, and audit evidence."
+  default_prompt: "Use $marketbase to collect objective A-share data or fulfill a validated data request."
+
+policy:
+  allow_implicit_invocation: true

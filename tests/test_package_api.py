@@ -3,7 +3,7 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-import alphasift
+import marketbase
 
 
 OBJECTIVE_EXPORTS = {
@@ -37,6 +37,7 @@ REMOVED_MODULES = {
     "audit",
     "candidate_context",
     "chinese_output",
+    "classification_map",
     "config",
     "context",
     "doctor",
@@ -50,6 +51,7 @@ REMOVED_MODULES = {
     "industry",
     "local_enrichment",
     "local_snapshot",
+    "neutral_indicators",
     "normalize",
     "overview",
     "performance_history",
@@ -73,12 +75,12 @@ REMOVED_MODULES = {
 
 
 def test_package_exports_only_objective_api():
-    assert set(alphasift.__all__) == OBJECTIVE_EXPORTS
-    assert all(hasattr(alphasift, name) for name in OBJECTIVE_EXPORTS)
+    assert set(marketbase.__all__) == OBJECTIVE_EXPORTS
+    assert all(hasattr(marketbase, name) for name in OBJECTIVE_EXPORTS)
 
 
 def test_removed_local_modules_are_absent():
-    package_root = Path(alphasift.__file__).resolve().parent
+    package_root = Path(marketbase.__file__).resolve().parent
     assert not {
         path.stem for path in package_root.glob("*.py")
     }.intersection(REMOVED_MODULES)
@@ -88,17 +90,17 @@ def test_removed_local_modules_are_absent():
 def test_objective_import_closure_does_not_reach_removed_modules():
     repository_root = Path(__file__).resolve().parents[1]
     roots = [repository_root / "local_workflow.py"] + [
-        repository_root / "alphasift" / f"{name}.py"
+        repository_root / "marketbase" / f"{name}.py"
         for name in (
-            "classification_map",
+            "classify",
             "daily",
             "daily_collector",
             "data_audit",
             "data_request",
+            "indicators",
             "live_workflow",
             "market_collector",
             "minute_collector",
-            "neutral_indicators",
             "snapshot",
             "source_guard",
         )
@@ -108,10 +110,10 @@ def test_objective_import_closure_does_not_reach_removed_modules():
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         for node in ast.walk(tree):
             if isinstance(node, ast.ImportFrom) and node.module:
-                imported.add(node.module.removeprefix("alphasift."))
+                imported.add(node.module.removeprefix("marketbase."))
             elif isinstance(node, ast.Import):
                 imported.update(
-                    alias.name.removeprefix("alphasift.") for alias in node.names
+                    alias.name.removeprefix("marketbase.") for alias in node.names
                 )
 
     assert imported.isdisjoint(REMOVED_MODULES)

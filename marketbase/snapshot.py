@@ -16,7 +16,8 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
-from alphasift.source_guard import call_with_timeout, parse_source_timeout_seconds
+from marketbase.source_guard import call_with_timeout, parse_source_timeout_seconds
+from marketbase.source_health import SourceHealth
 
 logger = logging.getLogger(__name__)
 
@@ -24,14 +25,11 @@ _SNAPSHOT_CACHE_VERSION = 1
 _DEFAULT_TUSHARE_HTTP_URL = "http://api.waditu.com"
 _EM_REQUEST_MIN_INTERVAL_SECONDS = 1.0
 _EM_REQUEST_JITTER_SECONDS = 0.3
-_SOURCE_HEALTH_FAILURE_THRESHOLD = 3
-_SOURCE_HEALTH_COOLDOWN_SECONDS = 5 * 60
 _SNAPSHOT_CALL_TIMEOUT_SECONDS = 60.0
 _EM_SESSION: requests.Session | None = None
 _EM_LAST_REQUEST_AT = 0.0
 _EM_LOCK = threading.Lock()
-_SOURCE_HEALTH: dict[str, dict[str, object]] = {}
-_SOURCE_HEALTH_LOCK = threading.Lock()
+_source_health = SourceHealth(failure_threshold=3, cooldown_seconds=300)
 
 
 def fetch_cn_snapshot(source: str = "efinance") -> pd.DataFrame:
@@ -68,7 +66,7 @@ def fetch_snapshot_with_fallback(
     errors = []
     required = required_columns or []
     for source in sources:
-        disabled_reason = _source_disabled_reason(source)
+        disabled_reason = _source_health.disabled_reason(source)
         if disabled_reason:
             errors.append(f"{source}: {disabled_reason}")
             continue
@@ -87,14 +85,14 @@ def fetch_snapshot_with_fallback(
                 df.attrs["stale"] = False
                 df.attrs["stale_age_hours"] = None
                 _write_last_good_snapshot(fallback_snapshot_path, df)
-                _record_source_success(source, rows=len(df))
+                _source_health.record_success(source, rows=len(df))
                 logger.info("Snapshot fetched from %s: %d rows", source, len(df))
                 return df
             errors.append(f"{source}: returned empty data")
-            _record_source_failure(source, "returned empty data")
+            _source_health.record_failure(source, "returned empty data")
         except Exception as e:
             errors.append(f"{source}: {e}")
-            _record_source_failure(source, e)
+            _source_health.record_failure(source, e)
             logger.warning("Snapshot source %s failed: %s", source, e)
 
     cached = _read_last_good_snapshot(
@@ -130,78 +128,16 @@ def _call_snapshot_wrapper(fetcher, *, source: str) -> pd.DataFrame:
 
 def _snapshot_call_timeout_seconds() -> float | None:
     return parse_source_timeout_seconds(
-        "ALPHASIFT_SNAPSHOT_CALL_TIMEOUT_SEC",
+        "MARKETBASE_SNAPSHOT_CALL_TIMEOUT_SEC",
         default=_SNAPSHOT_CALL_TIMEOUT_SECONDS,
     )
-
-
-def _source_disabled_reason(source: str) -> str | None:
-    now = time.monotonic()
-    with _SOURCE_HEALTH_LOCK:
-        state = _SOURCE_HEALTH.get(source)
-        if not state:
-            return None
-        disabled_until = float(state.get("disabled_until", 0.0))
-        if disabled_until <= now:
-            if disabled_until:
-                state["disabled_until"] = 0.0
-            return None
-        return f"temporarily disabled for {disabled_until - now:.1f}s after repeated failures"
-
-
-def _record_source_success(source: str, *, rows: int | None = None) -> None:
-    with _SOURCE_HEALTH_LOCK:
-        state = _SOURCE_HEALTH.setdefault(source, {"failures": 0.0, "disabled_until": 0.0})
-        successes = float(state.get("successes", 0.0)) + 1.0
-        state["successes"] = successes
-        state["failures"] = 0.0
-        state["disabled_until"] = 0.0
-        state["last_success_at"] = time.time()
-        if rows is not None:
-            state["last_rows"] = float(rows)
-            previous_avg = float(state.get("avg_rows", rows))
-            state["avg_rows"] = previous_avg + (float(rows) - previous_avg) / successes
-
-
-def _record_source_failure(source: str, error: object | None = None) -> None:
-    now = time.monotonic()
-    with _SOURCE_HEALTH_LOCK:
-        state = _SOURCE_HEALTH.setdefault(source, {"failures": 0.0, "disabled_until": 0.0})
-        failures = float(state.get("failures", 0.0)) + 1.0
-        state["failures"] = failures
-        state["total_failures"] = float(state.get("total_failures", 0.0)) + 1.0
-        state["last_failure_at"] = time.time()
-        if error is not None:
-            state["last_error"] = " ".join(str(error).split())
-        if failures >= _SOURCE_HEALTH_FAILURE_THRESHOLD:
-            state["disabled_until"] = now + _SOURCE_HEALTH_COOLDOWN_SECONDS
 
 
 def snapshot_source_health_snapshot(
     sources: list[str] | tuple[str, ...] | None = None,
 ) -> dict[str, dict[str, float | bool | str]]:
     """Return in-process snapshot-source health without exposing credentials."""
-    now = time.monotonic()
-    requested = tuple(sources or tuple(_SOURCE_HEALTH))
-    with _SOURCE_HEALTH_LOCK:
-        snapshot: dict[str, dict[str, float | bool | str]] = {}
-        for source in requested:
-            state = dict(_SOURCE_HEALTH.get(source, {}))
-            disabled_until = float(state.get("disabled_until", 0.0))
-            cooldown_remaining = max(disabled_until - now, 0.0)
-            snapshot[source] = {
-                "successes": float(state.get("successes", 0.0)),
-                "failures": float(state.get("failures", 0.0)),
-                "total_failures": float(state.get("total_failures", 0.0)),
-                "last_rows": float(state.get("last_rows", 0.0)),
-                "avg_rows": float(state.get("avg_rows", 0.0)),
-                "disabled": disabled_until > now,
-                "cooldown_remaining_seconds": round(cooldown_remaining, 4),
-                "last_success_at": float(state.get("last_success_at", 0.0)),
-                "last_failure_at": float(state.get("last_failure_at", 0.0)),
-                "last_error": str(state.get("last_error", "")),
-            }
-    return snapshot
+    return _source_health.snapshot(tuple(sources) if sources else None)
 
 
 def _write_last_good_snapshot(
@@ -230,15 +166,6 @@ def _write_last_good_snapshot(
         tmp_path.replace(path)
     except Exception as exc:  # noqa: BLE001 - live snapshot should remain usable.
         logger.warning("Failed to write last-good snapshot cache %s: %s", path, exc)
-
-
-def write_snapshot_cache(path_like: str | Path, df: pd.DataFrame) -> Path:
-    """Persist a normalized snapshot using the last-good cache contract."""
-    path = Path(path_like).expanduser().resolve()
-    _write_last_good_snapshot(path, df)
-    if not path.is_file():
-        raise RuntimeError(f"snapshot cache was not written: {path}")
-    return path
 
 
 def _read_last_good_snapshot(
@@ -346,7 +273,7 @@ def _fetch_sina() -> pd.DataFrame:
     """Fetch A-share full-market snapshot directly from Sina Finance.
 
     Sina's market-center endpoint is a lightweight direct HTTP source with PE,
-    PB, turnover and market-cap fields. It gives AlphaSift another non-wrapper,
+    PB, turnover and market-cap fields. It gives MarketBase another non-wrapper,
     non-Eastmoney-first snapshot option before falling back to Eastmoney-heavy
     sources.
     """
@@ -526,11 +453,11 @@ def _build_eastmoney_session() -> requests.Session:
 
 def _eastmoney_request_interval_seconds() -> float:
     min_interval = _float_env(
-        "ALPHASIFT_EASTMONEY_MIN_INTERVAL_SEC",
+        "MARKETBASE_EASTMONEY_MIN_INTERVAL_SEC",
         _EM_REQUEST_MIN_INTERVAL_SECONDS,
     )
     jitter = _float_env(
-        "ALPHASIFT_EASTMONEY_JITTER_SEC",
+        "MARKETBASE_EASTMONEY_JITTER_SEC",
         _EM_REQUEST_JITTER_SECONDS,
     )
     return max(min_interval, 0.0) + random.uniform(0.0, max(jitter, 0.0))

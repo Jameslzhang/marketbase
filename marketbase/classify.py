@@ -1,4 +1,13 @@
-"""Fact-only industry, concept, and supply-chain classification mapping."""
+"""Fact-only industry, concept, and supply-chain classification mapping.
+
+Source CSV (read-only, manually maintained):
+  classification_source.csv — columns: code,name,industry,concepts,supply_chain,source,updated_at
+
+Output CSV (program-generated, never overwrites source):
+  classification_map.csv — merged result of snapshot × source
+  
+The source CSV is NEVER written by this module. It is a human-curated reference.
+"""
 
 from __future__ import annotations
 

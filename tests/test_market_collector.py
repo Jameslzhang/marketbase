@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 import pandas as pd
 import pytest
 
-from alphasift.market_collector import OUTPUT_FIELDS, collect_market_snapshot
+from marketbase.market_collector import OUTPUT_FIELDS, collect_market_snapshot
 
 
 OBSERVED_AT = datetime(2026, 7, 22, 10, 0, tzinfo=timezone(timedelta(hours=8)))
@@ -126,7 +126,7 @@ def test_collect_uses_reference_fallback_and_preserves_refreshed_bse_source(
         return frame
 
     monkeypatch.setattr(
-        "alphasift.market_collector.fetch_reference_snapshot_with_bse_fallback",
+        "marketbase.market_collector.fetch_reference_snapshot_with_bse_fallback",
         fallback,
     )
 
@@ -167,7 +167,7 @@ def test_collect_keeps_existing_cache_when_atomic_replacement_fails(monkeypatch,
     def fail_replace(source, destination):
         raise OSError("storage endpoint unavailable")
 
-    monkeypatch.setattr("alphasift.market_collector.os.replace", fail_replace)
+    monkeypatch.setattr("marketbase.market_collector.os.replace", fail_replace)
 
     result = collect_market_snapshot(
         cache_path=cache_path,
@@ -256,7 +256,7 @@ def test_collect_neutralizes_cache_write_error_in_report(monkeypatch, tmp_path):
     def fail_replace(source, destination):
         raise OSError("buy \u4e70\u5165 endpoint unavailable")
 
-    monkeypatch.setattr("alphasift.market_collector.os.replace", fail_replace)
+    monkeypatch.setattr("marketbase.market_collector.os.replace", fail_replace)
 
     result = collect_market_snapshot(
         cache_path=tmp_path / "market.json",

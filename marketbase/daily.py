@@ -14,18 +14,33 @@ import time
 import pandas as pd
 import requests
 
-from alphasift.source_guard import call_with_timeout, parse_source_timeout_seconds
+from marketbase.source_guard import call_with_timeout, parse_source_timeout_seconds
+from marketbase.source_health import SourceHealth
 
 _DAILY_HISTORY_CACHE_VERSION = 1
 _DAILY_HISTORY_CACHE_TTL_SECONDS = 24 * 60 * 60
-_SOURCE_HEALTH_FAILURE_THRESHOLD = 3
-_SOURCE_HEALTH_COOLDOWN_SECONDS = 5 * 60
 _DAILY_CALL_TIMEOUT_SECONDS = 20.0
 _DEFAULT_TUSHARE_HTTP_URL = "http://api.waditu.com"
 _BAOSTOCK_LOCK = threading.Lock()
 _BAOSTOCK_OUTAGE_ERROR: str | None = None
-_SOURCE_HEALTH: dict[str, dict[str, object]] = {}
-_SOURCE_HEALTH_LOCK = threading.Lock()
+_source_health = SourceHealth(failure_threshold=3, cooldown_seconds=300)
+
+_thread_local = threading.local()
+
+
+def _get_http_session() -> requests.Session:
+    """Return a thread-local requests.Session with connection pooling."""
+    if not hasattr(_thread_local, "session"):
+        s = requests.Session()
+        adapter = requests.adapters.HTTPAdapter(
+            pool_connections=10,
+            pool_maxsize=10,
+            max_retries=0,
+        )
+        s.mount("https://", adapter)
+        s.mount("http://", adapter)
+        _thread_local.session = s
+    return _thread_local.session
 
 
 
@@ -80,7 +95,7 @@ def fetch_daily_history(
     attempts = max(int(retries), 0) + 1
     errors: list[str] = []
     for current in sources:
-        disabled_reason = _source_disabled_reason(current)
+        disabled_reason = _source_health.disabled_reason(current)
         if disabled_reason:
             errors.append(f"{current}: {disabled_reason}")
             continue
@@ -118,13 +133,13 @@ def fetch_daily_history(
                         normalized_code,
                         lookback_days=normalized_lookback_days,
                     )
-                _record_source_success(current, rows=len(result))
+                _source_health.record_success(current, rows=len(result))
                 result.attrs["daily_source"] = current
                 result.attrs["daily_requested_source"] = src
                 result.attrs["daily_source_order"] = list(sources)
                 result.attrs["daily_source_order_notes"] = list(source_order_notes)
                 result.attrs["source_errors"] = list(errors)
-                result.attrs["daily_source_health"] = _daily_source_health_snapshot(sources)
+                result.attrs["daily_source_health"] = _source_health.snapshot(sources)
                 if cache_path is not None:
                     _write_daily_history_cache(
                         cache_path,
@@ -140,7 +155,7 @@ def fetch_daily_history(
                     break
                 time.sleep(min(0.5 * (attempt + 1), 2.0))
         errors.append(f"{current} after {attempts} attempts: {last_error}")
-        _record_source_failure(current, last_error)
+        _source_health.record_failure(current, last_error)
 
     if cache_path is not None:
         stale = _read_daily_history_cache(
@@ -153,7 +168,7 @@ def fetch_daily_history(
             stale.attrs["daily_source_order"] = list(sources)
             stale.attrs["daily_source_order_notes"] = list(source_order_notes)
             stale.attrs["source_errors"] = list(errors)
-            stale.attrs["daily_source_health"] = _daily_source_health_snapshot(sources)
+            stale.attrs["daily_source_health"] = _source_health.snapshot(sources)
             return stale
 
     raise RuntimeError(
@@ -191,99 +206,19 @@ def _call_daily_wrapper(fetcher, source: str, *args, **kwargs) -> pd.DataFrame:
 
 def _daily_call_timeout_seconds() -> float | None:
     return parse_source_timeout_seconds(
-        "ALPHASIFT_DAILY_CALL_TIMEOUT_SEC",
+        "MARKETBASE_DAILY_CALL_TIMEOUT_SEC",
         default=_DAILY_CALL_TIMEOUT_SECONDS,
     )
 
 
 def _order_daily_sources_by_health(sources: tuple[str, ...]) -> tuple[tuple[str, ...], list[str]]:
     """Move unhealthy daily sources later while preserving default order ties."""
-    now = time.monotonic()
-    with _SOURCE_HEALTH_LOCK:
-        health = {source: dict(_SOURCE_HEALTH.get(source, {})) for source in sources}
-    default_order = {source: idx for idx, source in enumerate(sources)}
-
-    def order_key(source: str) -> tuple[int, float, int]:
-        state = health.get(source, {})
-        disabled_until = float(state.get("disabled_until", 0.0))
-        disabled = disabled_until > now
-        failures = float(state.get("failures", 0.0))
-        return (1 if disabled else 0, failures, default_order[source])
-
-    ordered = tuple(sorted(sources, key=order_key))
-    if ordered == sources:
-        return sources, []
-    return ordered, [f"daily source order adjusted by health: {','.join(ordered)}"]
-
-
-def _source_disabled_reason(source: str) -> str | None:
-    now = time.monotonic()
-    with _SOURCE_HEALTH_LOCK:
-        state = _SOURCE_HEALTH.get(source)
-        if not state:
-            return None
-        disabled_until = float(state.get("disabled_until", 0.0))
-        if disabled_until <= now:
-            if disabled_until:
-                state["disabled_until"] = 0.0
-            return None
-        return f"temporarily disabled for {disabled_until - now:.1f}s after repeated failures"
-
-
-def _record_source_success(source: str, *, rows: int | None = None) -> None:
-    with _SOURCE_HEALTH_LOCK:
-        state = _SOURCE_HEALTH.setdefault(source, {"failures": 0.0, "disabled_until": 0.0})
-        successes = float(state.get("successes", 0.0)) + 1.0
-        state["successes"] = successes
-        state["failures"] = 0.0
-        state["disabled_until"] = 0.0
-        state["last_success_at"] = time.time()
-        if rows is not None:
-            state["last_rows"] = float(rows)
-            previous_avg = float(state.get("avg_rows", rows))
-            state["avg_rows"] = previous_avg + (float(rows) - previous_avg) / successes
-
-
-def _record_source_failure(source: str, error: object | None = None) -> None:
-    now = time.monotonic()
-    with _SOURCE_HEALTH_LOCK:
-        state = _SOURCE_HEALTH.setdefault(source, {"failures": 0.0, "disabled_until": 0.0})
-        failures = float(state.get("failures", 0.0)) + 1.0
-        state["failures"] = failures
-        state["total_failures"] = float(state.get("total_failures", 0.0)) + 1.0
-        state["last_failure_at"] = time.time()
-        if error is not None:
-            state["last_error"] = " ".join(str(error).split())
-        if failures >= _SOURCE_HEALTH_FAILURE_THRESHOLD:
-            state["disabled_until"] = now + _SOURCE_HEALTH_COOLDOWN_SECONDS
+    return _source_health.order_by_health(sources)
 
 
 def daily_source_health_snapshot() -> dict[str, dict[str, float | bool | str]]:
     """Return a copy of in-process daily-source health statistics."""
-    return _daily_source_health_snapshot(tuple(_SOURCE_HEALTH))
-
-
-def _daily_source_health_snapshot(sources: tuple[str, ...]) -> dict[str, dict[str, float | bool | str]]:
-    now = time.monotonic()
-    snapshot: dict[str, dict[str, float | bool | str]] = {}
-    with _SOURCE_HEALTH_LOCK:
-        for source in sources:
-            state = dict(_SOURCE_HEALTH.get(source, {}))
-            disabled_until = float(state.get("disabled_until", 0.0))
-            cooldown_remaining = max(disabled_until - now, 0.0)
-            snapshot[source] = {
-                "successes": float(state.get("successes", 0.0)),
-                "failures": float(state.get("failures", 0.0)),
-                "total_failures": float(state.get("total_failures", 0.0)),
-                "last_rows": float(state.get("last_rows", 0.0)),
-                "avg_rows": float(state.get("avg_rows", 0.0)),
-                "disabled": disabled_until > now,
-                "cooldown_remaining_seconds": round(cooldown_remaining, 4),
-                "last_success_at": float(state.get("last_success_at", 0.0)),
-                "last_failure_at": float(state.get("last_failure_at", 0.0)),
-                "last_error": str(state.get("last_error", "")),
-            }
-    return snapshot
+    return _source_health.snapshot()
 
 
 def _daily_history_cache_path(
@@ -404,7 +339,7 @@ def _fetch_daily_tencent(code: str, *, lookback_days: int) -> pd.DataFrame:
     """
     symbol = _to_tencent_code(code)
     count = max(int(lookback_days), 30)
-    response = requests.get(
+    response = _get_http_session().get(
         "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get",
         params={"param": f"{symbol},day,,,{count},qfq"},
         headers={"User-Agent": "Mozilla/5.0"},
@@ -457,7 +392,7 @@ def _fetch_daily_sina(code: str, *, lookback_days: int) -> pd.DataFrame:
     """
     symbol = _to_tencent_code(code)
     count = max(int(lookback_days), 30)
-    response = requests.get(
+    response = _get_http_session().get(
         "https://quotes.sina.cn/cn/api/openapi.php/CN_MarketDataService.getKLineData",
         params={"symbol": symbol, "scale": 240, "ma": "no", "datalen": count},
         headers={"User-Agent": "Mozilla/5.0"},

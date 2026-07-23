@@ -1,6 +1,6 @@
-# AlphaSift
+# MarketBase
 
-AlphaSift 是本地 A 股客观数据采集管道。它采集沪深北三市实时快照、最多 250 个交易日的日线、
+MarketBase 是本地 A 股客观数据采集管道。它采集沪深北三市实时快照、最多 250 个交易日的日线、
 中性技术指标、基础分类映射与数据审计记录。本地只提供数据交接；解释与决策由 Codex 或云端流程
 独立完成。
 
@@ -11,9 +11,9 @@ pip install .
 # 可选：中国数据源依赖
 pip install ".[data-cn]"
 
-alphasift --data-root ./data collect
+marketbase --data-root ./data collect
 # 源码树中的等价命令
-python -m alphasift.cli --data-root ./data collect
+python -m marketbase.cli --data-root ./data collect
 ```
 
 采集会创建带时间戳的运行目录。日线缓存和检查点支持断点续跑；进度、预计剩余工作量和数据源错误
@@ -35,7 +35,7 @@ python -m alphasift.cli --data-root ./data collect
 在数据根目录创建 `codex_data_request.json` 后执行：
 
 ```bash
-alphasift --data-root ./data fulfill-request
+marketbase --data-root ./data fulfill-request
 ```
 
 命令会严格校验请求，并以原子方式写出 `codex_data_response.json`。日线可请求 `raw`、`ma`、

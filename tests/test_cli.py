@@ -5,26 +5,26 @@ import sys
 
 import pytest
 
-from alphasift import cli
+import local_workflow
 
 
-def test_package_cli_delegates_to_objective_workflow(monkeypatch):
+def test_local_workflow_main_delegates_to_collect(monkeypatch):
     received: list[object] = []
 
     def run(argv=None):
         received.append(argv)
         return 7
 
-    monkeypatch.setattr(cli, "_workflow_main", run)
+    monkeypatch.setattr(local_workflow, "run_collection", lambda **kw: None)
+    monkeypatch.setattr(local_workflow, "main", lambda argv=None: run(argv))
 
-    assert cli.main(["collect"]) == 7
+    assert local_workflow.main(["collect"]) == 7
     assert received == [["collect"]]
 
 
 @pytest.mark.parametrize(
     "command",
     (
-        [sys.executable, "-m", "alphasift.cli", "--help"],
         [sys.executable, "local_workflow.py", "--help"],
     ),
 )

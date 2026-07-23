@@ -47,3 +47,4 @@ freshness metadata before consuming the data.
 
 Providers may rate-limit or fail. Do not treat collected data as investment advice
 or as a guarantee of completeness, correctness, or timeliness.
+complete or current.

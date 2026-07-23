@@ -31,8 +31,13 @@ def compute_daily_indicators(
     frame: pd.DataFrame,
     *,
     calculated_at: datetime | None = None,
+    trading_date: str | None = None,
 ) -> dict[str, object]:
-    """Compute neutral indicators from daily OHLCV data."""
+    """Compute neutral indicators from daily OHLCV data.
+
+    When *trading_date* is provided (ISO date string), rows on or after that
+    date are excluded so indicators only reflect complete trading days.
+    """
     rows = int(len(frame))
     result: dict[str, object] = {key: None for key in _OUTPUT_KEYS}
     result["input_rows"] = rows
@@ -48,6 +53,15 @@ def compute_daily_indicators(
         if not valid_dates.empty:
             result["first_date"] = valid_dates.min().date().isoformat()
             result["last_date"] = valid_dates.max().date().isoformat()
+        # Truncate to complete trading days only
+        if trading_date:
+            cutoff = pd.Timestamp(trading_date)
+            keep_mask = dates < cutoff
+            if keep_mask.sum() < rows:
+                result["truncated_from"] = rows
+                result["truncated_to"] = int(keep_mask.sum())
+            df = df.loc[keep_mask].copy()
+            dates = dates.loc[keep_mask]
         df = df.assign(_indicator_date=dates).sort_values("_indicator_date")
 
     close = _numeric_series(df, "close")

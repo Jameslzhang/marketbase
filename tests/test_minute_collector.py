@@ -6,8 +6,8 @@ import json
 import pandas as pd
 import pytest
 
-from alphasift.data_request import DataRequest, DailyRequest, MinuteRequest
-from alphasift.minute_collector import (
+from marketbase.data_request import DataRequest, DailyRequest, MinuteRequest
+from marketbase.minute_collector import (
     collect_requested_data,
     parse_minute_rows,
     slice_minute_interval,

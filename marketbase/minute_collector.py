@@ -12,16 +12,16 @@ from typing import Any
 
 import pandas as pd
 
-from alphasift.daily import fetch_daily_history
-from alphasift.daily_collector import (
+from marketbase.daily import fetch_daily_history
+from marketbase.daily_collector import (
     _atomic_write_json,
     _cache_payload,
     _normalize_history,
     read_daily_cache,
 )
-from alphasift.data_request import DataRequest
-from alphasift.live_workflow import fetch_tencent_minute_rows
-from alphasift.neutral_indicators import compute_daily_indicators
+from marketbase.data_request import DataRequest
+from marketbase.live_workflow import fetch_tencent_minute_rows
+from marketbase.indicators import compute_daily_indicators
 
 
 _MINUTE_COLUMNS = ("time", "price", "volume", "amount")

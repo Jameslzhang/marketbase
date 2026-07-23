@@ -5,16 +5,13 @@ from datetime import datetime, timedelta, timezone
 import pandas as pd
 import pytest
 
-from alphasift.snapshot import (
-    _SOURCE_HEALTH,
+from marketbase.snapshot import (
     _configure_tushare_client,
     _eastmoney_get,
     _fetch_sina,
     _normalize,
     _prepare_tushare_snapshot,
-    _record_source_failure,
-    _record_source_success,
-    _source_disabled_reason,
+    _source_health,
     fetch_cn_snapshot,
     fetch_snapshot_with_fallback,
     snapshot_source_health_snapshot,
@@ -23,9 +20,9 @@ from alphasift.snapshot import (
 
 @pytest.fixture(autouse=True)
 def clear_snapshot_source_health():
-    _SOURCE_HEALTH.clear()
+    _source_health.reset()
     yield
-    _SOURCE_HEALTH.clear()
+    _source_health.reset()
 
 
 def test_normalize_efinance_maps_pb_ratio():
@@ -122,7 +119,7 @@ def test_fetch_sina_paginates_and_normalizes_market_cap_units(monkeypatch):
             ])
         return FakeResponse([])
 
-    monkeypatch.setattr("alphasift.snapshot.requests.get", fake_get)
+    monkeypatch.setattr("marketbase.snapshot.requests.get", fake_get)
 
     normalized = _fetch_sina()
 
@@ -158,7 +155,7 @@ def test_fetch_sina_does_not_treat_a_short_page_as_end_of_market(monkeypatch):
             return FakeResponse([])
         return FakeResponse(pages.get(kwargs["params"]["page"], []))
 
-    monkeypatch.setattr("alphasift.snapshot.requests.get", fake_get)
+    monkeypatch.setattr("marketbase.snapshot.requests.get", fake_get)
 
     normalized = _fetch_sina()
 
@@ -197,7 +194,7 @@ def test_fetch_sina_retries_failed_page_inside_nonempty_range(monkeypatch):
             raise ConnectionError("temporary 502")
         return FakeResponse({1: [row("600001")], 2: [row("600002")], 3: [row("600003")]}.get(page, []))
 
-    monkeypatch.setattr("alphasift.snapshot.requests.get", fake_get)
+    monkeypatch.setattr("marketbase.snapshot.requests.get", fake_get)
 
     normalized = _fetch_sina()
 
@@ -218,11 +215,11 @@ def test_eastmoney_get_reuses_session_and_throttles(monkeypatch):
             return FakeResponse()
 
     times = iter([100.0, 100.1, 100.4])
-    monkeypatch.setattr("alphasift.snapshot._EM_SESSION", FakeSession())
-    monkeypatch.setattr("alphasift.snapshot._EM_LAST_REQUEST_AT", 99.95)
-    monkeypatch.setattr("alphasift.snapshot.time.monotonic", lambda: next(times))
-    monkeypatch.setattr("alphasift.snapshot.time.sleep", lambda seconds: events.append(("sleep", seconds)))
-    monkeypatch.setattr("alphasift.snapshot.random.uniform", lambda start, end: 0.0)
+    monkeypatch.setattr("marketbase.snapshot._EM_SESSION", FakeSession())
+    monkeypatch.setattr("marketbase.snapshot._EM_LAST_REQUEST_AT", 99.95)
+    monkeypatch.setattr("marketbase.snapshot.time.monotonic", lambda: next(times))
+    monkeypatch.setattr("marketbase.snapshot.time.sleep", lambda seconds: events.append(("sleep", seconds)))
+    monkeypatch.setattr("marketbase.snapshot.random.uniform", lambda start, end: 0.0)
 
     response = _eastmoney_get("https://example.test", params={"p": 1})
 
@@ -313,7 +310,7 @@ def test_fetch_snapshot_with_fallback_attaches_source_errors(monkeypatch):
             raise RuntimeError("bad source")
         return pd.DataFrame([{"code": "000001", "name": "示例", "price": 10.0}])
 
-    monkeypatch.setattr("alphasift.snapshot.fetch_cn_snapshot", fake_fetch)
+    monkeypatch.setattr("marketbase.snapshot.fetch_cn_snapshot", fake_fetch)
 
     df = fetch_snapshot_with_fallback(["bad", "good"])
 
@@ -321,16 +318,16 @@ def test_fetch_snapshot_with_fallback_attaches_source_errors(monkeypatch):
 
 
 def test_snapshot_source_health_temporarily_disables_repeated_failures(monkeypatch):
-    monkeypatch.setattr("alphasift.snapshot.time.monotonic", lambda: 200.0)
+    monkeypatch.setattr("marketbase.snapshot.time.monotonic", lambda: 200.0)
 
-    _record_source_failure("sina")
-    _record_source_failure("sina")
-    assert _source_disabled_reason("sina") is None
-    _record_source_failure("sina")
+    _source_health.record_failure("sina")
+    _source_health.record_failure("sina")
+    assert _source_health.disabled_reason("sina") is None
+    _source_health.record_failure("sina")
 
-    assert "temporarily disabled" in str(_source_disabled_reason("sina"))
-    _record_source_success("sina")
-    assert _source_disabled_reason("sina") is None
+    assert "temporarily disabled" in str(_source_health.disabled_reason("sina"))
+    _source_health.record_success("sina")
+    assert _source_health.disabled_reason("sina") is None
 
 
 def test_fetch_snapshot_with_fallback_skips_disabled_sources(monkeypatch):
@@ -340,11 +337,11 @@ def test_fetch_snapshot_with_fallback_skips_disabled_sources(monkeypatch):
         calls.append(source)
         return pd.DataFrame([{"code": "000001", "name": "示例", "price": 10.0}])
 
-    monkeypatch.setattr("alphasift.snapshot.fetch_cn_snapshot", fake_fetch)
-    monkeypatch.setattr("alphasift.snapshot.time.monotonic", lambda: 200.0)
-    _record_source_failure("sina")
-    _record_source_failure("sina")
-    _record_source_failure("sina")
+    monkeypatch.setattr("marketbase.snapshot.fetch_cn_snapshot", fake_fetch)
+    monkeypatch.setattr("marketbase.snapshot.time.monotonic", lambda: 200.0)
+    _source_health.record_failure("sina")
+    _source_health.record_failure("sina")
+    _source_health.record_failure("sina")
 
     df = fetch_snapshot_with_fallback(["sina", "efinance"])
 
@@ -360,9 +357,9 @@ def test_snapshot_wrapper_timeout_falls_back_to_next_source(monkeypatch):
     def fast_akshare():
         return pd.DataFrame([{"code": "000001", "name": "快源", "price": 11.0}])
 
-    monkeypatch.setenv("ALPHASIFT_SNAPSHOT_CALL_TIMEOUT_SEC", "0.001")
-    monkeypatch.setattr("alphasift.snapshot._fetch_efinance", slow_efinance)
-    monkeypatch.setattr("alphasift.snapshot._fetch_akshare_em", fast_akshare)
+    monkeypatch.setenv("MARKETBASE_SNAPSHOT_CALL_TIMEOUT_SEC", "0.001")
+    monkeypatch.setattr("marketbase.snapshot._fetch_efinance", slow_efinance)
+    monkeypatch.setattr("marketbase.snapshot._fetch_akshare_em", fast_akshare)
 
     df = fetch_snapshot_with_fallback(["efinance", "akshare_em"])
     health = snapshot_source_health_snapshot(["efinance", "akshare_em"])
@@ -387,7 +384,7 @@ def test_fetch_snapshot_with_fallback_skips_missing_required_columns(monkeypatch
             "pb_ratio": 0.8,
         }])
 
-    monkeypatch.setattr("alphasift.snapshot.fetch_cn_snapshot", fake_fetch)
+    monkeypatch.setattr("marketbase.snapshot.fetch_cn_snapshot", fake_fetch)
 
     df = fetch_snapshot_with_fallback(
         ["missing_pb", "complete"],
@@ -416,7 +413,7 @@ def test_fetch_snapshot_with_fallback_saves_last_good_cache_on_live_success(
         df.attrs["snapshot_source"] = source
         return df
 
-    monkeypatch.setattr("alphasift.snapshot.fetch_cn_snapshot", fake_fetch)
+    monkeypatch.setattr("marketbase.snapshot.fetch_cn_snapshot", fake_fetch)
 
     df = fetch_snapshot_with_fallback(
         ["good"],
@@ -432,7 +429,7 @@ def test_fetch_snapshot_with_fallback_saves_last_good_cache_on_live_success(
     assert payload["metadata"]["row_count"] == 1
 
     monkeypatch.setattr(
-        "alphasift.snapshot.fetch_cn_snapshot",
+        "marketbase.snapshot.fetch_cn_snapshot",
         lambda source: (_ for _ in ()).throw(RuntimeError("offline")),
     )
 
@@ -458,7 +455,7 @@ def test_fetch_snapshot_with_fallback_uses_last_good_cache_after_all_sources_fai
         "pb_ratio": 0.8,
     }])
     live.attrs["snapshot_source"] = "good"
-    monkeypatch.setattr("alphasift.snapshot.fetch_cn_snapshot", lambda source: live)
+    monkeypatch.setattr("marketbase.snapshot.fetch_cn_snapshot", lambda source: live)
     fetch_snapshot_with_fallback(
         ["good"],
         required_columns=["price", "pb_ratio"],
@@ -468,7 +465,7 @@ def test_fetch_snapshot_with_fallback_uses_last_good_cache_after_all_sources_fai
     def fail(source):
         raise RuntimeError(f"{source} unavailable")
 
-    monkeypatch.setattr("alphasift.snapshot.fetch_cn_snapshot", fail)
+    monkeypatch.setattr("marketbase.snapshot.fetch_cn_snapshot", fail)
 
     cached = fetch_snapshot_with_fallback(
         ["efinance", "akshare_em"],
@@ -493,7 +490,7 @@ def test_snapshot_fallback_marks_stale_source_metadata(monkeypatch, tmp_path):
         "price": 10.0,
     }])
     live.attrs["snapshot_source"] = "good"
-    monkeypatch.setattr("alphasift.snapshot.fetch_cn_snapshot", lambda source: live)
+    monkeypatch.setattr("marketbase.snapshot.fetch_cn_snapshot", lambda source: live)
     fetch_snapshot_with_fallback(["good"], fallback_snapshot_path=cache_path)
 
     created_at = (datetime.now(timezone.utc) - timedelta(hours=3)).isoformat()
@@ -502,7 +499,7 @@ def test_snapshot_fallback_marks_stale_source_metadata(monkeypatch, tmp_path):
     cache_path.write_text(json.dumps(payload), encoding="utf-8")
 
     monkeypatch.setattr(
-        "alphasift.snapshot.fetch_cn_snapshot",
+        "marketbase.snapshot.fetch_cn_snapshot",
         lambda source: (_ for _ in ()).throw(RuntimeError("offline")),
     )
 
@@ -522,7 +519,7 @@ def test_snapshot_fallback_rejects_cache_older_than_max_age(monkeypatch, tmp_pat
     cache_path = tmp_path / "snapshot.last_good.json"
     live = pd.DataFrame([{"code": "000001", "name": "示例", "price": 10.0}])
     live.attrs["snapshot_source"] = "good"
-    monkeypatch.setattr("alphasift.snapshot.fetch_cn_snapshot", lambda source: live)
+    monkeypatch.setattr("marketbase.snapshot.fetch_cn_snapshot", lambda source: live)
     fetch_snapshot_with_fallback(["good"], fallback_snapshot_path=cache_path)
 
     created_at = (datetime.now(timezone.utc) - timedelta(hours=3)).isoformat()
@@ -531,7 +528,7 @@ def test_snapshot_fallback_rejects_cache_older_than_max_age(monkeypatch, tmp_pat
     cache_path.write_text(json.dumps(payload), encoding="utf-8")
 
     monkeypatch.setattr(
-        "alphasift.snapshot.fetch_cn_snapshot",
+        "marketbase.snapshot.fetch_cn_snapshot",
         lambda source: (_ for _ in ()).throw(RuntimeError("offline")),
     )
 
@@ -545,7 +542,7 @@ def test_snapshot_fallback_rejects_cache_older_than_max_age(monkeypatch, tmp_pat
 
 def test_fetch_snapshot_with_fallback_raises_all_errors(monkeypatch):
     monkeypatch.setattr(
-        "alphasift.snapshot.fetch_cn_snapshot",
+        "marketbase.snapshot.fetch_cn_snapshot",
         lambda source: (_ for _ in ()).throw(RuntimeError(source)),
     )
 

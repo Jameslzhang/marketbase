@@ -1,8 +1,8 @@
-# AlphaSift 客观数据管线实施计划
+# MarketBase 客观数据管线实施计划
 
 > **供执行代理使用：** 必须使用 `subagent-driven-development`（推荐）或 `executing-plans` Skill 按任务逐项实施。所有步骤使用复选框跟踪。
 
-**目标：** 将本地 AlphaSift 改造成只负责全市场客观数据采集、缓存、数学计算、审计和 Codex 定向补数的工具，彻底移除本地候选、排名和交易策略运行链路。
+**目标：** 将本地 MarketBase 改造成只负责全市场客观数据采集、缓存、数学计算、审计和 Codex 定向补数的工具，彻底移除本地候选、排名和交易策略运行链路。
 
 **架构：** 新增彼此独立的客观数据模块，复用已经验证的数据源与标准化函数。`local_workflow.py` 只保留全量采集和 `fulfill-request` 两个入口；全量采集刷新实时行情、250 日日线、中性指标和基础映射，Codex 请求入口只处理明确代码及当日分钟区间。
 
@@ -25,13 +25,13 @@
 
 ### 新建
 
-- `alphasift/neutral_indicators.py`：MA、RSI、MACD、ATR、VWAP 的纯数学计算。
-- `alphasift/data_request.py`：Codex 请求校验、响应结构和原子 JSON 写入。
-- `alphasift/daily_collector.py`：5528 只股票的 250 日日线全量缓存、断点恢复和进度事件。
-- `alphasift/minute_collector.py`：当前交易日原始分钟线解析、区间裁剪和 VWAP。
-- `alphasift/classification_map.py`：行业、概念、产业链基础映射合并及覆盖统计。
-- `alphasift/data_audit.py`：实时、日线、指标、映射和请求响应的独立审计。
-- `alphasift/market_collector.py`：全市场实时数据采集及标准化输出。
+- `marketbase/neutral_indicators.py`：MA、RSI、MACD、ATR、VWAP 的纯数学计算。
+- `marketbase/data_request.py`：Codex 请求校验、响应结构和原子 JSON 写入。
+- `marketbase/daily_collector.py`：5528 只股票的 250 日日线全量缓存、断点恢复和进度事件。
+- `marketbase/minute_collector.py`：当前交易日原始分钟线解析、区间裁剪和 VWAP。
+- `marketbase/classification_map.py`：行业、概念、产业链基础映射合并及覆盖统计。
+- `marketbase/data_audit.py`：实时、日线、指标、映射和请求响应的独立审计。
+- `marketbase/market_collector.py`：全市场实时数据采集及标准化输出。
 - `tests/test_neutral_indicators.py`
 - `tests/test_data_request.py`
 - `tests/test_daily_collector.py`
@@ -43,19 +43,19 @@
 ### 重写或修改
 
 - `local_workflow.py`：重写为全量采集与请求响应入口。
-- `alphasift/live_workflow.py`：保留实时行情和北交所兜底，移除固定候选增强及解释性分钟指标。
-- `alphasift/daily.py`：保留日线数据源能力，移除运行链路对解释性特征的依赖。
-- `alphasift/chinese_output.py`：仅保留客观数据字段中文映射。
+- `marketbase/live_workflow.py`：保留实时行情和北交所兜底，移除固定候选增强及解释性分钟指标。
+- `marketbase/daily.py`：保留日线数据源能力，移除运行链路对解释性特征的依赖。
+- `marketbase/chinese_output.py`：仅保留客观数据字段中文映射。
 - `.vscode/launch.json`：改名为“一键客观数据采集”。
 - `README.md`、`README.zh-CN.md`、`SKILL.md`、`pyproject.toml`：改为客观数据工具说明。
 
 ### 删除
 
-- `alphasift/afternoon.py`
-- `alphasift/full_market.py`
-- `alphasift/prefilter.py`
+- `marketbase/afternoon.py`
+- `marketbase/full_market.py`
+- `marketbase/prefilter.py`
 - 本地入口引用的预筛、午后筛选、参考排名和策略输出测试。
-- `strategies/` 与 `alphasift/strategies/` 中仅服务本地策略运行的 YAML。
+- `strategies/` 与 `marketbase/strategies/` 中仅服务本地策略运行的 YAML。
 - 经 `rg` 和导入测试确认不再被客观数据模块引用的评分、排名、风险、策略、报告与本地策略 API 模块。
 
 ---
@@ -63,7 +63,7 @@
 ### 任务 1：中性数学指标
 
 **文件：**
-- 新建：`alphasift/neutral_indicators.py`
+- 新建：`marketbase/neutral_indicators.py`
 - 新建：`tests/test_neutral_indicators.py`
 
 **接口：**
@@ -91,7 +91,7 @@ def test_daily_indicators_return_only_values_and_metadata():
 
 运行：`.\.venv\Scripts\python.exe -m pytest tests\test_neutral_indicators.py -q`
 
-预期：导入 `alphasift.neutral_indicators` 失败。
+预期：导入 `marketbase.neutral_indicators` 失败。
 
 - [ ] **步骤 3：实现 MA、RSI、MACD、ATR 和 VWAP**
 
@@ -103,7 +103,7 @@ def test_daily_indicators_return_only_values_and_metadata():
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest tests\test_neutral_indicators.py -q
-.\.venv\Scripts\python.exe -m ruff check alphasift\neutral_indicators.py tests\test_neutral_indicators.py
+.\.venv\Scripts\python.exe -m ruff check marketbase\neutral_indicators.py tests\test_neutral_indicators.py
 ```
 
 预期：全部通过。
@@ -111,7 +111,7 @@ def test_daily_indicators_return_only_values_and_metadata():
 - [ ] **步骤 5：暂存并尝试提交**
 
 ```powershell
-git add -- alphasift/neutral_indicators.py tests/test_neutral_indicators.py
+git add -- marketbase/neutral_indicators.py tests/test_neutral_indicators.py
 git commit -m "feat: add neutral market indicators"
 ```
 
@@ -120,7 +120,7 @@ git commit -m "feat: add neutral market indicators"
 ### 任务 2：Codex 数据请求与响应协议
 
 **文件：**
-- 新建：`alphasift/data_request.py`
+- 新建：`marketbase/data_request.py`
 - 新建：`tests/test_data_request.py`
 
 **接口：**
@@ -165,13 +165,13 @@ MINUTE_FIELDS = frozenset({"raw", "vwap"})
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest tests\test_data_request.py -q
-.\.venv\Scripts\python.exe -m ruff check alphasift\data_request.py tests\test_data_request.py
+.\.venv\Scripts\python.exe -m ruff check marketbase\data_request.py tests\test_data_request.py
 ```
 
 - [ ] **步骤 5：暂存并尝试提交**
 
 ```powershell
-git add -- alphasift/data_request.py tests/test_data_request.py
+git add -- marketbase/data_request.py tests/test_data_request.py
 git commit -m "feat: add codex data request contract"
 ```
 
@@ -180,9 +180,9 @@ git commit -m "feat: add codex data request contract"
 ### 任务 3：全量日线缓存、限流和断点恢复
 
 **文件：**
-- 新建：`alphasift/daily_collector.py`
+- 新建：`marketbase/daily_collector.py`
 - 新建：`tests/test_daily_collector.py`
-- 修改：`alphasift/daily.py`
+- 修改：`marketbase/daily.py`
 
 **接口：**
 - `collect_daily_universe(codes, *, cache_root, checkpoint_path, lookback=250, fetcher=fetch_daily_history, progress=None, now=None) -> DailyCollectionReport`
@@ -230,13 +230,13 @@ def test_daily_collection_resumes_without_refetching_completed_codes(tmp_path):
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest tests\test_daily_collector.py tests\test_daily.py -q
-.\.venv\Scripts\python.exe -m ruff check alphasift\daily_collector.py alphasift\daily.py tests\test_daily_collector.py
+.\.venv\Scripts\python.exe -m ruff check marketbase\daily_collector.py marketbase\daily.py tests\test_daily_collector.py
 ```
 
 - [ ] **步骤 7：暂存并尝试提交**
 
 ```powershell
-git add -- alphasift/daily_collector.py alphasift/daily.py tests/test_daily_collector.py
+git add -- marketbase/daily_collector.py marketbase/daily.py tests/test_daily_collector.py
 git commit -m "feat: collect resumable full-market daily history"
 ```
 
@@ -245,11 +245,11 @@ git commit -m "feat: collect resumable full-market daily history"
 ### 任务 4：实时行情采集和独立审计
 
 **文件：**
-- 新建：`alphasift/market_collector.py`
-- 新建：`alphasift/data_audit.py`
+- 新建：`marketbase/market_collector.py`
+- 新建：`marketbase/data_audit.py`
 - 新建：`tests/test_market_collector.py`
 - 新建：`tests/test_data_audit.py`
-- 修改：`alphasift/live_workflow.py`
+- 修改：`marketbase/live_workflow.py`
 
 **接口：**
 - `collect_market_snapshot(*, cache_path, now=None, progress=None) -> MarketCollectionResult`
@@ -283,13 +283,13 @@ def test_market_audit_reports_duplicate_and_missing_bse():
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest tests\test_market_collector.py tests\test_data_audit.py tests\test_live_workflow.py tests\test_snapshot.py -q
-.\.venv\Scripts\python.exe -m ruff check alphasift\market_collector.py alphasift\data_audit.py alphasift\live_workflow.py
+.\.venv\Scripts\python.exe -m ruff check marketbase\market_collector.py marketbase\data_audit.py marketbase\live_workflow.py
 ```
 
 - [ ] **步骤 6：暂存并尝试提交**
 
 ```powershell
-git add -- alphasift/market_collector.py alphasift/data_audit.py alphasift/live_workflow.py tests/test_market_collector.py tests/test_data_audit.py tests/test_live_workflow.py
+git add -- marketbase/market_collector.py marketbase/data_audit.py marketbase/live_workflow.py tests/test_market_collector.py tests/test_data_audit.py tests/test_live_workflow.py
 git commit -m "feat: add audited objective market collection"
 ```
 
@@ -298,7 +298,7 @@ git commit -m "feat: add audited objective market collection"
 ### 任务 5：行业、概念和产业链基础映射
 
 **文件：**
-- 新建：`alphasift/classification_map.py`
+- 新建：`marketbase/classification_map.py`
 - 新建：`tests/test_classification_map.py`
 
 **接口：**
@@ -329,13 +329,13 @@ def test_classification_map_preserves_source_labels_without_scoring():
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest tests\test_classification_map.py -q
-.\.venv\Scripts\python.exe -m ruff check alphasift\classification_map.py tests\test_classification_map.py
+.\.venv\Scripts\python.exe -m ruff check marketbase\classification_map.py tests\test_classification_map.py
 ```
 
 - [ ] **步骤 5：暂存并尝试提交**
 
 ```powershell
-git add -- alphasift/classification_map.py tests/test_classification_map.py
+git add -- marketbase/classification_map.py tests/test_classification_map.py
 git commit -m "feat: add objective classification mappings"
 ```
 
@@ -344,10 +344,10 @@ git commit -m "feat: add objective classification mappings"
 ### 任务 6：当前交易日分钟数据与 Codex 响应
 
 **文件：**
-- 新建：`alphasift/minute_collector.py`
+- 新建：`marketbase/minute_collector.py`
 - 新建：`tests/test_minute_collector.py`
-- 修改：`alphasift/data_request.py`
-- 修改：`alphasift/live_workflow.py`
+- 修改：`marketbase/data_request.py`
+- 修改：`marketbase/live_workflow.py`
 
 **接口：**
 - `collect_requested_data(request: DataRequest, *, daily_cache_root, minute_fetcher=fetch_tencent_minute_rows, now=None) -> dict[str, object]`
@@ -382,13 +382,13 @@ def test_requested_minute_response_contains_only_requested_interval():
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest tests\test_minute_collector.py tests\test_data_request.py -q
-.\.venv\Scripts\python.exe -m ruff check alphasift\minute_collector.py alphasift\data_request.py
+.\.venv\Scripts\python.exe -m ruff check marketbase\minute_collector.py marketbase\data_request.py
 ```
 
 - [ ] **步骤 6：暂存并尝试提交**
 
 ```powershell
-git add -- alphasift/minute_collector.py alphasift/data_request.py alphasift/live_workflow.py tests/test_minute_collector.py tests/test_data_request.py
+git add -- marketbase/minute_collector.py marketbase/data_request.py marketbase/live_workflow.py tests/test_minute_collector.py tests/test_data_request.py
 git commit -m "feat: fulfill objective codex data requests"
 ```
 
@@ -432,7 +432,7 @@ def test_default_collection_has_no_local_strategy_fields(tmp_path):
 
 - [ ] **步骤 5：更新 VS Code 启动配置**
 
-配置名称改为 `AlphaSift: 一键客观数据采集`，仍启动根目录 `local_workflow.py`，不传策略参数。
+配置名称改为 `MarketBase: 一键客观数据采集`，仍启动根目录 `local_workflow.py`，不传策略参数。
 
 - [ ] **步骤 6：运行入口测试和真实小样本冒烟测试**
 
@@ -460,7 +460,7 @@ git commit -m "refactor: replace local strategy workflow with data collection"
 - 修改：`README.zh-CN.md`
 - 修改：`SKILL.md`
 - 修改：`pyproject.toml`
-- 修改：`alphasift/__init__.py`
+- 修改：`marketbase/__init__.py`
 
 **接口：**
 - 打包后的命令只暴露客观数据采集和请求响应能力。
@@ -470,14 +470,14 @@ git commit -m "refactor: replace local strategy workflow with data collection"
 运行：
 
 ```powershell
-rg -n "afternoon|prefilter|local_reference_score|local_reference_rank|signal_score|strategy|ranker|scorer|recommend" local_workflow.py alphasift tests README.md README.zh-CN.md SKILL.md pyproject.toml
+rg -n "afternoon|prefilter|local_reference_score|local_reference_rank|signal_score|strategy|ranker|scorer|recommend" local_workflow.py marketbase tests README.md README.zh-CN.md SKILL.md pyproject.toml
 ```
 
 将仍被客观数据模块引用的底层通用函数迁移到对应新模块后，再删除原策略模块；不得通过保留无用导入让测试假通过。
 
 - [ ] **步骤 2：删除策略 CLI、YAML、API 和专用测试**
 
-删除后，`python -m alphasift.cli --help` 或替代入口不得显示策略、预筛、午后筛选、排名或推荐命令。
+删除后，`python -m marketbase.cli --help` 或替代入口不得显示策略、预筛、午后筛选、排名或推荐命令。
 
 - [ ] **步骤 3：更新中英文文档和 Skill 说明**
 
@@ -492,7 +492,7 @@ rg -n "afternoon|prefilter|local_reference_score|local_reference_rank|signal_sco
 运行：
 
 ```powershell
-rg -n "dynamic_candidate_limit|local_reference_score|local_reference_rank|signal_score|候选|推荐|买入|卖出|概率" local_workflow.py alphasift tests README.md README.zh-CN.md SKILL.md
+rg -n "dynamic_candidate_limit|local_reference_score|local_reference_rank|signal_score|候选|推荐|买入|卖出|概率" local_workflow.py marketbase tests README.md README.zh-CN.md SKILL.md
 ```
 
 预期：运行代码和当前文档中无本地策略字段或策略结论；测试中的禁止词断言可以保留。
@@ -525,7 +525,7 @@ git diff --check
 
 ```powershell
 git add -A
-git commit -m "refactor: make alphasift an objective data pipeline"
+git commit -m "refactor: make marketbase an objective data pipeline"
 ```
 
 ---

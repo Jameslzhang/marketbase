@@ -561,7 +561,7 @@ def test_vscode_launch_configuration_uses_objective_collection_without_args():
     payload = json.loads(Path(".vscode/launch.json").read_text(encoding="utf-8"))
     assert payload["configurations"] == [
         {
-            "name": "AlphaSift: 一键客观数据采集",
+            "name": "MarketBase: 一键客观数据采集",
             "type": "debugpy",
             "request": "launch",
             "program": "${workspaceFolder}/local_workflow.py",

@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from alphasift.classification_map import build_classification_map
+from marketbase.classify import build_classification_map
 
 
 OUTPUT_COLUMNS = [
