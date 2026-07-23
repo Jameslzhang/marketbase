@@ -1,9 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Market snapshot fetcher.
-
-Fetches full-market real-time snapshots for screening.
-This is separate from single-stock realtime quotes.
-"""
+"""A-share market snapshot acquisition and normalization."""
 
 import logging
 import json
@@ -11,6 +7,7 @@ import os
 import random
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timezone, timedelta
 from pathlib import Path
 
@@ -66,12 +63,8 @@ def fetch_snapshot_with_fallback(
     required_columns: list[str] | None = None,
     fallback_snapshot_path: str | Path | None = None,
     fallback_max_age_hours: float | None = None,
-    market: str = "cn",
 ) -> pd.DataFrame:
     """Try live sources, optionally falling back to the last-good snapshot."""
-    if market == "us":
-        return _fetch_us_snapshot_with_fallback(required_columns)
-
     errors = []
     required = required_columns or []
     for source in sources:
@@ -114,19 +107,6 @@ def fetch_snapshot_with_fallback(
         return cached
 
     raise RuntimeError(f"All snapshot sources failed: {'; '.join(errors)}")
-
-
-def _fetch_us_snapshot_with_fallback(
-    required_columns: list[str] | None = None,
-) -> pd.DataFrame:
-    """Fetch US equity snapshot via yfinance adapter."""
-    from alphasift.snapshot_us import fetch_us_snapshot
-
-    df = fetch_us_snapshot()
-    missing = _missing_required_columns(df, required_columns or [])
-    if missing:
-        logger.warning("US snapshot missing columns: %s", ",".join(missing))
-    return df
 
 
 def _missing_required_columns(df: pd.DataFrame, required_columns: list[str]) -> list[str]:
@@ -252,6 +232,15 @@ def _write_last_good_snapshot(
         logger.warning("Failed to write last-good snapshot cache %s: %s", path, exc)
 
 
+def write_snapshot_cache(path_like: str | Path, df: pd.DataFrame) -> Path:
+    """Persist a normalized snapshot using the last-good cache contract."""
+    path = Path(path_like).expanduser().resolve()
+    _write_last_good_snapshot(path, df)
+    if not path.is_file():
+        raise RuntimeError(f"snapshot cache was not written: {path}")
+    return path
+
+
 def _read_last_good_snapshot(
     path_like: str | Path | None,
     *,
@@ -362,10 +351,14 @@ def _fetch_sina() -> pd.DataFrame:
     sources.
     """
     url = "https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/Market_Center.getHQNodeData"
-    page = 1
-    page_size = 80
-    all_items = []
-    while True:
+    page_size = 100
+    max_pages_per_node = 50
+    headers = {
+        "User-Agent": "Mozilla/5.0",
+        "Referer": "https://vip.stock.finance.sina.com.cn/mkt/",
+    }
+
+    def fetch_page(node: str, page: int) -> tuple[str, int, list[object]]:
         resp = requests.get(
             url,
             params={
@@ -373,29 +366,71 @@ def _fetch_sina() -> pd.DataFrame:
                 "num": page_size,
                 "sort": "symbol",
                 "asc": 1,
-                "node": "hs_a",
+                "node": node,
                 "symbol": "",
                 "_s_r_a": "page",
             },
-            headers={
-                "User-Agent": "Mozilla/5.0",
-                "Referer": "https://vip.stock.finance.sina.com.cn/mkt/",
-            },
+            headers=headers,
             timeout=15,
         )
         resp.raise_for_status()
         items = resp.json()
         if not isinstance(items, list):
             raise RuntimeError("sina snapshot returned malformed data")
-        if not items:
-            break
-        all_items.extend(items)
-        if len(items) < page_size:
-            break
-        page += 1
+        return node, page, items
+
+    nodes = ("sh_a", "sz_a")
+    pages: dict[tuple[str, int], list[object]] = {}
+    page_errors: dict[tuple[str, int], str] = {}
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        futures = {
+            pool.submit(fetch_page, node, page): (node, page)
+            for node in nodes
+            for page in range(1, max_pages_per_node + 1)
+        }
+        for future in as_completed(futures):
+            key = futures[future]
+            try:
+                node, page, items = future.result()
+                pages[(node, page)] = items
+            except Exception as exc:  # noqa: BLE001 - retry relevant pages below.
+                page_errors[key] = str(exc)
+
+    all_items: list[object] = []
+    for node in nodes:
+        nonempty_pages = [
+            page
+            for page in range(1, max_pages_per_node + 1)
+            if pages.get((node, page))
+        ]
+        if not nonempty_pages:
+            continue
+        last_page = max(nonempty_pages)
+        missing_pages = [
+            page for page in range(1, last_page + 1) if not pages.get((node, page))
+        ]
+        for page in missing_pages:
+            for _ in range(2):
+                try:
+                    _, _, items = fetch_page(node, page)
+                except Exception as exc:  # noqa: BLE001 - preserve page diagnostics.
+                    page_errors[(node, page)] = str(exc)
+                    continue
+                if items:
+                    pages[(node, page)] = items
+                    break
+            if not pages.get((node, page)):
+                detail = page_errors.get((node, page), "empty response")
+                raise RuntimeError(
+                    f"sina snapshot missing intermediate page {node}:{page}: {detail}"
+                )
+        for page in range(1, last_page + 1):
+            all_items.extend(pages[(node, page)])
     if not all_items:
         raise RuntimeError("sina returned empty data")
     df = pd.DataFrame(all_items)
+    if "code" in df.columns:
+        df = df.drop_duplicates(subset=["code"], keep="last")
     for col in ("mktcap", "nmc"):
         if col in df.columns:
             # Sina exposes market caps in ten-thousand yuan; normalize to yuan.
@@ -724,9 +759,9 @@ def _rename_standard_columns(
 ) -> pd.DataFrame:
     """Rename the first matching source column for each standard field."""
     rename_map: dict[str, str] = {}
-    for standard_name, candidates in standard_cols.items():
-        for candidate in candidates:
-            if candidate in df.columns:
-                rename_map[candidate] = standard_name
+    for standard_name, alternatives in standard_cols.items():
+        for alternative in alternatives:
+            if alternative in df.columns:
+                rename_map[alternative] = standard_name
                 break
     return df.rename(columns=rename_map)

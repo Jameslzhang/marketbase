@@ -102,6 +102,8 @@ def test_fetch_sina_paginates_and_normalizes_market_cap_units(monkeypatch):
 
     def fake_get(url, **kwargs):
         calls.append(kwargs)
+        if kwargs["params"]["node"] == "sz_a":
+            return FakeResponse([])
         page = kwargs["params"]["page"]
         if page == 1:
             return FakeResponse([
@@ -124,10 +126,83 @@ def test_fetch_sina_paginates_and_normalizes_market_cap_units(monkeypatch):
 
     normalized = _fetch_sina()
 
-    assert calls[0]["params"]["node"] == "hs_a"
+    assert calls[0]["params"]["node"] == "sh_a"
     assert calls[0]["headers"]["Referer"] == "https://vip.stock.finance.sina.com.cn/mkt/"
     assert normalized.loc[0, "total_mv"] == pytest.approx(1000000000)
     assert normalized.loc[0, "circ_mv"] == pytest.approx(800000000)
+
+
+def test_fetch_sina_does_not_treat_a_short_page_as_end_of_market(monkeypatch):
+    class FakeResponse:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self._payload
+
+    def row(code):
+        return {
+            "code": code,
+            "name": code,
+            "trade": "10.00",
+            "changepercent": "1.00",
+            "amount": "1000000",
+        }
+
+    pages = {1: [row("000001")], 2: [row("000002")], 3: []}
+    def fake_get(url, **kwargs):
+        if kwargs["params"]["node"] == "sz_a":
+            return FakeResponse([])
+        return FakeResponse(pages.get(kwargs["params"]["page"], []))
+
+    monkeypatch.setattr("alphasift.snapshot.requests.get", fake_get)
+
+    normalized = _fetch_sina()
+
+    assert normalized["code"].tolist() == ["000001", "000002"]
+
+
+def test_fetch_sina_retries_failed_page_inside_nonempty_range(monkeypatch):
+    attempts = {}
+
+    class FakeResponse:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self._payload
+
+    def row(code):
+        return {
+            "code": code,
+            "name": code,
+            "trade": "10.00",
+            "changepercent": "1.00",
+            "amount": "1000000",
+        }
+
+    def fake_get(url, **kwargs):
+        node = kwargs["params"]["node"]
+        page = kwargs["params"]["page"]
+        attempts[(node, page)] = attempts.get((node, page), 0) + 1
+        if node == "sz_a":
+            return FakeResponse([])
+        if page == 2 and attempts[(node, page)] == 1:
+            raise ConnectionError("temporary 502")
+        return FakeResponse({1: [row("600001")], 2: [row("600002")], 3: [row("600003")]}.get(page, []))
+
+    monkeypatch.setattr("alphasift.snapshot.requests.get", fake_get)
+
+    normalized = _fetch_sina()
+
+    assert normalized["code"].tolist() == ["600001", "600002", "600003"]
+    assert attempts[("sh_a", 2)] == 2
 
 
 def test_eastmoney_get_reuses_session_and_throttles(monkeypatch):
@@ -476,45 +551,3 @@ def test_fetch_snapshot_with_fallback_raises_all_errors(monkeypatch):
 
     with pytest.raises(RuntimeError, match="a: a; b: b"):
         fetch_snapshot_with_fallback(["a", "b"])
-
-
-def test_fetch_us_snapshot_single_ticker_with_multiindex(monkeypatch):
-    import sys
-    import types
-
-    closes = [150.0 + i for i in range(20)]
-    multi_cols = pd.MultiIndex.from_tuples([
-        ("Close", "AAPL"), ("High", "AAPL"), ("Low", "AAPL"),
-        ("Open", "AAPL"), ("Volume", "AAPL"),
-    ], names=["Price", "Ticker"])
-    hist_df = pd.DataFrame(
-        {
-            ("Close", "AAPL"): closes,
-            ("High", "AAPL"): [c + 1 for c in closes],
-            ("Low", "AAPL"): [c - 1 for c in closes],
-            ("Open", "AAPL"): [c - 0.5 for c in closes],
-            ("Volume", "AAPL"): [1_000_000] * 20,
-        },
-        index=pd.date_range("2026-05-01", periods=20),
-    )
-    hist_df.columns = multi_cols
-
-    class FakeFastInfo:
-        market_cap = 3_000_000_000_000
-        shares = 15_000_000_000
-
-    class FakeTicker:
-        def __init__(self, ticker):
-            self.fast_info = FakeFastInfo()
-
-    fake_yf = types.ModuleType("yfinance")
-    fake_yf.download = lambda *a, **kw: hist_df
-    fake_yf.Ticker = FakeTicker
-    monkeypatch.setitem(sys.modules, "yfinance", fake_yf)
-
-    from alphasift.snapshot_us import fetch_us_snapshot
-    df = fetch_us_snapshot(["AAPL"])
-
-    assert len(df) == 1
-    assert df.iloc[0]["code"] == "AAPL"
-    assert df.iloc[0]["price"] > 0

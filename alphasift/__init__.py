@@ -1,36 +1,53 @@
-# -*- coding: utf-8 -*-
-"""alphasift — 自动选股 Skill"""
+"""Objective A-share market data collection APIs."""
+
+from alphasift.classification_map import build_classification_map
+from alphasift.daily import daily_source_health_snapshot, fetch_daily_history
+from alphasift.daily_collector import (
+    DailyCollectionReport,
+    DailyProgressEvent,
+    collect_daily_universe,
+    read_daily_cache,
+)
+from alphasift.data_audit import audit_market_snapshot
+from alphasift.data_request import DataRequest, load_data_request, write_data_response
+from alphasift.live_workflow import (
+    acquire_live_snapshot,
+    fetch_reference_snapshot_with_bse_fallback,
+    fetch_tencent_minute_rows,
+)
+from alphasift.market_collector import MarketCollectionResult, collect_market_snapshot
+from alphasift.minute_collector import collect_requested_data
+from alphasift.neutral_indicators import compute_daily_indicators, compute_vwap
+from alphasift.snapshot import (
+    fetch_cn_snapshot,
+    fetch_snapshot_with_fallback,
+    snapshot_source_health_snapshot,
+)
 
 __version__ = "0.2.0"
 
-from alphasift.pipeline import screen
-from alphasift.evaluate import evaluate_saved_run, evaluate_saved_runs
-from alphasift.performance_history import build_strategy_performance_summary
-from alphasift.strategy import compare_strategies, list_strategies, strategy_facets
-from alphasift.audit import audit_project
-from alphasift.overview import build_overview
-from alphasift.run_history import build_strategy_run_summary
-from alphasift.server import build_api_response, serve_api
-from alphasift.source_history import build_data_source_history
-from alphasift.strategy_cards import build_strategy_cards
-from alphasift.strategy_templates import get_strategy_template, list_strategy_templates
-
 __all__ = [
+    "DataRequest",
+    "DailyCollectionReport",
+    "DailyProgressEvent",
+    "MarketCollectionResult",
     "__version__",
-    "screen",
-    "evaluate_saved_run",
-    "evaluate_saved_runs",
-    "build_strategy_performance_summary",
-    "list_strategies",
-    "compare_strategies",
-    "strategy_facets",
-    "get_strategy_template",
-    "list_strategy_templates",
-    "audit_project",
-    "build_overview",
-    "build_strategy_run_summary",
-    "build_data_source_history",
-    "build_strategy_cards",
-    "build_api_response",
-    "serve_api",
+    "acquire_live_snapshot",
+    "audit_market_snapshot",
+    "build_classification_map",
+    "collect_daily_universe",
+    "collect_market_snapshot",
+    "collect_requested_data",
+    "compute_daily_indicators",
+    "compute_vwap",
+    "daily_source_health_snapshot",
+    "fetch_cn_snapshot",
+    "fetch_daily_history",
+    "fetch_reference_snapshot_with_bse_fallback",
+    "fetch_snapshot_with_fallback",
+    "fetch_tencent_minute_rows",
+    "load_data_request",
+    "read_daily_cache",
+    "snapshot_source_health_snapshot",
+    "write_data_response",
 ]

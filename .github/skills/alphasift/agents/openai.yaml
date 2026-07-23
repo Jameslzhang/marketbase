@@ -1,7 +1,7 @@
 interface:
   display_name: "AlphaSift"
-  short_description: "Screen, score, and rank A-share stock ideas"
-  default_prompt: "Use $alphasift to list strategies or run an A-share screening strategy."
+  short_description: "Collect objective A-share data and audit evidence"
+  default_prompt: "Use $alphasift to collect objective A-share data or fulfill a validated data request."
 
 policy:
   allow_implicit_invocation: true
