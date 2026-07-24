@@ -1,4 +1,4 @@
-"""Resumable full-universe daily history collection."""
+"""支持断点续跑的全市场日线历史采集."""
 
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ from marketbase.indicators import compute_daily_indicators
 
 
 def _atomic_replace(temp_path: Path, target_path: Path, *, retries: int = 5, delay: float = 0.1) -> None:
-    """Atomically replace *target_path* with *temp_path*, retrying on Windows lock errors."""
+    """原子替换目标文件，Windows 锁冲突时重试."""
     for attempt in range(retries):
         try:
             temp_path.replace(target_path)
@@ -33,19 +33,16 @@ def _atomic_replace(temp_path: Path, target_path: Path, *, retries: int = 5, del
 
 _SCHEMA_VERSION = 1
 _DAILY_COLUMNS = ("date", "open", "high", "low", "close", "volume", "amount")
-_MIN_INDICATOR_ROWS = 50  # minimum history rows for meaningful indicator computation
-_MARKET_CLOSE_HOUR = 15  # A-share market closes at 15:00 Beijing time
+_MIN_INDICATOR_ROWS = 50  # 指标计算所需最少历史行数
+_MARKET_CLOSE_HOUR = 15  # A 股收盘时间 15:00 北京时间
 
 
 def _is_daily_cache_fresh(latest_date: str, observed_at: datetime) -> bool:
-    """Check whether a daily cache is fresh enough given the current time.
+    """根据当前时间判断日线缓存是否足够新鲜。
 
-    - After market close (≥15:00 Beijing time on a trading day): the latest
-      date must equal today.
-    - During trading hours or before open: the latest date must be within
-      1 day of today (yesterday's data is acceptable).
-    - Non-trading days (weekends): the latest date must be within 2 days
-      (last Friday's data is acceptable).
+    - 收盘后（北京时间 ≥15:00 且为交易日）：最新日期必须等于今天。
+    - 交易时段中或开盘前：最新日期与今天相差不超过 1 天（昨天数据可用）。
+    - 非交易日（周末）：最新日期与今天相差不超过 2 天（上周五数据可用）。
     """
     from datetime import timezone, timedelta
 

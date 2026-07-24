@@ -1,4 +1,8 @@
-"""Objective local collection entry point and request fulfillment command."""
+"""客观数据本地采集入口与请求补数命令行。
+
+采集全市场快照、250 日日线、中性指标、分类映射和审计报告。
+输出纯数据交接文件，不包含任何策略分、排名、推荐或交易结论。
+"""
 
 from __future__ import annotations
 
@@ -18,14 +22,15 @@ import threading
 import time
 from typing import Any
 
+# ── Windows / POSIX 文件锁 ───────────────────────────────────────────
 try:
     import msvcrt
-except ImportError:  # pragma: no cover - exercised through the POSIX lock branch.
+except ImportError:  # pragma: no cover - POSIX 分支使用 fcntl
     msvcrt = None
 
 try:
     import fcntl
-except ImportError:  # pragma: no cover - exercised through the Windows lock branch.
+except ImportError:  # pragma: no cover - Windows 分支使用 msvcrt
     fcntl = None
 
 import pandas as pd
@@ -46,6 +51,7 @@ from marketbase.security_master import collect_security_master
 from marketbase.volume_ratio import compute_volume_ratios_batch
 
 
+# ── 指标字段定义 ─────────────────────────────────────────────────────
 _INDICATOR_VALUE_FIELDS = (
     "ma5",
     "ma10",
@@ -73,7 +79,7 @@ _LATEST_THREAD_LOCK = threading.Lock()
 
 
 def _ts() -> str:
-    """Short timestamp HH:MM:SS."""
+    """短时间戳 HH:MM:SS."""
     return datetime.now().strftime("%H:%M:%S")
 
 
@@ -161,7 +167,7 @@ def run_collection(
 
 
 def _try_lock_nonblocking(handle: Any) -> bool:
-    """Try to acquire a file lock without blocking. Returns True on success."""
+    """尝试获取文件锁（非阻塞），成功返回 True，防止多实例并发运行."""
     if msvcrt is not None:
         try:
             msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
@@ -183,6 +189,7 @@ def _run_collection_locked(
     configured: dict[str, object],
     progress: Callable[[str], None],
 ) -> dict[str, object]:
+    """持有文件锁后执行核心采集流程：快照 → 日线 → 指标 → 量比 → 审计 → 分类 → 交接."""
     collection_started_at = datetime.now().astimezone().isoformat()
     run_dir = _create_run_directory(root, observed_at)
     log_path = run_dir / "workflow.log"
@@ -197,10 +204,14 @@ def _run_collection_locked(
     emit("开始采集")
     cache_root = root / "cache"
 
+    # ① 实时行情快照
     frame, codes, result = _run_market_collection(root, observed_at, emit, configured)
     bse_codes = set(frame.loc[frame["market"] == "bj", "code"].tolist()) if "market" in frame.columns else set()
+    # ② 日线历史与指标计算
     indicators_df, daily_report = _run_daily_collection(codes, cache_root, observed_at, emit, configured, bse_codes=bse_codes)
+    # ③ 量比实时计算
     frame = _run_volume_ratio(frame, cache_root, observed_at, emit)
+    # ④ 审计与分类
     market_audit, classification, classification_audit = _run_audit_and_classification(
         frame, observed_at, result, root, configured
     )
@@ -261,7 +272,7 @@ def fulfill_request(
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """Run collection by default or fulfill a strictly validated data request."""
+    """命令行入口：默认全量采集，也支持 collect-classify / refresh-master / fulfill-request 子命令."""
     parser = argparse.ArgumentParser(description="MarketBase 客观数据入口")
     parser.add_argument("--data-root", type=Path)
     subcommands = parser.add_subparsers(dest="command")

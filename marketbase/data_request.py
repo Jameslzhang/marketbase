@@ -1,4 +1,4 @@
-"""Validation and atomic persistence for the objective-data request protocol."""
+"""客观数据请求协议的校验与原子持久化."""
 
 from __future__ import annotations
 
@@ -41,7 +41,7 @@ class DataRequest:
 
 
 def load_data_request(path: str | Path, *, today: date) -> DataRequest:
-    """Load and strictly validate one JSON data request."""
+    """加载并严格校验一个 JSON 数据请求."""
     request_path = Path(path)
     try:
         payload = json.loads(request_path.read_text(encoding="utf-8"))
@@ -69,7 +69,7 @@ def load_data_request(path: str | Path, *, today: date) -> DataRequest:
 
 
 def write_data_response(path: str | Path, payload: dict[str, object]) -> Path:
-    """Write a UTF-8 JSON response through a same-directory atomic replace."""
+    """通过同目录原子替换写入 UTF-8 JSON 响应."""
     if not isinstance(payload, dict):
         raise ValueError("响应内容必须是 JSON 对象")
     target = Path(path).expanduser().resolve()

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""A-share market snapshot acquisition and normalization."""
+"""A 股行情快照获取与标准化."""
 
 import logging
 import json

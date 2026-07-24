@@ -1,4 +1,4 @@
-"""Fulfill validated, objective daily and current-day minute data requests."""
+"""履行已验证的客观日线和当日分钟数据请求."""
 
 from __future__ import annotations
 
@@ -33,7 +33,7 @@ _PROHIBITED_ERROR_TERMS = re.compile(
 
 
 def parse_minute_rows(rows: Iterable[str]) -> pd.DataFrame:
-    """Normalize Tencent cumulative minute rows, omitting unusable records."""
+    """解析腾讯累计分钟行，丢弃不可用记录."""
     parsed: list[dict[str, object]] = []
     for row in rows:
         if not isinstance(row, str):

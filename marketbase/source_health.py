@@ -1,4 +1,4 @@
-"""In-process source health tracking shared by snapshot and daily collectors."""
+"""进程内数据源健康跟踪，快照和日线采集器共享."""
 
 from __future__ import annotations
 
@@ -8,10 +8,9 @@ from typing import Any
 
 
 class SourceHealth:
-    """Track per-source success/failure counts with automatic cooldown.
+    """按数据源跟踪成功/失败计数，带自动冷却。
 
-    Each module (snapshot, daily) instantiates its own instance so state is
-    isolated per data domain.
+    每个模块（快照、日线）实例化各自实例，状态按数据域隔离。
     """
 
     def __init__(

@@ -1,8 +1,7 @@
-"""A-share security master table — authoritative list of all stocks including suspended.
+"""A 股证券主表 —— 全部股票权威列表（含停牌股）。
 
-Uses EastMoney datacenter xuangu API to fetch all A-share stocks with
-listing date and last trade date.  Merges incrementally with existing
-local cache to preserve previously-seen codes that may have delisted.
+利用东方财富选股 API 拉取全量 A 股代码、名称、上市日期和最后交易日期。
+与现有本地缓存增量合并，保留已退市代码。
 """
 
 from __future__ import annotations
@@ -18,7 +17,7 @@ from marketbase.snapshot import _eastmoney_get
 
 logger = logging.getLogger(__name__)
 
-# ── constants ─────────────────────────────────────────────────────────
+# ── 常量 ─────────────────────────────────────────────────────────
 
 _EM_DATACENTER_URL = "https://data.eastmoney.com/dataapi/xuangu/list"
 _PAGE_SIZE = 500
@@ -38,7 +37,7 @@ _DEFAULT_CACHE_PATH = (
     / "security_master.csv"
 )
 
-# ── public API ─────────────────────────────────────────────────────────
+# ── 公开 API ─────────────────────────────────────────────────────────
 
 
 def collect_security_master(
@@ -47,31 +46,15 @@ def collect_security_master(
     cooldown: float = 1.5,
     now: date | None = None,
 ) -> pd.DataFrame:
-    """Fetch all A-share stocks from EastMoney and save to CSV.
+    """从东方财富拉取全量 A 股并保存为 CSV。
 
-    Pages through the xuangu API (500 per page, ~12 pages) to get every
-    stock with its listing date and last trade date.  Merges with any
-    existing CSV to preserve previously-seen codes that may have been
-    delisted.
-
-    Parameters
-    ----------
-    output_path : Path, optional
-        Where to write the CSV.  Defaults to the standard cache location.
-    cooldown : float
-        Minimum seconds between API calls (passed through to _eastmoney_get).
-    now : date, optional
-        Reference date for status inference.  Defaults to today.
-
-    Returns
-    -------
-    pd.DataFrame with columns: code, name, market, listing_date,
-    last_trade_date, status, source, updated_at
+    分页遍历选股 API（每页 500 只，约 12 页），获取每只股票的
+    上市日期和最后交易日期。与已有 CSV 合并保留已退市代码。
     """
     today = now or date.today()
     out = Path(output_path) if output_path else _DEFAULT_CACHE_PATH
 
-    # Fetch all pages
+    # 分页拉取全部股票
     rows: list[dict[str, object]] = []
     page = 1
     while True:

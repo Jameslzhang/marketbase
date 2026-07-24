@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""A-share daily history acquisition, normalization, caching, and source health."""
+"""A 股日线历史 —— 获取、标准化、缓存与数据源健康."""
 
 from __future__ import annotations
 

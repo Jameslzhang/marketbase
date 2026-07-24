@@ -1,7 +1,7 @@
-"""A-share trading calendar — real holiday-aware calendar, not just weekday checks.
+"""A 股交易日历 —— 基于真实节假日数据，非简单工作日判断。
 
-Uses akshare to fetch the full SSE/SZSE trading calendar and caches it
-locally.  Falls back to weekday-only checks if the cache is unavailable.
+通过 akshare 获取沪深交易所完整交易日历并本地缓存。
+缓存不可用时降级为周一至周五工作日判断。
 """
 
 from __future__ import annotations
@@ -13,7 +13,7 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-# ── cache ────────────────────────────────────────────────────────────
+# ── 缓存 ────────────────────────────────────────────────────────────
 
 _DEFAULT_CACHE_PATH = Path(__file__).resolve().parent.parent / "data" / "daily_runs" / "cache" / "trade_calendar.csv"
 
@@ -22,7 +22,7 @@ _calendar_loaded: bool = False
 
 
 def _load_calendar(path: Path | None = None) -> set[date]:
-    """Load trading dates from local CSV cache, or fetch from akshare."""
+    """从本地 CSV 缓存加载交易日列表，缓存不存在时调用 akshare 拉取并保存."""
     global _calendar_dates, _calendar_loaded
 
     if _calendar_loaded and _calendar_dates is not None:
@@ -30,7 +30,7 @@ def _load_calendar(path: Path | None = None) -> set[date]:
 
     cache_path = path or _DEFAULT_CACHE_PATH
 
-    # Try loading from cache
+    # 尝试从本地缓存加载
     if cache_path.is_file():
         try:
             import pandas as pd
@@ -47,7 +47,7 @@ def _load_calendar(path: Path | None = None) -> set[date]:
         except Exception as exc:
             logger.warning("failed to load trade calendar cache: %s", exc)
 
-    # Try fetching from akshare
+    # 尝试从 akshare 拉取
     try:
         import akshare
         df = akshare.tool_trade_date_hist_sina()
@@ -55,7 +55,7 @@ def _load_calendar(path: Path | None = None) -> set[date]:
         if dates:
             _calendar_dates = dates
             _calendar_loaded = True
-            # Save cache
+            # 保存到本地缓存
             cache_path.parent.mkdir(parents=True, exist_ok=True)
             df.to_csv(cache_path, index=False, encoding="utf-8")
             logger.info("fetched and cached %d trading dates from akshare", len(dates))
@@ -63,7 +63,7 @@ def _load_calendar(path: Path | None = None) -> set[date]:
     except Exception as exc:
         logger.warning("failed to fetch trade calendar from akshare: %s", exc)
 
-    # Fallback: empty set, caller will use weekday heuristic
+    # 降级：空集合，调用方使用工作日启发式判断
     _calendar_dates = set()
     _calendar_loaded = True
     return _calendar_dates
@@ -73,20 +73,19 @@ def _ensure_calendar(path: Path | None = None) -> set[date]:
     return _load_calendar(path)
 
 
-# ── public API ────────────────────────────────────────────────────────
+# ── 公开 API ────────────────────────────────────────────────────────
 
 def is_trading_day(d: date | datetime, *, cache_path: Path | None = None) -> bool:
-    """Return True if *d* is an A-share trading day.
+    """判断 *d* 是否为 A 股交易日。
 
-    Uses the real SSE/SZSE holiday calendar when available; falls back to
-    weekday-only check (Mon-Fri) if the calendar cache is empty.
+    优先使用真实节假日日历；缓存为空时降级为周一至周五判断。
     """
     if isinstance(d, datetime):
         d = d.date()
     calendar = _ensure_calendar(cache_path)
     if calendar:
         return d in calendar
-    # Fallback: assume Mon-Fri are trading days
+    # 降级：假设周一至周五为交易日
     return d.weekday() < 5
 
 
@@ -95,7 +94,7 @@ def latest_trading_day(
     *,
     cache_path: Path | None = None,
 ) -> date:
-    """Return the latest trading day on or before *before* (default: today)."""
+    """返回 *before* 当天及之前最近的交易日（默认：今天）."""
     if before is None:
         before = date.today()
     if isinstance(before, datetime):

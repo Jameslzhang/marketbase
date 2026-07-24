@@ -1,4 +1,4 @@
-"""Objective data-quality checks for live market snapshots."""
+"""客观数据质量检查 —— 针对实时行情快照."""
 
 from __future__ import annotations
 
@@ -33,9 +33,9 @@ _CN_LUNCH_END = clock_time(13, 0)
 
 
 def _cn_trading_status(observed_at: datetime) -> str:
-    """Determine trading status for a given timestamp.
+    """判断给定时间戳所属的交易状态。
 
-    Returns one of: 'live_session', 'lunch_break', 'post_close', 'pre_open', 'non_trading_day'.
+    返回: 'live_session' | 'lunch_break' | 'post_close' | 'pre_open' | 'non_trading_day'
     """
     local = observed_at.astimezone(timezone(timedelta(hours=8)))
     if local.weekday() >= 5:
@@ -55,9 +55,9 @@ def _quote_freshness(
     observed_at: datetime,
     trading_status: str,
 ) -> tuple[str, str]:
-    """Classify a single quote row.
+    """分类单条行情数据的新鲜度。
 
-    Returns (freshness_status, quote_status).
+    返回 (freshness_status, quote_status)。
     freshness_status: 'current' | 'stale' | 'unknown'
     quote_status: 'intraday' | 'final' | 'historical' | 'unknown'
     """

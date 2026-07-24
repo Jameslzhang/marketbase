@@ -1,4 +1,7 @@
-"""Neutral, presentation-independent technical indicators."""
+"""中性技术指标 —— 纯数学计算，不含方向标签或信号分。
+
+输出指标包括：MA(5/10/20/60/120/250)、RSI(14)、MACD(DIF/DEA/Hist)、ATR(14)。
+"""
 
 from __future__ import annotations
 
@@ -33,10 +36,10 @@ def compute_daily_indicators(
     calculated_at: datetime | None = None,
     trading_date: str | None = None,
 ) -> dict[str, object]:
-    """Compute neutral indicators from daily OHLCV data.
+    """基于日线 OHLCV 数据计算中性指标。
 
-    When *trading_date* is provided (ISO date string), rows on or after that
-    date are excluded so indicators only reflect complete trading days.
+    提供 *trading_date*（ISO 日期字符串）时，排除该日期及之后的数据，
+    确保指标仅反映已完成的交易日。
     """
     rows = int(len(frame))
     result: dict[str, object] = {key: None for key in _OUTPUT_KEYS}
@@ -49,7 +52,7 @@ def compute_daily_indicators(
     df = frame.copy()
     if "date" in df.columns:
         dates = pd.to_datetime(df["date"], errors="coerce")
-        # Truncate to complete trading days only
+        # 截断到已完成交易日（排除当日未完成数据）
         if trading_date:
             cutoff = pd.Timestamp(trading_date)
             keep_mask = dates < cutoff
@@ -58,7 +61,7 @@ def compute_daily_indicators(
                 result["truncated_to"] = int(keep_mask.sum())
             df = df.loc[keep_mask].copy()
             dates = dates.loc[keep_mask]
-        # Keep at most 250 most recent complete trading days for stable indicators
+        # 最多保留最近 250 个完整交易日以确保指标稳定
         if len(df) > 250:
             df = df.tail(250).reset_index(drop=True)
             dates = dates.tail(250).reset_index(drop=True)
@@ -89,7 +92,7 @@ def compute_daily_indicators(
 
 
 def compute_vwap(frame: pd.DataFrame) -> float | None:
-    """Compute volume-weighted average price without guessing volume units."""
+    """计算成交量加权平均价格（VWAP），不猜测成交量单位."""
     if frame.empty or not {"volume", "amount"}.issubset(frame.columns):
         return None
     volume = pd.to_numeric(frame["volume"], errors="coerce")

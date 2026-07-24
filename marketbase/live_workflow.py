@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Three-market live acquisition, BSE fallback, and raw minute rows."""
+"""三市实时行情获取、北交所兜底与原始分钟数据行."""
 
 from __future__ import annotations
 

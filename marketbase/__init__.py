@@ -1,4 +1,4 @@
-"""Objective A-share market data collection APIs."""
+"""客观 A 股市场数据采集 API."""
 
 from marketbase.classify import build_classification_map
 from marketbase.daily import daily_source_health_snapshot, fetch_daily_history

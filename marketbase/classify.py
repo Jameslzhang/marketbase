@@ -1,12 +1,12 @@
-"""Fact-only industry, concept, and supply-chain classification mapping.
+"""纯事实的行业、概念和产业链分类映射。
 
-Source CSV (read-only, manually maintained):
-  classification_source.csv — columns: code,name,industry,concepts,supply_chain,source,updated_at
+源 CSV（只读，人工维护）：
+  classification_source.csv —— 列：code,name,industry,concepts,supply_chain,source,updated_at
 
-Output CSV (program-generated, never overwrites source):
-  classification_map.csv — merged result of snapshot × source
-  
-The source CSV is NEVER written by this module. It is a human-curated reference.
+输出 CSV（程序生成，绝不覆盖源文件）：
+  classification_map.csv —— 快照 × 源文件的合并结果
+
+源 CSV 绝不被本模块写入，它是人工维护的参考数据。
 """
 
 from __future__ import annotations
@@ -39,7 +39,7 @@ def build_classification_map(
     existing_map: pd.DataFrame | None = None,
     supply_chain_path: str | Path | None = None,
 ) -> tuple[pd.DataFrame, dict[str, object]]:
-    """Build a stable, source-labelled fact mapping without inference."""
+    """构建稳定的、带来源标签的纯事实映射，不做任何推断."""
     if not isinstance(snapshot, pd.DataFrame):
         raise TypeError("snapshot must be a pandas DataFrame")
 

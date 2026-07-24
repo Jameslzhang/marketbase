@@ -1,4 +1,4 @@
-"""Objective real-time market snapshot collection."""
+"""客观实时行情快照采集."""
 
 from __future__ import annotations
 
@@ -50,7 +50,7 @@ _MARKET_ORDER = {"sh": 0, "sz": 1, "bj": 2}
 
 @dataclass(frozen=True)
 class MarketCollectionResult:
-    """A normalized current snapshot plus its objective collection evidence."""
+    """标准化快照及其客观采集证据."""
 
     frame: pd.DataFrame
     audit: dict[str, object]
@@ -67,10 +67,7 @@ def collect_market_snapshot(
     reference_fetcher: Callable[[], pd.DataFrame] | None = None,
     min_rows: int = 1000,
 ) -> MarketCollectionResult:
-    """Collect SH/SZ mainstream markets, then independently collect BSE.
-
-    BSE failure never blocks SH/SZ output.
-    """
+    """先采集沪深市场，再独立采集北交所。北交所失败不阻断沪深输出."""
     observed_at = now or datetime.now().astimezone()
     if observed_at.tzinfo is None:
         observed_at = observed_at.astimezone()

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Shared guardrails for unstable external data-source calls."""
+"""不稳定的外部数据源调用的共享保护机制."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ T = TypeVar("T")
 
 
 class SourceCallTimeout(TimeoutError):
-    """Raised when a source wrapper exceeds MarketBase's caller-side timeout."""
+    """数据源调用超过 MarketBase 调用方超时时抛出."""
 
 
 def parse_source_timeout_seconds(

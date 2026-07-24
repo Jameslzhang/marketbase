@@ -1,8 +1,8 @@
-"""Local volume_ratio computation from snapshot cumulative volume + daily history.
+"""本地量比计算 —— 基于快照累计成交量 + 日线历史。
 
-Does NOT download minute data — uses only the snapshot's cumulative volume and
-the daily cache's last 5 trading-day volumes.  Minute data remains reserved for
-Codex-specified stock VWAP / minute-chart requests.
+不下载分钟数据 —— 仅使用快照中的累计成交量和日线缓存中
+最近 5 个交易日的成交量。分钟数据仅供 Codex 指定的个股
+VWAP / 分钟图请求使用。
 """
 
 from __future__ import annotations
@@ -14,6 +14,7 @@ from pathlib import Path
 import pandas as pd
 
 
+# 交易时段常量
 _CN_TRADING_MINUTES = 240  # 9:30-11:30 + 13:00-15:00
 _CN_SESSION_START = clock_time(9, 30)
 _CN_LUNCH_START = clock_time(11, 30)
@@ -23,7 +24,7 @@ _VOLUME_RATIO_WINDOW = 5
 
 
 def elapsed_trade_minutes(observed_at: datetime) -> int:
-    """Return the number of completed trading minutes as of *observed_at*."""
+    """返回 *observed_at* 时刻已完成的交易分钟数."""
     from marketbase.calendar import is_trading_day
 
     local = observed_at.astimezone(timezone(timedelta(hours=8)))
