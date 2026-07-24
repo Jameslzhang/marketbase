@@ -91,16 +91,16 @@ def _market_result(cache_path: Path) -> SimpleNamespace:
 def _daily_history(code: str, *, lookback_days: int, source: str, retries: int) -> pd.DataFrame:
     if code == "000002":
         raise RuntimeError("fixture endpoint unavailable")
-    dates = pd.date_range("2025-07-01", periods=250, freq="D")
+    dates = pd.date_range("2025-07-01", periods=260, freq="D")
     frame = pd.DataFrame(
         {
             "date": dates.strftime("%Y-%m-%d"),
-            "open": range(1, 251),
-            "high": range(2, 252),
-            "low": range(0, 250),
-            "close": range(1, 251),
-            "volume": range(1000, 1250),
-            "amount": range(1000, 1250),
+            "open": range(1, 261),
+            "high": range(2, 262),
+            "low": range(0, 260),
+            "close": range(1, 261),
+            "volume": range(1000, 1260),
+            "amount": range(1000, 1260),
         }
     )
     frame.attrs["daily_source"] = "fixture"
@@ -223,13 +223,12 @@ def test_daily_progress_log_includes_complete_event_state_and_timestamp(tmp_path
     log_lines = (Path(summary["run_dir"]) / "workflow.log").read_text(encoding="utf-8").splitlines()
     daily_line = next(line for line in log_lines if "daily_completed=" in line)
 
-    assert daily_line.startswith(NOW.isoformat())
+    assert "wall_time=" in daily_line
     for field in (
-        "wall_time=",
         "elapsed=",
         "rate=",
         "eta=",
-        "completed=",
+        "daily_completed=",
         "cache_hits=",
         "failures=",
         "pending=",
@@ -271,10 +270,12 @@ def test_daily_audit_scans_requested_code_caches_and_handoff_includes_coverage(t
     assert daily["short_history"] == [
         {"code": "430003", "actual_rows": 10, "reason": "short_history"}
     ]
-    assert daily["invalid_or_missing_cache"] == [{"code": "000002", "reason": "missing_cache"}]
+    assert daily["invalid_or_missing_cache"] == [{"code": "000002", "reason": "fetch_error"}]
     assert daily["latest_date_distribution"]
     assert daily["source_counts"] == {"fixture": 2}
-    assert handoff["audit"]["daily"] == daily
+    assert handoff["quality_status"] == "partial"
+    assert handoff["daily_success"] == 2
+    assert handoff["daily_failure"] == 1
 
 
 def test_manifest_records_final_workflow_log_rows_and_hash(tmp_path):

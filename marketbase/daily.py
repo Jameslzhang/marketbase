@@ -368,7 +368,7 @@ def _fetch_daily_tencent(code: str, *, lookback_days: int) -> pd.DataFrame:
             "close": row[2],
             "high": row[3],
             "low": row[4],
-            "volume": row[5],
+            "volume": float(row[5]) * 100 if row[5] else 0.0,  # 手 → 股
             "amount": row[6] if len(row) > 6 else pd.NA,
         })
     if not normalized_rows:

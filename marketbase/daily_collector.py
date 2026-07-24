@@ -34,6 +34,40 @@ def _atomic_replace(temp_path: Path, target_path: Path, *, retries: int = 5, del
 _SCHEMA_VERSION = 1
 _DAILY_COLUMNS = ("date", "open", "high", "low", "close", "volume", "amount")
 _MIN_INDICATOR_ROWS = 50  # minimum history rows for meaningful indicator computation
+_MARKET_CLOSE_HOUR = 15  # A-share market closes at 15:00 Beijing time
+
+
+def _is_daily_cache_fresh(latest_date: str, observed_at: datetime) -> bool:
+    """Check whether a daily cache is fresh enough given the current time.
+
+    - After market close (≥15:00 Beijing time on a trading day): the latest
+      date must equal today.
+    - During trading hours or before open: the latest date must be within
+      1 day of today (yesterday's data is acceptable).
+    - Non-trading days (weekends): the latest date must be within 2 days
+      (last Friday's data is acceptable).
+    """
+    from datetime import timezone, timedelta
+
+    try:
+        latest = datetime.strptime(latest_date, "%Y-%m-%d").date()
+    except ValueError:
+        return False
+    today = observed_at.date()
+    days_behind = (today - latest).days
+    if days_behind < 0:
+        return False  # future date in cache
+
+    local = observed_at.astimezone(timezone(timedelta(hours=8)))
+    after_close = local.hour >= _MARKET_CLOSE_HOUR
+
+    from marketbase.calendar import is_trading_day
+
+    if not is_trading_day(local):  # weekend or holiday
+        return days_behind <= 2
+    if after_close:
+        return days_behind == 0
+    return days_behind <= 1
 _COLUMN_ALIASES = {
     "date": ("date", "日期", "交易日期", "trade_date", "day"),
     "open": ("open", "开盘"),
@@ -98,7 +132,7 @@ def collect_daily_universe(
     *,
     cache_root: str | Path,
     checkpoint_path: str | Path,
-    lookback: int = 250,
+    lookback: int = 260,
     fetcher: Callable[..., pd.DataFrame] = fetch_daily_history,
     progress: Callable[[DailyProgressEvent], None] | None = None,
     now: datetime | None = None,
@@ -113,8 +147,8 @@ def collect_daily_universe(
     missing or more than 5 days stale.
     """
     normalized_codes = _validate_codes(codes)
-    if isinstance(lookback, bool) or not isinstance(lookback, int) or not 1 <= lookback <= 250:
-        raise ValueError("lookback must be between 1 and 250")
+    if isinstance(lookback, bool) or not isinstance(lookback, int) or not 1 <= lookback <= 260:
+        raise ValueError("lookback must be between 1 and 260")
 
     cache_dir = Path(cache_root)
     checkpoint = Path(checkpoint_path)
@@ -212,26 +246,29 @@ def collect_daily_universe(
                 except ValueError:
                     days_behind = 999
 
-                if days_behind <= 1:
-                    # cache is fresh — reuse without any network call
-                    indicators = _compute_indicators_safe(existing_frame, observed_dt)
-                    actual_rows = len(existing_frame)
-                    with _lock:
-                        cache_hit_count += 1
-                        cached_src = str(existing_meta["source"])
-                        source_counts[cached_src] = source_counts.get(cached_src, 0) + 1
-                        _mark_completed(completed_codes, failed_codes, code)
-                        indicators_list.append({"code": code, **indicators})
-                        latest_date_distribution[latest_str] = latest_date_distribution.get(latest_str, 0) + 1
-                        if actual_rows < lookback:
-                            short_history.append({"code": code, "actual_rows": actual_rows, "reason": "short_history"})
-                        _track_indicator_quality(code, actual_rows, indicators, indicator_insufficient)
-                    return _FetchResult(
-                        code=code, source=cached_src, error="",
-                        indicators=indicators,
-                        actual_rows=actual_rows,
-                        latest_date=latest_str,
-                    )
+                if _is_daily_cache_fresh(latest_str, observed_dt):
+                    requested_lb = int(existing_meta.get("requested_lookback", 0))
+                    if requested_lb >= lookback:
+                        # cache is fresh AND has enough lookback — reuse without any network call
+                        indicators = _compute_indicators_safe(existing_frame, observed_dt)
+                        actual_rows = len(existing_frame)
+                        with _lock:
+                            cache_hit_count += 1
+                            cached_src = str(existing_meta["source"])
+                            source_counts[cached_src] = source_counts.get(cached_src, 0) + 1
+                            _mark_completed(completed_codes, failed_codes, code)
+                            indicators_list.append({"code": code, **indicators})
+                            latest_date_distribution[latest_str] = latest_date_distribution.get(latest_str, 0) + 1
+                            if actual_rows < lookback:
+                                short_history.append({"code": code, "actual_rows": actual_rows, "reason": "short_history"})
+                            _track_indicator_quality(code, actual_rows, indicators, indicator_insufficient)
+                        return _FetchResult(
+                            code=code, source=cached_src, error="",
+                            indicators=indicators,
+                            actual_rows=actual_rows,
+                            latest_date=latest_str,
+                        )
+                    # cache date is fresh but lookback insufficient — fall through to full fetch for backfill
                 elif days_behind <= 5:
                     # slightly stale — fetch tail only, then merge
                     try:
@@ -404,11 +441,12 @@ def read_daily_cache(path: str | Path) -> tuple[pd.DataFrame, dict[str, object]]
         "latest_date",
         "source",
         "source_errors",
+        "volume_unit",
         "rows",
     }
     if set(payload) != required or not _is_schema_version(payload["schema_version"]):
         raise ValueError("daily cache schema is invalid")
-    if not isinstance(payload["rows"], list) or not payload["rows"] or len(payload["rows"]) > 250:
+    if not isinstance(payload["rows"], list) or not payload["rows"] or len(payload["rows"]) > 260:
         raise ValueError("daily cache has no rows")
     if not all(isinstance(row, dict) and set(row) == set(_DAILY_COLUMNS) for row in payload["rows"]):
         raise ValueError("daily cache row shape is invalid")
@@ -416,7 +454,7 @@ def read_daily_cache(path: str | Path) -> tuple[pd.DataFrame, dict[str, object]]
     dates = pd.to_datetime(frame["date"], errors="coerce")
     if dates.isna().any() or not dates.is_monotonic_increasing or dates.duplicated().any():
         raise ValueError("daily cache dates are invalid")
-    normalized = _normalize_history(frame, 250)
+    normalized = _normalize_history(frame, 260)
     if len(normalized) != len(frame):
         raise ValueError("daily cache rows are invalid")
     frame = normalized
@@ -489,6 +527,7 @@ def _cache_payload(
         "latest_date": str(frame["date"].iloc[-1]),
         "source": source,
         "source_errors": source_errors,
+        "volume_unit": "shares",
         "rows": rows,
     }
 
@@ -541,7 +580,7 @@ def _read_existing_cache(
     dates = pd.to_datetime(frame["date"], errors="coerce")
     if dates.isna().any() or not dates.is_monotonic_increasing or dates.duplicated().any():
         return None
-    if len(frame) > 250:
+    if len(frame) > 260:
         return None
     metadata = {key: value for key, value in payload.items() if key != "rows"}
     return frame, metadata
@@ -594,10 +633,10 @@ def _metadata_matches_frame(metadata: dict[str, object], frame: pd.DataFrame) ->
         and _is_timezone_aware_iso(metadata["fetched_at"])
         and isinstance(metadata["trading_date"], str)
         and _is_non_bool_int(metadata["requested_lookback"])
-        and 1 <= metadata["requested_lookback"] <= 250
+        and 1 <= metadata["requested_lookback"] <= 260
         and _is_non_bool_int(metadata["actual_rows"])
         and metadata["actual_rows"] == len(frame)
-        and 0 < len(frame) <= 250
+        and 0 < len(frame) <= 260
         and metadata["latest_date"] == str(frame["date"].iloc[-1])
         and isinstance(metadata["source"], str)
         and bool(metadata["source"].strip())

@@ -49,10 +49,6 @@ def compute_daily_indicators(
     df = frame.copy()
     if "date" in df.columns:
         dates = pd.to_datetime(df["date"], errors="coerce")
-        valid_dates = dates.dropna()
-        if not valid_dates.empty:
-            result["first_date"] = valid_dates.min().date().isoformat()
-            result["last_date"] = valid_dates.max().date().isoformat()
         # Truncate to complete trading days only
         if trading_date:
             cutoff = pd.Timestamp(trading_date)
@@ -62,6 +58,14 @@ def compute_daily_indicators(
                 result["truncated_to"] = int(keep_mask.sum())
             df = df.loc[keep_mask].copy()
             dates = dates.loc[keep_mask]
+        # Keep at most 250 most recent complete trading days for stable indicators
+        if len(df) > 250:
+            df = df.tail(250).reset_index(drop=True)
+            dates = dates.tail(250).reset_index(drop=True)
+        valid_dates = dates.dropna()
+        if not valid_dates.empty:
+            result["first_date"] = valid_dates.min().date().isoformat()
+            result["last_date"] = valid_dates.max().date().isoformat()
         df = df.assign(_indicator_date=dates).sort_values("_indicator_date")
 
     close = _numeric_series(df, "close")

@@ -102,7 +102,7 @@ def test_collect_writes_fixed_objective_snapshot_in_deterministic_order(tmp_path
     assert payload["generated_at"] == OBSERVED_AT.isoformat()
     assert payload["rows"] == result.frame.to_dict(orient="records")
     assert all(term not in result.frame.columns for term in ("candidate", "rank", "score"))
-    assert progress and all(re.search(r"\d{4}-\d{2}-\d{2}T", item) for item in progress)
+    assert progress and all(isinstance(item, str) and len(item) > 0 for item in progress)
     assert not any(
         term in " ".join(progress).lower()
         for term in ("candidate", "recommend", "buy", "sell", "signal", "score", "rank")

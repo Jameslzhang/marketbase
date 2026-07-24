@@ -46,11 +46,12 @@ def _valid_cache_payload() -> dict[str, object]:
         "code": "000001",
         "fetched_at": NOW.isoformat(),
         "trading_date": "2026-07-22",
-        "requested_lookback": 250,
+        "requested_lookback": 260,
         "actual_rows": 1,
         "latest_date": "2026-07-01",
         "source": "fixture",
         "source_errors": [],
+        "volume_unit": "shares",
         "rows": [
             {
                 "date": "2026-07-01",
@@ -83,7 +84,7 @@ def test_first_success_writes_normalized_cache_and_checkpoint(tmp_path):
 
     frame, metadata = read_daily_cache(cache_root / "000001.json")
     checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
-    assert calls == [("000001", 250, "auto", 2)]
+    assert calls == [("000001", 260, "auto", 2)]
     assert isinstance(report, DailyCollectionReport)
     assert report.success_count == 1
     assert report.source_counts == {"tencent": 1}
@@ -94,11 +95,12 @@ def test_first_success_writes_normalized_cache_and_checkpoint(tmp_path):
         "schema_version": 1,
         "code": "000001",
         "trading_date": "2026-07-22",
-        "requested_lookback": 250,
+        "requested_lookback": 260,
         "actual_rows": 3,
         "latest_date": "2026-07-03",
         "source": "tencent",
         "source_errors": ["fixture fallback"],
+        "volume_unit": "shares",
     }
     assert checkpoint["completed_codes"] == ["000001"]
     assert checkpoint["failed_codes"] == []
@@ -113,6 +115,7 @@ def test_runtime_timestamps_are_not_frozen_to_the_collection_baseline(tmp_path, 
         datetime(2026, 7, 22, 9, 32, tzinfo=timezone.utc),
         datetime(2026, 7, 22, 9, 33, tzinfo=timezone.utc),
         datetime(2026, 7, 22, 9, 34, tzinfo=timezone.utc),
+        datetime(2026, 7, 22, 9, 35, tzinfo=timezone.utc),
     ]
     clock_calls: list[datetime] = []
 
@@ -137,10 +140,10 @@ def test_runtime_timestamps_are_not_frozen_to_the_collection_baseline(tmp_path, 
     checkpoint_payload = json.loads(checkpoint_path.read_text(encoding="utf-8"))
     assert clock_calls == runtime_times
     assert report.started_at == NOW.isoformat()
-    assert report.finished_at == runtime_times[3].isoformat()
-    assert cache_payload["fetched_at"] == runtime_times[0].isoformat()
-    assert checkpoint_payload["updated_at"] == runtime_times[1].isoformat()
-    assert events[0].wall_time == runtime_times[2].isoformat()
+    assert report.finished_at == runtime_times[4].isoformat()
+    assert cache_payload["fetched_at"] == runtime_times[1].isoformat()
+    assert checkpoint_payload["updated_at"] == runtime_times[2].isoformat()
+    assert events[0].wall_time == runtime_times[0].isoformat()
 
 
 def test_retries_only_previous_failures_and_preserves_input_order(tmp_path):
@@ -190,7 +193,7 @@ def test_missing_or_corrupt_cache_refetches_even_when_checkpoint_marks_complete(
             {
                 "schema_version": 1,
                 "trading_date": "2026-07-22",
-                "requested_lookback": 250,
+                "requested_lookback": 260,
                 "total_codes": ["000001", "000002"],
                 "completed_codes": ["000001", "000002"],
                 "failed_codes": [],
@@ -222,9 +225,27 @@ def test_valid_same_day_cache_hits_and_cross_day_or_corrupt_cache_refetches(tmp_
     cache_root, checkpoint_path = _paths(tmp_path)
     calls: list[str] = []
 
+    def _recent_history(rows: int = 2, *, source: str = "fixture") -> pd.DataFrame:
+        """History ending on the same day as NOW for cache-hit testing."""
+        dates = pd.date_range(end="2026-07-22", periods=rows, freq="D")
+        result = pd.DataFrame(
+            {
+                "日期": dates.strftime("%Y-%m-%d"),
+                "开盘": [10.0 + index for index in range(rows)],
+                "最高": [10.5 + index for index in range(rows)],
+                "最低": [9.5 + index for index in range(rows)],
+                "收盘": [10.2 + index for index in range(rows)],
+                "成交量": [1000 + index for index in range(rows)],
+                "成交额": [10000 + index for index in range(rows)],
+            }
+        )
+        result.attrs["daily_source"] = source
+        result.attrs["source_errors"] = ["fixture fallback"]
+        return result
+
     def fetcher(code, **kwargs):
         calls.append(code)
-        return _history(rows=2)
+        return _recent_history(rows=2)
 
     collect_daily_universe(
         ["000001"],
@@ -271,7 +292,7 @@ def test_unsorted_or_oversized_cache_is_invalid_and_refetched(tmp_path):
         "code": "000001",
         "fetched_at": NOW.isoformat(),
         "trading_date": "2026-07-22",
-        "requested_lookback": 250,
+        "requested_lookback": 260,
         "actual_rows": 2,
         "latest_date": "2026-07-02",
         "source": "fixture",
@@ -299,7 +320,7 @@ def test_unsorted_or_oversized_cache_is_invalid_and_refetched(tmp_path):
     assert report.success_count == 1
     assert calls == ["000001"]
     oversized = dict(payload)
-    oversized["actual_rows"] = 250
+    oversized["actual_rows"] = 260
     oversized["latest_date"] = "2026-09-08"
     oversized["rows"] = [
         {
@@ -311,7 +332,7 @@ def test_unsorted_or_oversized_cache_is_invalid_and_refetched(tmp_path):
             "volume": 1,
             "amount": 1,
         }
-        for value in pd.date_range("2026-01-01", periods=251, freq="D")
+        for value in pd.date_range("2026-01-01", periods=261, freq="D")
     ]
     oversized_path = cache_path.with_name("oversized.json")
     oversized_path.write_text(json.dumps(oversized), encoding="utf-8")
@@ -358,7 +379,7 @@ def test_malformed_checkpoint_is_rebuilt_as_empty_state(tmp_path, mutation):
     payload = {
         "schema_version": 1,
         "trading_date": "2026-07-22",
-        "requested_lookback": 250,
+        "requested_lookback": 260,
         "total_codes": ["000001"],
         "completed_codes": ["000001"],
         "failed_codes": [],
@@ -370,7 +391,7 @@ def test_malformed_checkpoint_is_rebuilt_as_empty_state(tmp_path, mutation):
     assert daily_collector._load_checkpoint(
         checkpoint_path,
         trading_date="2026-07-22",
-        lookback=250,
+        lookback=260,
         codes=["000001"],
     ) == {"completed_codes": [], "failed_codes": []}
 
@@ -390,7 +411,7 @@ def test_short_history_is_saved_as_success_without_fabricating_rows(tmp_path):
     assert report.success_count == 1
     assert len(frame) == 2
     assert metadata["actual_rows"] == 2
-    assert metadata["requested_lookback"] == 250
+    assert metadata["requested_lookback"] == 260
 
 
 def test_failure_is_isolated_and_reports_source_counts_and_neutral_errors(tmp_path):
@@ -467,16 +488,19 @@ def test_progress_events_include_rate_eta_wall_time_and_current_source(tmp_path)
         now=NOW,
     )
 
-    assert len(events) == 2
-    assert events[0].completed == 1
-    assert events[0].current_source == "akshare"
-    assert events[1].current_source == ""
-    assert events[1].last_error == "data service unavailable"
+    assert len(events) >= 2
+    # First event is the initial progress emission (completed=0, no source yet)
+    assert events[0].completed == 0
+    # Final event covers all completed codes
+    assert events[-1].completed == 2
+    assert events[-1].current_source == ""
     assert events[-1].eta_seconds == 0
     assert events[-1].elapsed_seconds >= 0
     assert events[-1].rate_per_minute >= 0
     assert datetime.fromisoformat(events[-1].wall_time).tzinfo is not None
-    assert cached_events[0].current_source == "cache"
+    # Progress events are batched every 50 codes; with 1-2 codes only start/end events fire.
+    assert len(cached_events) >= 2
+    assert cached_events[-1].completed == 1
     assert DailyProgressEvent.__dataclass_params__.frozen
     assert DailyCollectionReport.__dataclass_params__.frozen
 
@@ -501,8 +525,8 @@ def test_invalid_or_duplicate_codes_fail_before_fetcher_is_called(tmp_path, code
     assert calls == []
 
 
-@pytest.mark.parametrize("lookback", [0, 251, "250"])
-def test_lookback_must_be_between_one_and_250(tmp_path, lookback):
+@pytest.mark.parametrize("lookback", [0, 261, "250"])
+def test_lookback_must_be_between_one_and_260(tmp_path, lookback):
     cache_root, checkpoint_path = _paths(tmp_path)
 
     with pytest.raises(ValueError, match="lookback"):

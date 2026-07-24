@@ -137,6 +137,35 @@ def collect_market_snapshot(
     if merged.empty:
         raise RuntimeError("live snapshot contains no usable market rows")
 
+    # --- Preserve stocks from previous snapshot that disappeared (suspended / zero-volume) ---
+    suspended_codes: list[str] = []
+    if not cached_reference.empty and "code" in cached_reference.columns:
+        prev_codes = set(cached_reference["code"].astype(str).str.strip().str.zfill(6))
+        curr_codes = set(merged["code"].astype(str).str.strip().str.zfill(6))
+        missing_codes = prev_codes - curr_codes
+        if missing_codes:
+            missing_rows = cached_reference.loc[
+                cached_reference["code"].astype(str).str.strip().str.zfill(6).isin(missing_codes)
+            ].copy()
+            missing_rows["code"] = missing_rows["code"].astype(str).str.strip().str.zfill(6)
+            missing_rows["observed_at"] = observed_at.isoformat()
+            for field in _NUMERIC_FIELDS:
+                if field not in missing_rows.columns:
+                    missing_rows[field] = None
+            missing_rows["volume"] = 0.0
+            missing_rows["quote_time"] = ""
+            missing_rows["source"] = missing_rows.get("source", "suspended")
+            if "market" not in missing_rows.columns:
+                missing_rows["market"] = missing_rows["code"].map(_market_for_code)
+            for field in OUTPUT_FIELDS:
+                if field not in missing_rows.columns:
+                    missing_rows[field] = None
+            missing_rows = missing_rows.loc[:, OUTPUT_FIELDS]
+            merged = pd.concat([merged, missing_rows], ignore_index=True, sort=False)
+            merged = merged.drop_duplicates("code", keep="first").reset_index(drop=True)
+            suspended_codes = sorted(missing_codes)
+            _emit(progress, observed_at, f"保留停牌/无成交股票 {len(suspended_codes)} 只")
+
     provider_errors = _provider_errors(acquisition, captured.get("reference"))
     provider_errors.extend(str(e) for e in bse_audit.get("errors", []) if str(e))
     audit = audit_market_snapshot(
@@ -150,6 +179,7 @@ def collect_market_snapshot(
         ),
     )
     audit["bse_audit"] = bse_audit
+    audit["suspended_codes"] = suspended_codes
 
     report = {
         key: value
@@ -163,6 +193,7 @@ def collect_market_snapshot(
             "coverage_gaps": audit["coverage_gaps"],
             "provider_errors": audit["provider_errors"],
             "bse_audit": bse_audit,
+            "suspended_codes": suspended_codes,
         }
     )
     _emit(progress, observed_at, f"获取到 {len(merged)} 条行情")

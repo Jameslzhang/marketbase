@@ -230,7 +230,7 @@ def fetch_tencent_bse_snapshot(
                 "change_pct": _quote_float(fields, 32),
                 "high": _quote_float(fields, 33),
                 "low": _quote_float(fields, 34),
-                "volume": _quote_float(fields, 36),
+                "volume": _quote_float(fields, 36) * 100,  # Tencent BSE returns 手, convert to 股
                 "amount": _quote_amount(fields),
                 "turnover_rate": _quote_float(fields, 38),
                 "volume_ratio": float("nan"),
@@ -271,7 +271,8 @@ def _quote_time(fields: list[str]) -> str:
     value = fields[30].strip()
     if len(value) != 14 or not value.isdigit():
         return value
-    return f"{value[8:10]}:{value[10:12]}:{value[12:14]}"
+    # Preserve full YYYYMMDDHHMMSS as ISO-like timestamp
+    return f"{value[0:4]}-{value[4:6]}-{value[6:8]}T{value[8:10]}:{value[10:12]}:{value[12:14]}"
 
 
 def build_live_snapshot(
@@ -427,10 +428,8 @@ def _normalize_codes(values: pd.Series) -> pd.Series:
 
 
 def _is_cn_market_session(value: datetime) -> bool:
-    if value.weekday() >= 5:
-        return False
-    local_time = value.timetz().replace(tzinfo=None)
-    return clock_time(9, 15) <= local_time <= clock_time(15, 30)
+    from marketbase.calendar import is_cn_market_session
+    return is_cn_market_session(value)
 
 
 # ── BSE (北交所) standalone snapshot collection ──────────────────────────
@@ -609,7 +608,7 @@ def _fetch_tencent_bse(
                 "name": fields[1].strip() if len(fields) > 1 else "",
                 "price": price,
                 "change_pct": _quote_float(fields, 32),
-                "volume": _quote_float(fields, 36),
+                "volume": _quote_float(fields, 36) * 100,  # Tencent BSE returns 手, convert to 股
                 "amount": _quote_amount(fields),
                 "turnover_rate": _quote_float(fields, 38),
                 "volume_ratio": float("nan"),
@@ -671,7 +670,7 @@ def _fetch_sina_bse(
                 "name": fields[0].strip() if fields else "",
                 "price": price,
                 "change_pct": 0.0 if len(fields) <= 4 else _pct_from_sina(fields),
-                "volume": _quote_float(fields, 8),
+                "volume": _quote_float(fields, 8) * 100,  # Sina BSE returns 手, convert to 股
                 "amount": _quote_float(fields, 9),
                 "turnover_rate": _quote_float(fields, 10) if len(fields) > 10 else 0.0,
                 "volume_ratio": float("nan"),

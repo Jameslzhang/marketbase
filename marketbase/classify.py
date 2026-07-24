@@ -178,7 +178,7 @@ def _load_supply_chain_rows(
         errors.append(f"supply_chain_file_unreadable:not_csv:{path}")
         return {}
     try:
-        frame = pd.read_csv(path, dtype=str, encoding="utf-8", keep_default_na=False)
+        frame = pd.read_csv(path, dtype=str, encoding="utf-8", keep_default_na=False, comment="#")
     except (OSError, UnicodeError, ValueError, pd.errors.ParserError) as exc:
         errors.append(f"supply_chain_file_unreadable:{path}:{type(exc).__name__}")
         return {}

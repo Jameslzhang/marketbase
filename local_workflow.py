@@ -31,20 +31,23 @@ except ImportError:  # pragma: no cover - exercised through the Windows lock bra
 
 import pandas as pd
 
+from marketbase.classification_collector import collect_classification
 from marketbase.classify import build_classification_map
 from marketbase.daily import fetch_daily_history
 from marketbase.daily_collector import (
     DailyCollectionReport,
     DailyProgressEvent,
+    _MIN_INDICATOR_ROWS,
     collect_daily_universe,
 )
 from marketbase.data_request import load_data_request, write_data_response
 from marketbase.market_collector import MarketCollectionResult, collect_market_snapshot
 from marketbase.minute_collector import collect_requested_data
+from marketbase.security_master import collect_security_master
 from marketbase.volume_ratio import compute_volume_ratios_batch
 
 
-_INDICATOR_FIELDS = (
+_INDICATOR_VALUE_FIELDS = (
     "ma5",
     "ma10",
     "ma20",
@@ -57,6 +60,9 @@ _INDICATOR_FIELDS = (
     "macd_hist",
     "atr14",
     "atr14_pct",
+)
+_INDICATOR_FIELDS = (
+    *_INDICATOR_VALUE_FIELDS,
     "input_rows",
     "first_date",
     "last_date",
@@ -137,6 +143,48 @@ def run_collection(
     root = Path(data_root).expanduser().resolve()
     observed_at = _observed_at(now)
     configured = dict(providers or {})
+
+    # --- single-instance process lock ---
+    root.mkdir(parents=True, exist_ok=True)
+    lock_path = root / ".workflow.lock"
+    lock_handle = lock_path.open("a+b")
+    lock_handle.seek(0)
+    acquired = _try_lock_nonblocking(lock_handle)
+    if not acquired:
+        lock_handle.close()
+        print("采集已在运行中（检测到 .workflow.lock），第二个实例退出。", flush=True)
+        sys.exit(0)
+    try:
+        return _run_collection_locked(root, observed_at, configured, progress)
+    finally:
+        _unlock_file(lock_handle)
+        lock_handle.close()
+
+
+def _try_lock_nonblocking(handle: Any) -> bool:
+    """Try to acquire a file lock without blocking. Returns True on success."""
+    if msvcrt is not None:
+        try:
+            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+            return True
+        except OSError:
+            return False
+    if fcntl is not None:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return True
+        except (OSError, BlockingIOError):
+            return False
+    return True  # no locking mechanism available — proceed anyway
+
+
+def _run_collection_locked(
+    root: Path,
+    observed_at: datetime,
+    configured: dict[str, object],
+    progress: Callable[[str], None],
+) -> dict[str, object]:
+    collection_started_at = datetime.now().astimezone().isoformat()
     run_dir = _create_run_directory(root, observed_at)
     log_path = run_dir / "workflow.log"
 
@@ -151,7 +199,8 @@ def run_collection(
     cache_root = root / "cache"
 
     frame, codes, result = _run_market_collection(root, observed_at, emit, configured)
-    indicators_df, daily_report = _run_daily_collection(codes, cache_root, observed_at, emit, configured)
+    bse_codes = set(frame.loc[frame["market"] == "bj", "code"].tolist()) if "market" in frame.columns else set()
+    indicators_df, daily_report = _run_daily_collection(codes, cache_root, observed_at, emit, configured, bse_codes=bse_codes)
     frame = _run_volume_ratio(frame, cache_root, observed_at, emit)
     market_audit, classification, classification_audit = _run_audit_and_classification(
         frame, observed_at, result, root, configured
@@ -183,7 +232,7 @@ def run_collection(
     summary = _write_outputs_and_manifest(
         run_dir, root, observed_at, frame, indicators_df, classification,
         market_audit, classification_audit, result, daily_report, codes,
-        minute_audit,
+        minute_audit, collection_started_at,
     )
     return summary
 
@@ -221,10 +270,26 @@ def main(argv: Sequence[str] | None = None) -> int:
     request_parser = subcommands.add_parser("fulfill-request")
     request_parser.add_argument("--request", type=Path)
     request_parser.add_argument("--response", type=Path)
+    classify_parser = subcommands.add_parser("collect-classify")
+    classify_parser.add_argument("--output", type=Path)
+    master_parser = subcommands.add_parser("refresh-master")
+    master_parser.add_argument("--output", type=Path)
     arguments = parser.parse_args(argv)
     default_root = Path(__file__).resolve().parent / "data" / "daily_runs"
 
     try:
+        if arguments.command == "collect-classify":
+            root = arguments.data_root or default_root
+            output = arguments.output or root / "classification_source.csv"
+            df = collect_classification(output)
+            print(f"分类数据采集完成: {len(df)} 行, {df['industry'].nunique()} 行业")
+            return 0
+        if arguments.command == "refresh-master":
+            root = arguments.data_root or default_root
+            output = arguments.output or root / "cache" / "security_master.csv"
+            df = collect_security_master(output)
+            print(f"证券主表刷新完成: {len(df)} 只股票, {df['market'].nunique()} 市场")
+            return 0
         if arguments.command == "fulfill-request":
             root = arguments.data_root or default_root
             fulfill_request(
@@ -277,6 +342,7 @@ def _run_daily_collection(
     observed_at: datetime,
     emit: Callable[[str], None],
     configured: dict[str, object],
+    bse_codes: set[str] | None = None,
 ) -> tuple[pd.DataFrame, DailyCollectionReport]:
     """Collect daily history for all codes and return indicators DataFrame."""
     daily_fetcher = configured.get("daily_fetcher", fetch_daily_history)
@@ -284,7 +350,7 @@ def _run_daily_collection(
         codes,
         cache_root=cache_root / "daily",
         checkpoint_path=cache_root / "daily_checkpoint.json",
-        lookback=250,
+        lookback=260,
         fetcher=daily_fetcher,
         progress=lambda event: _write_progress_line(_daily_progress_message(event)),
         now=observed_at,
@@ -293,26 +359,57 @@ def _run_daily_collection(
     cache_valid = daily_report.success_count + daily_report.cache_hit_count
     short_history_count = len(daily_report.short_history)
     indicator_count = len(daily_report.indicators)
+    indicator_valid_count = sum(
+        1 for entry in daily_report.indicators
+        if isinstance(entry, dict) and any(
+            entry.get(field) is not None and not (isinstance(entry.get(field), float) and math.isnan(float(entry.get(field))))
+            for field in _INDICATOR_VALUE_FIELDS
+        )
+    )
     indicator_insufficient_count = len(daily_report.indicator_insufficient)
+    bse_set = bse_codes or set()
     bse_short = [
         entry for entry in daily_report.short_history
-        if isinstance(entry, dict) and str(entry.get("code", "")).lstrip("0").startswith(("4", "8", "9"))
+        if isinstance(entry, dict) and str(entry.get("code", "")) in bse_set
     ]
     bse_insufficient = [
         entry for entry in daily_report.indicator_insufficient
-        if isinstance(entry, dict) and str(entry.get("code", "")).lstrip("0").startswith(("4", "8", "9"))
+        if isinstance(entry, dict) and str(entry.get("code", "")) in bse_set
     ]
     emit(f"日线缓存有效 {cache_valid}/{daily_report.total_count}")
     if short_history_count:
         emit(f"历史长度不足 {short_history_count}")
     if bse_short:
         emit(f"北交所历史不足 {len(bse_short)}/{len(bse_short) + len([e for e in daily_report.short_history if e not in bse_short])}（北交所数据源仅返回1根日线）")
-    emit(f"指标可计算 {indicator_count}/{daily_report.total_count}")
+    emit(f"指标可计算 {indicator_valid_count}/{daily_report.total_count}（记录总数{indicator_count}）")
     if indicator_insufficient_count:
         emit(f"指标数据不足 {indicator_insufficient_count}{'（北交所' + str(len(bse_insufficient)) + '只）' if bse_insufficient else ''}")
+    if indicator_valid_count < indicator_count:
+        emit(f"指标全部为空 {indicator_count - indicator_valid_count}（含北交所{bse_indicator_empty}只）" if (bse_indicator_empty := sum(
+            1 for entry in daily_report.indicators
+            if isinstance(entry, dict) and str(entry.get("code", "")) in bse_set
+            and not any(
+                entry.get(field) is not None and not (isinstance(entry.get(field), float) and math.isnan(float(entry.get(field))))
+                for field in _INDICATOR_VALUE_FIELDS
+            )
+        )) else f"指标全部为空 {indicator_count - indicator_valid_count}")
     if daily_report.failure_count:
         emit(f"日线采集失败 {daily_report.failure_count}")
     emit(f"日线耗时{daily_report.elapsed_seconds:.0f}秒")
+    rate = (daily_report.total_count / daily_report.elapsed_seconds * 60) if daily_report.elapsed_seconds > 0 else 0
+    emit(
+        f"daily_completed={cache_valid}/{daily_report.total_count}"
+        f" wall_time={observed_at.isoformat()}"
+        f" elapsed={daily_report.elapsed_seconds:.1f}"
+        f" rate={rate:.0f}/min"
+        f" eta=0"
+        f" cache_hits={daily_report.cache_hit_count}"
+        f" failures={daily_report.failure_count}"
+        f" pending=0"
+        f" current_code="
+        f" current_source="
+        f" last_error="
+    )
     indicators_df = pd.DataFrame(
         daily_report.indicators,
         columns=("code", *_INDICATOR_FIELDS),
@@ -363,6 +460,34 @@ def _run_audit_and_classification(
     return market_audit, classification, classification_audit
 
 
+def _quality_status(
+    market_audit: dict[str, object],
+    daily_report: DailyCollectionReport,
+    bse_codes_set: set[str],
+) -> str:
+    """Return 'pass', 'partial', or 'blocked' based on coverage thresholds."""
+    # Compute market coverage from field_coverage if available, otherwise from total_rows vs field nulls
+    field_coverage = market_audit.get("field_coverage", {})
+    if isinstance(field_coverage, dict) and field_coverage:
+        market_coverage = sum(float(v) for v in field_coverage.values()) / max(len(field_coverage), 1)
+    else:
+        market_coverage = 1.0
+    daily_success = daily_report.success_count + daily_report.cache_hit_count
+    daily_rate = daily_success / max(daily_report.total_count, 1)
+    bse_total = len(bse_codes_set)
+    bse_unavailable = sum(
+        1 for entry in daily_report.short_history
+        if isinstance(entry, dict) and entry.get("code", "") in bse_codes_set
+    )
+    bse_rate = (bse_total - bse_unavailable) / max(bse_total, 1) if bse_total else 1.0
+
+    if market_coverage < 0.5 or daily_rate < 0.5:
+        return "blocked"
+    if market_coverage < 0.95 or daily_rate < 0.95 or (bse_total > 0 and bse_rate < 0.9):
+        return "partial"
+    return "pass"
+
+
 def _write_outputs_and_manifest(
     run_dir: Path,
     root: Path,
@@ -376,14 +501,18 @@ def _write_outputs_and_manifest(
     daily_report: DailyCollectionReport,
     codes: list[str],
     minute_audit: dict[str, object] | None = None,
+    collection_started_at: str | None = None,
 ) -> dict[str, object]:
     """Write all output files, manifest, and latest handoff; return summary."""
+    collection_completed_at = datetime.now().astimezone().isoformat()
     _write_csv_atomic(run_dir / "market_snapshot.csv", frame)
     _write_json_atomic(
         run_dir / "market_snapshot.json",
         {"schema_version": 1, "generated_at": observed_at.isoformat(), "rows": _frame_records(frame)},
     )
-    _write_csv_atomic(run_dir / "daily_indicators.csv", indicators_df)
+    # Sort indicators by code before writing
+    indicators_df_sorted = indicators_df.sort_values("code", ignore_index=True) if not indicators_df.empty else indicators_df
+    _write_csv_atomic(run_dir / "daily_indicators.csv", indicators_df_sorted)
     _write_csv_atomic(run_dir / "classification_map.csv", classification)
     _write_csv_atomic(root / "classification_map.csv", classification)
 
@@ -395,22 +524,58 @@ def _write_outputs_and_manifest(
     daily_audit_payload["errors"] = {code: _neutral_text(error) for code, error in daily_report.errors.items()}
     daily_audit_payload["cache_coverage_count"] = cache_coverage
     daily_audit_payload["cache_coverage_rate"] = cache_coverage / total_codes if total_codes else 0.0
-    daily_audit_payload["short_history"] = daily_report.short_history
-    daily_audit_payload["latest_date_distribution"] = daily_report.latest_date_distribution
-    daily_audit_payload["source_counts"] = daily_report.source_counts
-    daily_audit_payload["invalid_or_missing_cache"] = daily_report.invalid_or_missing_cache
+    # Remove full indicator records to avoid file bloat — keep only counts
+    daily_audit_payload.pop("indicators", None)
     daily_audit = _json_value(daily_audit_payload)
+
+    # --- indicator quality breakdown ---
+    indicator_records = len(daily_report.indicators)
+    indicator_any_valid = sum(
+        1 for entry in daily_report.indicators
+        if isinstance(entry, dict) and any(
+            entry.get(field) is not None and not (isinstance(entry.get(field), float) and math.isnan(float(entry.get(field))))
+            for field in _INDICATOR_VALUE_FIELDS
+        )
+    )
+    indicator_all_valid = sum(
+        1 for entry in daily_report.indicators
+        if isinstance(entry, dict) and all(
+            entry.get(field) is not None and not (isinstance(entry.get(field), float) and math.isnan(float(entry.get(field))))
+            for field in _INDICATOR_VALUE_FIELDS
+        )
+    )
+    indicator_all_empty = indicator_records - indicator_any_valid
+    # BSE codes from market snapshot frame (not prefix-based guessing)
+    bse_codes_set = set(frame.loc[frame["market"] == "bj", "code"].tolist()) if "market" in frame.columns else set()
+    bse_history_unavailable = sorted(
+        c for c in bse_codes_set
+        if c in set(daily_report.errors.keys())
+        or any(
+            entry.get("code") == c and entry.get("actual_rows", 0) < _MIN_INDICATOR_ROWS
+            for entry in daily_report.short_history
+        )
+    )
 
     audit = {
         "schema_version": 1,
         "generated_at": observed_at.isoformat(),
+        "collection_started_at": collection_started_at,
+        "collection_completed_at": collection_completed_at,
+        "quality_status": _quality_status(market_audit, daily_report, bse_codes_set),
         "market": _json_value(market_audit),
         "daily": daily_audit,
         "indicators": {
-            "success_count": len(daily_report.indicators),
-            "failure_count": total_codes - len(daily_report.indicators),
+            "records_generated": indicator_records,
+            "any_valid": indicator_any_valid,
+            "all_valid": indicator_all_valid,
+            "all_empty": indicator_all_empty,
             "insufficient_history_count": len(daily_report.indicator_insufficient),
             "errors": [],
+        },
+        "bse": {
+            "total": len(bse_codes_set),
+            "history_unavailable": bse_history_unavailable,
+            "history_unavailable_count": len(bse_history_unavailable),
         },
         "classification": _json_value(classification_audit),
         "provider_errors": _provider_errors(result, daily_report),
@@ -432,6 +597,8 @@ def _write_outputs_and_manifest(
     manifest = {
         "schema_version": 1,
         "generated_at": observed_at.isoformat(),
+        "collection_started_at": collection_started_at,
+        "collection_completed_at": collection_completed_at,
         "run_dir": str(run_dir),
         "files": files,
         "cache_paths": _cache_paths(root),
@@ -444,6 +611,8 @@ def _write_outputs_and_manifest(
         {
             "schema_version": 1,
             "generated_at": observed_at.isoformat(),
+            "collection_started_at": collection_started_at,
+            "collection_completed_at": collection_completed_at,
             "run_dir": str(run_dir),
             "market_snapshot_path": str((run_dir / "market_snapshot.json").resolve()),
             "daily_indicators_path": str((run_dir / "daily_indicators.csv").resolve()),
@@ -451,13 +620,24 @@ def _write_outputs_and_manifest(
             "data_audit_path": str((run_dir / "data_audit.json").resolve()),
             "manifest_path": str((run_dir / "manifest.json").resolve()),
             "cache_paths": _cache_paths(root),
-            "audit": audit,
+            "quality_status": audit["quality_status"],
+            "market_rows": len(frame),
+            "indicator_rows": indicator_records,
+            "indicator_any_valid": indicator_any_valid,
+            "indicator_all_empty": indicator_all_empty,
+            "bse_total": len(bse_codes_set),
+            "bse_history_unavailable": len(bse_history_unavailable),
+            "daily_success": daily_report.success_count + daily_report.cache_hit_count,
+            "daily_failure": daily_report.failure_count,
+            "cache_hits": daily_report.cache_hit_count,
         },
     )
 
     return {
         "run_dir": str(run_dir),
         "generated_at": observed_at.isoformat(),
+        "collection_started_at": collection_started_at,
+        "collection_completed_at": collection_completed_at,
         "market_rows": len(frame),
         "daily_success": daily_report.success_count + daily_report.cache_hit_count,
         "daily_failure": daily_report.failure_count,
@@ -510,7 +690,7 @@ def _existing_map(root: Path, configured: object) -> pd.DataFrame | None:
     if not path.is_file():
         return None
     try:
-        return pd.read_csv(path, dtype=str, encoding="utf-8-sig", keep_default_na=False)
+        return pd.read_csv(path, dtype=str, encoding="utf-8-sig", keep_default_na=False, comment="#")
     except (OSError, UnicodeError, ValueError, pd.errors.ParserError):
         return None
 

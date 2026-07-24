@@ -55,11 +55,12 @@ def _write_daily_cache(cache_root, code: str, rows: list[dict[str, object]]) -> 
         "code": code,
         "fetched_at": NOW.isoformat(),
         "trading_date": TODAY.isoformat(),
-        "requested_lookback": 250,
+        "requested_lookback": 260,
         "actual_rows": len(rows),
         "latest_date": rows[-1]["date"],
         "source": "fixture",
         "source_errors": [],
+        "volume_unit": "shares",
         "rows": rows,
     }
     (cache_root / f"{code}.json").write_text(json.dumps(payload), encoding="utf-8")
@@ -188,9 +189,9 @@ def test_daily_cache_miss_fetches_only_requested_code_and_writes_compatible_cach
         now=NOW,
     )
 
-    assert calls == [("600519", 250, "auto", 2)]
+    assert calls == [("600519", 260, "auto", 2)]
     cached = json.loads((tmp_path / "600519.json").read_text(encoding="utf-8"))
-    assert cached["requested_lookback"] == 250
+    assert cached["requested_lookback"] == 260
     assert cached["actual_rows"] == 3
     assert len(response["data"]["600519"]["daily"]["raw"]) == 2
 
@@ -296,7 +297,7 @@ def test_response_keeps_code_order_and_is_json_serializable(tmp_path):
         now=NOW,
     )
 
-    assert list(response) == ["schema_version", "request_id", "generated_at", "data", "errors", "audit"]
+    assert list(response) == ["schema_version", "request_id", "generated_at", "volume_unit", "data", "errors", "audit"]
     assert list(response["data"]) == ["000001", "600519"]
     assert list(response["data"]["000001"]["minute"]) == ["vwap"]
     assert response["audit"]["rows"]["minute"] == 2

@@ -140,23 +140,27 @@ def test_source_health_order_moves_disabled_source_later():
 
 
 def test_fetch_daily_tencent_normalizes_rows(monkeypatch):
-    class Response:
+    class MockResponse:
         def raise_for_status(self):
             return None
 
         def json(self):
             return {"code": 0, "data": {"sh600000": {"qfqday": [["2026-07-22", "10", "10.2", "10.3", "9.9", "1000", "10200"]]}}}
 
-    monkeypatch.setattr(daily.requests, "get", lambda *a, **k: Response())
+    class MockSession:
+        def get(self, *args, **kwargs):
+            return MockResponse()
+
+    monkeypatch.setattr(daily, "_get_http_session", lambda: MockSession())
     result = daily._fetch_daily_tencent("600000", lookback_days=1)
     assert result.to_dict("records") == [{
         "date": "2026-07-22", "open": 10, "close": 10.2, "high": 10.3,
-        "low": 9.9, "volume": 1000, "amount": 10200,
+        "low": 9.9, "volume": 100000.0, "amount": 10200,
     }]
 
 
 def test_fetch_daily_sina_normalizes_and_sorts_rows(monkeypatch):
-    class Response:
+    class MockResponse:
         def raise_for_status(self):
             return None
 
@@ -166,7 +170,11 @@ def test_fetch_daily_sina_normalizes_and_sorts_rows(monkeypatch):
                 {"day": "2026-07-21", "open": "9", "close": "9.2", "high": "9.3", "low": "8.9", "volume": "900"},
             ]}}
 
-    monkeypatch.setattr(daily.requests, "get", lambda *a, **k: Response())
+    class MockSession:
+        def get(self, *args, **kwargs):
+            return MockResponse()
+
+    monkeypatch.setattr(daily, "_get_http_session", lambda: MockSession())
     result = daily._fetch_daily_sina("000001", lookback_days=2)
     assert result["date"].tolist() == ["2026-07-21", "2026-07-22"]
 

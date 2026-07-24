@@ -24,8 +24,10 @@ _VOLUME_RATIO_WINDOW = 5
 
 def elapsed_trade_minutes(observed_at: datetime) -> int:
     """Return the number of completed trading minutes as of *observed_at*."""
+    from marketbase.calendar import is_trading_day
+
     local = observed_at.astimezone(timezone(timedelta(hours=8)))
-    if local.weekday() >= 5:
+    if not is_trading_day(local):
         return _CN_TRADING_MINUTES  # non-trading day: use full day
     t = local.timetz().replace(tzinfo=None)
     if t < _CN_SESSION_START:
@@ -109,6 +111,13 @@ def _avg_5d_volume(
     if not isinstance(rows, list) or not rows:
         return None
     cutoff_date = observed_at.date() if observed_at is not None else None
+    # Detect whether the cached volume is in 手 (legacy Tencent) or 股 (current).
+    volume_unit = payload.get("volume_unit", "")
+    source = payload.get("source", "")
+    needs_shou_conversion = (
+        volume_unit != "shares"
+        and (volume_unit == "shou" or source == "tencent")
+    )
     volumes: list[float] = []
     for row in reversed(rows):
         if not isinstance(row, dict):
@@ -120,6 +129,8 @@ def _avg_5d_volume(
                 continue
         vol = _safe_float(row.get("volume"))
         if vol is not None and vol > 0:
+            if needs_shou_conversion:
+                vol = vol * 100.0  # 手 → 股
             volumes.append(vol)
         if len(volumes) >= _VOLUME_RATIO_WINDOW:
             break

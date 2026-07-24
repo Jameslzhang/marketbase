@@ -152,6 +152,7 @@ def collect_requested_data(
         "schema_version": 1,
         "request_id": request.request_id,
         "generated_at": observed_at.isoformat(),
+        "volume_unit": "shares",
         "data": data,
         "errors": errors,
         "audit": audit,
@@ -168,7 +169,7 @@ def _collect_daily_scope(
     observed_at: datetime,
 ) -> tuple[dict[str, object], int, str]:
     cache_path = cache_root / f"{code}.json"
-    required_lookback = max(lookback, 250)
+    required_lookback = max(lookback, 260)
     source = ""
     try:
         frame, metadata = read_daily_cache(cache_path)
@@ -201,7 +202,7 @@ def _collect_daily_scope(
     response: dict[str, object] = {}
     if "raw" in fields:
         response["raw"] = json.loads(frame.tail(lookback).to_json(orient="records"))
-    indicators = compute_daily_indicators(frame, calculated_at=observed_at)
+    indicators = compute_daily_indicators(frame, calculated_at=observed_at, trading_date=observed_at.date().isoformat())
     if "ma" in fields:
         response["ma"] = {key: indicators[key] for key in ("ma5", "ma10", "ma20", "ma60", "ma120", "ma250")}
     if "rsi" in fields:
