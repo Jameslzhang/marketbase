@@ -184,6 +184,7 @@ def collect_daily_universe(
     indicator_insufficient: list[dict[str, object]] = []
 
     def _emit_progress(current_code: str = "", current_source: str = "", last_error: str = "") -> None:
+        """Emit a DailyProgressEvent to the optional progress callback."""
         completed = success_count + cache_hit_count + failure_count
         elapsed = max(time.monotonic() - start_monotonic, 0.0)
         pending = total - completed
@@ -208,6 +209,7 @@ def collect_daily_universe(
             )
 
     def _write_checkpoint() -> None:
+        """Persist the current collection state so interrupted runs can resume."""
         with _lock:
             cc = list(completed_codes)
             fc = list(failed_codes)

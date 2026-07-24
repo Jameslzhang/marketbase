@@ -301,27 +301,11 @@ def _freshness_summary(
 
 
 def _supplier_quote_timestamp(value: str, observed_at: datetime) -> pd.Timestamp | None:
-    text = value.strip()
-    if not text:
+    """Parse a quote time string into a UTC pd.Timestamp (delegates to _parse_quote_datetime)."""
+    parsed = _parse_quote_datetime(value, observed_at)
+    if parsed is None:
         return None
-    for pattern in ("%H:%M:%S", "%H:%M"):
-        try:
-            quote_time = datetime.strptime(text, pattern).time()
-        except ValueError:
-            continue
-        return pd.Timestamp(
-            datetime.combine(observed_at.date(), quote_time, tzinfo=observed_at.tzinfo)
-        ).tz_convert(timezone.utc)
-    if len(text) == 14 and text.isdigit():
-        try:
-            timestamp = datetime.strptime(text, "%Y%m%d%H%M%S")
-        except ValueError:
-            return None
-        return pd.Timestamp(timestamp.replace(tzinfo=observed_at.tzinfo)).tz_convert(
-            timezone.utc
-        )
-    parsed = pd.to_datetime(text, errors="coerce", utc=True)
-    return None if pd.isna(parsed) else parsed
+    return pd.Timestamp(parsed).tz_convert(timezone.utc)
 
 
 def _known_conditions(
