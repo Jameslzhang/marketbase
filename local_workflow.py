@@ -51,6 +51,7 @@ from marketbase.security_master import collect_security_master
 from marketbase.tradability import enrich_tradability
 from marketbase.volume_ratio import compute_volume_ratios_batch
 from marketbase.market_breadth import compute_market_breadth
+from marketbase.intraday import append_minute_snapshot, build_intraday_sequence, audit_minute_sequence
 
 
 # ── 指标字段定义 ─────────────────────────────────────────────────────
@@ -213,6 +214,8 @@ def _run_collection_locked(
     # ① 实时行情快照
     frame, codes, result = _run_market_collection(root, observed_at, emit, configured)
     bse_codes = set(frame.loc[frame["market"] == "bj", "code"].tolist()) if "market" in frame.columns else set()
+    # ①.5 分钟快照追加与 VWAP 计算
+    minute_audit = _run_minute_snapshot(frame, cache_root, observed_at, emit)
     # ② 日线历史与指标计算
     indicators_df, daily_report = _run_daily_collection(codes, cache_root, observed_at, emit, configured, bse_codes=bse_codes, force_refresh=force_refresh)
     # ③ 量比实时计算
@@ -223,6 +226,8 @@ def _run_collection_locked(
     market_audit, classification, classification_audit = _run_audit_and_classification(
         frame, observed_at, result, root, configured, phase=phase
     )
+    # ④.5 行业/概念字段补充
+    frame = _run_enrich_classification(frame, classification, emit)
     emit("采集完成")
 
     # --- 市场广度汇总 ---
@@ -231,28 +236,6 @@ def _run_collection_locked(
     emit(f"市场广度: 涨{breadth.get('full_market', {}).get('advance_count', 0)} "
          f"跌{breadth.get('full_market', {}).get('decline_count', 0)} "
          f"平{breadth.get('full_market', {}).get('unchanged_count', 0)}")
-
-    # --- auto-fulfill minute data request if present ---
-    request_path = root / "codex_data_request.json"
-    response_path = root / "codex_data_response.json"
-    minute_audit: dict[str, object] = {"request_status": "not_requested"}
-    if request_path.is_file():
-        emit("检测到分钟数据请求 自动履行")
-        try:
-            fulfill_result = fulfill_request(
-                request_path=request_path,
-                response_path=response_path,
-                data_root=root,
-                now=observed_at,
-            )
-            minute_audit = {"request_status": "fulfilled", "fulfill_result": fulfill_result}
-            emit(f"分钟数据响应已写入 {response_path}")
-        except Exception as exc:
-            minute_audit = {
-                "request_status": "fulfill_failed",
-                "error": _neutral_text(str(exc) or type(exc).__name__),
-            }
-            emit(f"分钟数据请求失败: {_neutral_text(str(exc) or type(exc).__name__)}")
 
     summary = _write_outputs_and_manifest(
         run_dir, root, observed_at, frame, indicators_df, classification,
@@ -342,6 +325,61 @@ def main(argv: Sequence[str] | None = None) -> int:
     except Exception as exc:  # noqa: BLE001 - command boundary prints one neutral failure.
         print(f"数据采集错误: {_neutral_text(str(exc) or type(exc).__name__)}")
         return 1
+
+def _run_minute_snapshot(frame, cache_root, observed_at, emit):
+    minute_audit = {"status": "collected"}
+    intraday_path = cache_root / "intraday_1m.parquet"
+    try:
+        append_minute_snapshot(frame, intraday_path)
+        emit("minutes appended to intraday_1m.parquet")
+    except Exception as exc:
+        minute_audit["append_error"] = _neutral_text(str(exc) or type(exc).__name__)
+        emit(f"minute append failed: {minute_audit['append_error']}")
+        return minute_audit
+    try:
+        seq = build_intraday_sequence(intraday_path)
+        if not seq.empty:
+            min_audit = audit_minute_sequence(seq, observed_at=observed_at)
+            minute_audit["sequence_audit"] = min_audit
+            minute_audit["total_minutes"] = min_audit.get("actual_minutes", 0)
+            minute_audit["total_stocks"] = int(seq["code"].nunique())
+            emit(f"minute seq: {minute_audit['total_minutes']}min x {minute_audit['total_stocks']}stocks")
+    except Exception as exc:
+        minute_audit["sequence_error"] = _neutral_text(str(exc) or type(exc).__name__)
+    try:
+        vwap = frame["amount"] / frame["volume"].replace(0, float("nan"))
+        minute_audit["vwap_coverage"] = int(vwap.notna().sum())
+        minute_audit["vwap_total"] = len(frame)
+        emit(f"VWAP computable: {minute_audit['vwap_coverage']}/{len(frame)}")
+    except Exception as exc:
+        minute_audit["vwap_error"] = _neutral_text(str(exc) or type(exc).__name__)
+    return minute_audit
+
+
+def _run_enrich_classification(frame, classification, emit):
+    if classification.empty:
+        return frame
+    try:
+        class_indexed = classification.set_index("code")
+        enriched = 0
+        for col in ("industry", "concepts"):
+            if col not in frame.columns:
+                continue
+            missing = frame[col].isna() | frame[col].astype(str).str.strip().isin({"", "nan", "None", "<NA>"})
+            if not missing.any():
+                continue
+            fill_values = frame.loc[missing, "code"].map(
+                class_indexed[col].replace("", float("nan")).dropna()
+            )
+            filled = fill_values.notna().sum()
+            frame.loc[missing, col] = frame.loc[missing, col].fillna(fill_values)
+            enriched += filled
+        if enriched:
+            emit(f"class enrichment: {enriched} rows filled")
+    except Exception as exc:
+        emit(f"class enrichment failed: {_neutral_text(str(exc) or type(exc).__name__)}")
+    return frame
+
 
 
 def _run_market_collection(

@@ -294,7 +294,33 @@ def _market_for_code(code: str) -> str | None:
 
 def _text_column(frame: pd.DataFrame, field: str) -> pd.Series:
     values = frame.get(field, pd.Series("", index=frame.index))
-    return values.map(lambda value: "" if pd.isna(value) else str(value).strip())
+
+    def _normalize(value: object) -> str:
+        # concepts / industry may arrive as lists from the datasource
+        if isinstance(value, (list, tuple)):
+            parts = [
+                str(v).strip()
+                for v in value
+                if v is not None and not (isinstance(v, float) and _is_nan(v))
+            ]
+            return ", ".join(p for p in parts if p)
+        # pd.isna on a list/array returns array → avoid truth-value error
+        try:
+            if pd.isna(value):
+                return ""
+        except (ValueError, TypeError):
+            pass
+        return str(value).strip()
+
+    return values.map(_normalize)
+
+
+def _is_nan(val: object) -> bool:
+    """Check for NaN without importing math."""
+    try:
+        return isinstance(val, float) and val != val  # noqa: PLR0124 — NaN self-comparison
+    except TypeError:
+        return False
 
 
 def _quote_time_column(frame: pd.DataFrame) -> pd.Series:
