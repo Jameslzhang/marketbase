@@ -100,7 +100,13 @@ def test_collect_writes_fixed_objective_snapshot_in_deterministic_order(tmp_path
     payload = json.loads(result.cache_path.read_text(encoding="utf-8"))
     assert payload["schema_version"] == 1
     assert payload["generated_at"] == OBSERVED_AT.isoformat()
-    assert payload["rows"] == result.frame.to_dict(orient="records")
+    # Normalize NaN → None for JSON comparison (JSON serializes NaN as null)
+    frame_records = result.frame.to_dict(orient="records")
+    for record in frame_records:
+        for key, value in record.items():
+            if isinstance(value, float) and pd.isna(value):
+                record[key] = None
+    assert payload["rows"] == frame_records
     assert all(term not in result.frame.columns for term in ("candidate", "rank", "score"))
     assert progress and all(isinstance(item, str) and len(item) > 0 for item in progress)
     assert not any(

@@ -15,6 +15,11 @@ import requests
 
 
 REFERENCE_FIELDS = (
+    "pre_close",
+    "open",
+    "high",
+    "low",
+    "change_pct",
     "volume_ratio",
     "turnover_rate",
     "pe_ratio",

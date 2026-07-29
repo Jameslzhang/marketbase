@@ -44,10 +44,19 @@ def _market_result(cache_path: Path) -> SimpleNamespace:
                 "name": "甲公司",
                 "market": "sh",
                 "price": 10.0,
+                "pre_close": 9.8,
+                "open": 9.9,
+                "high": 10.2,
+                "low": 9.8,
+                "change_pct": 2.04,
                 "volume": 100.0,
                 "amount": 1000.0,
                 "turnover_rate": 1.0,
                 "volume_ratio": 1.0,
+                "total_mv": 100000000000.0,
+                "circ_mv": 50000000000.0,
+                "pe_ratio": 15.0,
+                "pb_ratio": 2.0,
                 "quote_time": "09:43:00",
                 "observed_at": NOW.isoformat(),
                 "source": "fixture",
@@ -57,10 +66,19 @@ def _market_result(cache_path: Path) -> SimpleNamespace:
                 "name": "乙公司",
                 "market": "sz",
                 "price": 20.0,
+                "pre_close": 19.5,
+                "open": 19.8,
+                "high": 20.5,
+                "low": 19.5,
+                "change_pct": 2.56,
                 "volume": 200.0,
                 "amount": 4000.0,
                 "turnover_rate": 2.0,
                 "volume_ratio": 2.0,
+                "total_mv": 200000000000.0,
+                "circ_mv": 100000000000.0,
+                "pe_ratio": 20.0,
+                "pb_ratio": 3.0,
                 "quote_time": "09:43:00",
                 "observed_at": NOW.isoformat(),
                 "source": "fixture",
@@ -70,10 +88,19 @@ def _market_result(cache_path: Path) -> SimpleNamespace:
                 "name": "丙公司",
                 "market": "bj",
                 "price": 30.0,
+                "pre_close": 29.0,
+                "open": 29.5,
+                "high": 31.0,
+                "low": 29.0,
+                "change_pct": 3.45,
                 "volume": 300.0,
                 "amount": 9000.0,
                 "turnover_rate": 3.0,
                 "volume_ratio": 3.0,
+                "total_mv": 300000000000.0,
+                "circ_mv": 150000000000.0,
+                "pe_ratio": 25.0,
+                "pb_ratio": 4.0,
                 "quote_time": "09:43:00",
                 "observed_at": NOW.isoformat(),
                 "source": "fixture",
@@ -139,13 +166,14 @@ def test_run_collection_collects_every_market_code_and_writes_only_protocol_file
     )
 
     run_dir = Path(summary["run_dir"])
-    assert calls == ["600001", "000002", "430003"]
-    assert run_dir.name == "094330_objective_data"
+    assert sorted(calls) == ["000002", "430003", "600001"]
+    assert run_dir.name == "094330_postclose_objective_data"
     assert {path.name for path in run_dir.iterdir()} == {
         "market_snapshot.csv",
         "market_snapshot.json",
         "daily_indicators.csv",
         "classification_map.csv",
+        "market_breadth.json",
         "data_audit.json",
         "manifest.json",
         "workflow.log",
@@ -381,7 +409,7 @@ def test_create_run_directory_retries_after_atomic_name_collision(tmp_path, monk
     def mkdir(path, *args, **kwargs):
         nonlocal collided
         calls.append((path, kwargs.get("exist_ok", False)))
-        if path.name == "094330_objective_data" and not collided:
+        if path.name == "094330_postclose_objective_data" and not collided:
             collided = True
             raise FileExistsError
         return original_mkdir(path, *args, **kwargs)
@@ -390,9 +418,9 @@ def test_create_run_directory_retries_after_atomic_name_collision(tmp_path, monk
 
     run_dir = local_workflow._create_run_directory(tmp_path, NOW)
 
-    assert run_dir.name == "094330_objective_data_2"
-    assert any(path.name == "094330_objective_data" and not exist_ok for path, exist_ok in calls)
-    assert any(path.name == "094330_objective_data_2" and not exist_ok for path, exist_ok in calls)
+    assert run_dir.name == "094330_postclose_objective_data_2"
+    assert any(path.name == "094330_postclose_objective_data" and not exist_ok for path, exist_ok in calls)
+    assert any(path.name == "094330_postclose_objective_data_2" and not exist_ok for path, exist_ok in calls)
 
 
 def test_older_run_does_not_replace_newer_latest_handoff(tmp_path):
@@ -429,8 +457,8 @@ def test_run_collection_resolves_same_second_without_overwriting(tmp_path):
         providers=_providers(tmp_path),
     )
 
-    assert Path(first["run_dir"]).name == "094330_objective_data"
-    assert Path(second["run_dir"]).name == "094330_objective_data_2"
+    assert Path(first["run_dir"]).name == "094330_postclose_objective_data"
+    assert Path(second["run_dir"]).name == "094330_postclose_objective_data_2"
 
 
 def test_fulfill_request_reads_only_requested_codes_and_writes_response(tmp_path):
@@ -555,7 +583,7 @@ def test_cli_accepts_data_root_as_a_global_option(tmp_path, monkeypatch):
     )
 
     assert local_workflow.main(["--data-root", str(tmp_path), "collect"]) == 0
-    assert calls == [{"data_root": tmp_path}]
+    assert calls == [{"data_root": tmp_path, "phase": "post_close", "force_refresh": False}]
 
 
 def test_vscode_launch_configuration_uses_objective_collection_without_args():

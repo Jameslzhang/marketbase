@@ -383,7 +383,8 @@ def _fetch_em_datacenter() -> pd.DataFrame:
             "p": str(page),
             "sty": "SECUCODE,SECURITY_CODE,SECURITY_NAME_ABBR,NEW_PRICE,"
                    "CHANGE_RATE,VOLUME_RATIO,DEAL_AMOUNT,TURNOVERRATE,"
-                   "PE9,PBNEWMRQ,TOTAL_MARKET_CAP,CIRCULATION_MARKET_CAP",
+                   "PE9,PBNEWMRQ,TOTAL_MARKET_CAP,CIRCULATION_MARKET_CAP,"
+                   "INDUSTRY,CONCEPT",
             "filter": '(MARKET+in+("上交所主板","深交所主板","深交所创业板","上交所科创板","北交所"))',
             "source": "SELECT_SECURITIES",
             "client": "WEB",
@@ -617,6 +618,10 @@ def _normalize(df: pd.DataFrame, source: str) -> pd.DataFrame:
             "code": ["code"],
             "name": ["name"],
             "price": ["trade"],
+            "pre_close": ["settlement"],
+            "open": ["open"],
+            "high": ["high"],
+            "low": ["low"],
             "change_pct": ["changepercent"],
             "amount": ["amount"],
             "total_mv": ["mktcap"],
@@ -664,7 +669,8 @@ def _normalize(df: pd.DataFrame, source: str) -> pd.DataFrame:
 
     # Coerce numeric columns
     numeric_cols = [
-        "price", "change_pct", "amount", "total_mv", "circ_mv",
+        "price", "pre_close", "open", "high", "low",
+        "change_pct", "amount", "total_mv", "circ_mv",
         "pe_ratio", "pb_ratio", "volume_ratio", "turnover_rate",
     ]
     for col in numeric_cols:

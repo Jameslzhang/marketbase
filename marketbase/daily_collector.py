@@ -135,6 +135,7 @@ def collect_daily_universe(
     now: datetime | None = None,
     max_workers: int = 15,
     incremental: bool = True,
+    force_refresh: bool = False,
 ) -> DailyCollectionReport:
     """Collect daily histories concurrently with incremental update.
 
@@ -233,8 +234,8 @@ def collect_daily_universe(
         cache_path = cache_dir / f"{code}.json"
         observed_dt = _coerce_now(now)
 
-        # --- incremental: try to reuse existing cache ---
-        if incremental:
+        # --- incremental: try to reuse existing cache (skip if force_refresh) ---
+        if incremental and not force_refresh:
             existing = _read_existing_cache(cache_path, code)
             if existing is not None:
                 existing_frame, existing_meta = existing

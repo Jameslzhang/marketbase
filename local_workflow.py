@@ -48,7 +48,9 @@ from marketbase.data_request import load_data_request, write_data_response
 from marketbase.market_collector import MarketCollectionResult, collect_market_snapshot
 from marketbase.minute_collector import collect_requested_data
 from marketbase.security_master import collect_security_master
+from marketbase.tradability import enrich_tradability
 from marketbase.volume_ratio import compute_volume_ratios_batch
+from marketbase.market_breadth import compute_market_breadth
 
 
 # ── 指标字段定义 ─────────────────────────────────────────────────────
@@ -143,6 +145,8 @@ def run_collection(
     now: datetime | None = None,
     progress: Callable[[str], None] = print,
     providers: Mapping[str, object] | None = None,
+    phase: str = "post_close",
+    force_refresh: bool = False,
 ) -> dict[str, object]:
     """Collect current market facts and associated daily/cache evidence."""
     root = Path(data_root).expanduser().resolve()
@@ -160,7 +164,7 @@ def run_collection(
         print("采集已在运行中（检测到 .workflow.lock），第二个实例退出。", flush=True)
         sys.exit(0)
     try:
-        return _run_collection_locked(root, observed_at, configured, progress)
+        return _run_collection_locked(root, observed_at, configured, progress, phase=phase, force_refresh=force_refresh)
     finally:
         _unlock_file(lock_handle)
         lock_handle.close()
@@ -188,10 +192,12 @@ def _run_collection_locked(
     observed_at: datetime,
     configured: dict[str, object],
     progress: Callable[[str], None],
+    phase: str = "post_close",
+    force_refresh: bool = False,
 ) -> dict[str, object]:
     """持有文件锁后执行核心采集流程：快照 → 日线 → 指标 → 量比 → 审计 → 分类 → 交接."""
     collection_started_at = datetime.now().astimezone().isoformat()
-    run_dir = _create_run_directory(root, observed_at)
+    run_dir = _create_run_directory(root, observed_at, phase=phase)
     log_path = run_dir / "workflow.log"
 
     def emit(message: str) -> None:
@@ -208,14 +214,23 @@ def _run_collection_locked(
     frame, codes, result = _run_market_collection(root, observed_at, emit, configured)
     bse_codes = set(frame.loc[frame["market"] == "bj", "code"].tolist()) if "market" in frame.columns else set()
     # ② 日线历史与指标计算
-    indicators_df, daily_report = _run_daily_collection(codes, cache_root, observed_at, emit, configured, bse_codes=bse_codes)
+    indicators_df, daily_report = _run_daily_collection(codes, cache_root, observed_at, emit, configured, bse_codes=bse_codes, force_refresh=force_refresh)
     # ③ 量比实时计算
     frame = _run_volume_ratio(frame, cache_root, observed_at, emit)
+    # ③.5 交易可执行性标注
+    frame = _run_tradability(frame, root, emit)
     # ④ 审计与分类
     market_audit, classification, classification_audit = _run_audit_and_classification(
-        frame, observed_at, result, root, configured
+        frame, observed_at, result, root, configured, phase=phase
     )
     emit("采集完成")
+
+    # --- 市场广度汇总 ---
+    breadth = compute_market_breadth(frame)
+    _write_json_atomic(run_dir / "market_breadth.json", breadth)
+    emit(f"市场广度: 涨{breadth.get('full_market', {}).get('advance_count', 0)} "
+         f"跌{breadth.get('full_market', {}).get('decline_count', 0)} "
+         f"平{breadth.get('full_market', {}).get('unchanged_count', 0)}")
 
     # --- auto-fulfill minute data request if present ---
     request_path = root / "codex_data_request.json"
@@ -275,6 +290,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     """命令行入口：默认全量采集，也支持 collect-classify / refresh-master / fulfill-request 子命令."""
     parser = argparse.ArgumentParser(description="MarketBase 客观数据入口")
     parser.add_argument("--data-root", type=Path)
+    parser.add_argument("--phase", type=str, default="post_close",
+                        help="采集阶段: post_close | 13:00 | 14:30 | 15:30")
+    parser.add_argument("--force-refresh", action="store_true", default=False,
+                        help="强制重新拉取日线数据，忽略缓存")
     subcommands = parser.add_subparsers(dest="command")
     subcommands.add_parser("collect")
     request_parser = subcommands.add_parser("fulfill-request")
@@ -310,7 +329,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             print("客观数据请求补数完成")
             return 0
         summary = run_collection(
-            data_root=getattr(arguments, "data_root", None) or default_root
+            data_root=getattr(arguments, "data_root", None) or default_root,
+            phase=getattr(arguments, "phase", "post_close"),
+            force_refresh=getattr(arguments, "force_refresh", False),
         )
         print(
             "客观数据采集完成: "
@@ -353,6 +374,7 @@ def _run_daily_collection(
     emit: Callable[[str], None],
     configured: dict[str, object],
     bse_codes: set[str] | None = None,
+    force_refresh: bool = False,
 ) -> tuple[pd.DataFrame, DailyCollectionReport]:
     """Collect daily history for all codes and return indicators DataFrame."""
     daily_fetcher = configured.get("daily_fetcher", fetch_daily_history)
@@ -364,6 +386,7 @@ def _run_daily_collection(
         fetcher=daily_fetcher,
         progress=lambda event: _write_progress_line(_daily_progress_message(event)),
         now=observed_at,
+        force_refresh=force_refresh,
     )
     _clear_progress_line()
     cache_valid = daily_report.success_count + daily_report.cache_hit_count
@@ -443,12 +466,33 @@ def _run_volume_ratio(
     return frame
 
 
+def _run_tradability(
+    frame: pd.DataFrame,
+    root: Path,
+    emit: Callable[[str], None],
+) -> pd.DataFrame:
+    """Enrich snapshot with tradability fields (ST, board, limit status, listing days)."""
+    try:
+        sm_path = root / "cache" / "security_master.csv"
+        sm_df = pd.read_csv(sm_path, dtype=str, keep_default_na=False) if sm_path.is_file() else None
+        frame = enrich_tradability(frame, security_master_df=sm_df)
+        st_count = int(frame["is_st"].sum()) if "is_st" in frame.columns else 0
+        suspended_count = int(frame["is_suspended"].sum()) if "is_suspended" in frame.columns else 0
+        limit_up_count = int(frame["is_limit_up"].sum()) if "is_limit_up" in frame.columns else 0
+        limit_down_count = int(frame["is_limit_down"].sum()) if "is_limit_down" in frame.columns else 0
+        emit(f"交易可执行性标注: ST={st_count} 停牌={suspended_count} 涨停={limit_up_count} 跌停={limit_down_count}")
+    except Exception as exc:
+        emit(f"交易可执行性标注失败: {_neutral_text(str(exc) or type(exc).__name__)}")
+    return frame
+
+
 def _run_audit_and_classification(
     frame: pd.DataFrame,
     observed_at: datetime,
     result: MarketCollectionResult,
     root: Path,
     configured: dict[str, object],
+    phase: str = "post_close",
 ) -> tuple[dict[str, object], pd.DataFrame, dict[str, object]]:
     """Run audit and classification, returning (market_audit, classification, classification_audit)."""
     from marketbase.data_audit import audit_market_snapshot
@@ -457,6 +501,7 @@ def _run_audit_and_classification(
         frame,
         observed_at=observed_at,
         provider_errors=result.audit.get("provider_errors", []),
+        audit_phase=phase,
     )
     market_audit["bse_audit"] = result.audit.get("bse_audit", {})
 
@@ -590,6 +635,7 @@ def _write_outputs_and_manifest(
         "classification": _json_value(classification_audit),
         "provider_errors": _provider_errors(result, daily_report),
         "minute_request": minute_audit or {"request_status": "not_requested"},
+        "stale_daily": _stale_daily_summary(daily_report, observed_at),
     }
     _write_json_atomic(run_dir / "data_audit.json", audit)
 
@@ -600,6 +646,7 @@ def _write_outputs_and_manifest(
             "market_snapshot_json": len(frame),
             "daily_indicators": len(indicators_df),
             "classification_map": len(classification),
+            "market_breadth": 1,
             "data_audit": 1,
             "workflow_log": 0,
         },
@@ -627,6 +674,7 @@ def _write_outputs_and_manifest(
             "market_snapshot_path": str((run_dir / "market_snapshot.json").resolve()),
             "daily_indicators_path": str((run_dir / "daily_indicators.csv").resolve()),
             "classification_map_path": str((run_dir / "classification_map.csv").resolve()),
+            "market_breadth_path": str((run_dir / "market_breadth.json").resolve()),
             "data_audit_path": str((run_dir / "data_audit.json").resolve()),
             "manifest_path": str((run_dir / "manifest.json").resolve()),
             "cache_paths": _cache_paths(root),
@@ -730,6 +778,27 @@ def _daily_progress_message(event: DailyProgressEvent) -> str:
     return "  ".join(parts)
 
 
+def _stale_daily_summary(
+    daily_report: DailyCollectionReport,
+    observed_at: datetime,
+) -> dict[str, object]:
+    """Summarize stocks whose latest daily data is not from the current trade date."""
+    from datetime import timezone, timedelta
+
+    trade_date = observed_at.astimezone(timezone(timedelta(hours=8))).date().isoformat()
+    stale_codes = [
+        code for code, date_str in daily_report.latest_date_distribution.items()
+        if str(date_str) != trade_date
+    ]
+    return {
+        "expected_latest_date": trade_date,
+        "total_stocks": daily_report.total_count,
+        "stale_count": len(stale_codes),
+        "stale_codes": stale_codes[:50],
+        "stale_codes_truncated": len(stale_codes) > 50,
+    }
+
+
 def _provider_errors(
     result: MarketCollectionResult, report: DailyCollectionReport
 ) -> list[str]:
@@ -756,6 +825,7 @@ def _file_records(run_dir: Path, rows: Mapping[str, int]) -> dict[str, dict[str,
             "market_snapshot_json": "market_snapshot.json",
             "daily_indicators": "daily_indicators.csv",
             "classification_map": "classification_map.csv",
+            "market_breadth": "market_breadth.json",
             "data_audit": "data_audit.json",
             "workflow_log": "workflow.log",
         }[key]
@@ -784,10 +854,11 @@ def _error_summary(audit: Mapping[str, object]) -> dict[str, int]:
     }
 
 
-def _create_run_directory(root: Path, observed_at: datetime) -> Path:
+def _create_run_directory(root: Path, observed_at: datetime, phase: str = "post_close") -> Path:
     parent = root / observed_at.date().isoformat()
     parent.mkdir(parents=True, exist_ok=True)
-    stem = f"{observed_at:%H%M%S}_objective_data"
+    phase_slug = phase.replace(":", "").replace("_", "")
+    stem = f"{observed_at:%H%M%S}_{phase_slug}_objective_data"
     suffix = 1
     while True:
         name = stem if suffix == 1 else f"{stem}_{suffix}"

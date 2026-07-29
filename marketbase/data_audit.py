@@ -11,10 +11,19 @@ import pandas as pd
 
 AUDITED_FIELDS = (
     "price",
+    "pre_close",
+    "open",
+    "high",
+    "low",
+    "change_pct",
     "volume",
     "amount",
     "turnover_rate",
     "volume_ratio",
+    "total_mv",
+    "circ_mv",
+    "pe_ratio",
+    "pb_ratio",
     "quote_time",
     "source",
 )
@@ -167,8 +176,12 @@ def audit_market_snapshot(
     expected_markets: tuple[str, ...] = ("sh", "sz", "bj"),
     provider_errors: Iterable[str] = (),
     raw_frame: pd.DataFrame | None = None,
+    audit_phase: str = "post_close",
 ) -> dict[str, object]:
-    """Summarize observable snapshot quality without drawing market conclusions."""
+    """Summarize observable snapshot quality without drawing market conclusions.
+
+    audit_phase: '13:00' | '14:30' | '15:30' | 'post_close'
+    """
     observed = _as_aware(observed_at)
     rows = frame.copy()
     total_rows = len(rows)
@@ -225,6 +238,7 @@ def audit_market_snapshot(
     quote_times = _column_as_text(rows, "quote_time")
     quote_times = quote_times.loc[_present(quote_times)]
     return {
+        "audit_phase": audit_phase,
         "observed_at": observed.isoformat(),
         "trade_date": observed.astimezone(timezone(timedelta(hours=8))).date().isoformat(),
         "trading_status": trading_status,
