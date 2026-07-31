@@ -1,4 +1,4 @@
-"""市场级客观汇总 —— 涨跌家数、行业广度、成交分布.
+"""市场级客观汇总 —— 涨跌家数、行业广度、成交分布、行业MA分布.
 
 纯统计计算，不输出方向性信号或排名.
 """
@@ -90,5 +90,76 @@ def compute_market_breadth(frame: pd.DataFrame) -> dict[str, object]:
             subset = df[df["industry"] == ind_name]
             by_industry[str(ind_name)] = _breadth(subset)
     result["by_industry"] = by_industry
+
+    return result
+
+
+def compute_industry_ma_distribution(
+    frame: pd.DataFrame,
+    indicators_df: pd.DataFrame,
+) -> dict[str, object]:
+    """计算每个行业在 MA5/MA10/MA20 上的成分股分布.
+
+    用于云端判断行业同步性（行业整体是否处于趋势中）。
+
+    frame 需要: code, industry, price
+    indicators_df 需要: code, ma5, ma10, ma20
+
+    返回:
+        {
+            "银行": {
+                "total": 42,
+                "above_ma5": 30, "above_ma5_pct": 0.714,
+                "above_ma10": 28, "above_ma10_pct": 0.667,
+                "above_ma20": 25, "above_ma20_pct": 0.595,
+            },
+            ...
+        }
+    """
+    if frame.empty or indicators_df.empty:
+        return {}
+
+    # 检查必需列
+    required = {"code", "industry", "price"}
+    if not required.issubset(frame.columns):
+        return {}
+
+    # 合并行情与指标检查必需列
+    required = {"code", "industry", "price"}
+    if not required.issubset(frame.columns):
+        return {}
+
+    # 合并行情与指标
+    merged = frame[["code", "industry", "price"]].copy()
+    merged["code"] = merged["code"].astype(str).str.strip()
+    cols = ["code", "ma5", "ma10", "ma20"]
+    avail = [c for c in cols if c in indicators_df.columns]
+    inds = indicators_df[avail].copy()
+    inds["code"] = inds["code"].astype(str).str.strip()
+    merged = merged.merge(inds, on="code", how="left")
+
+    # 剔除无效行业
+    merged = merged.loc[merged["industry"].notna() & (merged["industry"].astype(str).str.strip() != "")]
+
+    result: dict[str, object] = {}
+    for ind_name, group in merged.groupby("industry"):
+        total = int(len(group))
+        if total == 0:
+            continue
+        entry: dict[str, object] = {"total": total}
+        for ma_col in ("ma5", "ma10", "ma20"):
+            if ma_col not in group.columns:
+                continue
+            ma = pd.to_numeric(group[ma_col], errors="coerce")
+            price = pd.to_numeric(group["price"], errors="coerce")
+            valid = group.loc[ma.notna() & price.notna()]
+            if valid.empty:
+                entry[f"above_{ma_col}"] = 0
+                entry[f"above_{ma_col}_pct"] = 0.0
+                continue
+            above = int((pd.to_numeric(valid["price"], errors="coerce") > pd.to_numeric(valid[ma_col], errors="coerce")).sum())
+            entry[f"above_{ma_col}"] = above
+            entry[f"above_{ma_col}_pct"] = round(above / total, 4)
+        result[str(ind_name)] = entry
 
     return result

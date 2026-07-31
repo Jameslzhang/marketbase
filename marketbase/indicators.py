@@ -1,12 +1,14 @@
 """中性技术指标 —— 纯数学计算，不含方向标签或信号分。
 
-输出指标包括：MA(5/10/20/60/120/250)、RSI(14)、MACD(DIF/DEA/Hist)、ATR(14)。
+输出指标包括：MA(5/10/20/60/120/250)、RSI(14)、MACD(DIF/DEA/Hist)、ATR(14)、
+BOLL(上轨/中轨/下轨/位置)、RPS(20)、多周期回报、上/下影比率、重复上影线标签、过热标签。
 """
 
 from __future__ import annotations
 
 from datetime import datetime
 
+import numpy as np
 import pandas as pd
 
 
@@ -23,6 +25,17 @@ _OUTPUT_KEYS = (
     "macd_hist",
     "atr14",
     "atr14_pct",
+    "boll_upper",
+    "boll_middle",
+    "boll_lower",
+    "boll_position",
+    "return_5d",
+    "return_10d",
+    "return_20d",
+    "upper_shadow_ratio",
+    "lower_shadow_ratio",
+    "repeated_upper_shadow",
+    "overheated",
     "input_rows",
     "first_date",
     "last_date",
@@ -88,6 +101,32 @@ def compute_daily_indicators(
     result["atr14"] = atr
     latest_close = float(close.iloc[-1])
     result["atr14_pct"] = None if atr is None or latest_close == 0 else atr / latest_close * 100
+
+    # ── BOLL(20,2) ──────────────────────────────────────────────────
+    boll_result = _bollinger(close, period=20, std=2)
+    result["boll_upper"] = boll_result["upper"]
+    result["boll_middle"] = boll_result["middle"]
+    result["boll_lower"] = boll_result["lower"]
+    result["boll_position"] = boll_result["position"]
+
+    # ── 多周期回报 ──────────────────────────────────────────────────
+    result["return_5d"] = _return_n(close, 5)
+    result["return_10d"] = _return_n(close, 10)
+    result["return_20d"] = _return_n(close, 20)
+
+    # ── 上/下影比率 ─────────────────────────────────────────────────
+    high = _numeric_series(df, "high")
+    low = _numeric_series(df, "low")
+    open_ = _numeric_series(df, "open")
+    result["upper_shadow_ratio"] = _shadow_ratio(high, low, open_, close, "upper")
+    result["lower_shadow_ratio"] = _shadow_ratio(high, low, open_, close, "lower")
+
+    # ── 标签 ────────────────────────────────────────────────────────
+    result["repeated_upper_shadow"] = _repeated_upper_shadow(high, low, open_, close)
+    result["overheated"] = _check_overheated(
+        result["rsi14"], result["boll_position"]
+    )
+
     return result
 
 
@@ -166,3 +205,121 @@ def _atr_wilder(frame: pd.DataFrame, period: int) -> float | None:
 def _iso_datetime(value: datetime | None) -> str:
     current = value if value is not None else datetime.now().astimezone()
     return current.isoformat()
+
+
+# ── BOLL 布林带 ─────────────────────────────────────────────────────
+
+
+def _bollinger(close: pd.Series, period: int = 20, std: float = 2.0) -> dict[str, float | None]:
+    """计算 BOLL(period, std) 上轨/中轨/下轨及位置."""
+    if len(close) < period:
+        return {"upper": None, "middle": None, "lower": None, "position": None}
+    middle = float(close.rolling(period, min_periods=period).mean().iloc[-1])
+    if pd.isna(middle):
+        return {"upper": None, "middle": None, "lower": None, "position": None}
+    sigma = float(close.rolling(period, min_periods=period).std().iloc[-1])
+    upper = middle + std * sigma
+    lower = middle - std * sigma
+    latest = float(close.iloc[-1])
+    if upper == lower:
+        return {"upper": upper, "middle": middle, "lower": lower, "position": 0.5}
+    position = (latest - lower) / (upper - lower)
+    return {"upper": upper, "middle": middle, "lower": lower, "position": position}
+
+
+# ── 多周期回报 ──────────────────────────────────────────────────────
+
+
+def _return_n(close: pd.Series, n: int) -> float | None:
+    """计算 N 日回报率 (close / close.shift(n) - 1)."""
+    if len(close) <= n:
+        return None
+    prev = float(close.iloc[-(n + 1)])
+    latest = float(close.iloc[-1])
+    if prev == 0:
+        return None
+    return (latest - prev) / prev
+
+
+# ── 影线比率 ────────────────────────────────────────────────────────
+
+
+def _shadow_ratio(
+    high: pd.Series,
+    low: pd.Series,
+    open_: pd.Series,
+    close: pd.Series,
+    which: str,
+) -> float | None:
+    """计算上影或下影比率（最近一根 K 线）.
+
+    upper_shadow_ratio = (high - max(open, close)) / (high - low)
+    lower_shadow_ratio = (min(open, close) - low) / (high - low)
+    """
+    if len(high) == 0 or len(low) == 0 or len(open_) == 0 or len(close) == 0:
+        return None
+    h = float(high.iloc[-1])
+    l = float(low.iloc[-1])
+    o = float(open_.iloc[-1])
+    c = float(close.iloc[-1])
+    body_high = max(o, c)
+    body_low = min(o, c)
+    hl_range = h - l
+    if hl_range <= 0 or pd.isna(hl_range):
+        return None
+    if which == "upper":
+        return (h - body_high) / hl_range
+    return (body_low - l) / hl_range
+
+
+def _repeated_upper_shadow(
+    high: pd.Series,
+    low: pd.Series,
+    open_: pd.Series,
+    close: pd.Series,
+    threshold: float = 0.6,
+    window: int = 5,
+    min_count: int = 3,
+) -> bool | None:
+    """检查最近 window 天内是否有 >= min_count 天的上影比率 > threshold."""
+    if len(high) < window or len(low) < window or len(open_) < window or len(close) < window:
+        return None
+    ratios = []
+    for i in range(-window, 0):
+        h = float(high.iloc[i])
+        l = float(low.iloc[i])
+        o = float(open_.iloc[i])
+        c = float(close.iloc[i])
+        hl_range = h - l
+        if hl_range <= 0 or pd.isna(hl_range):
+            continue
+        body_high = max(o, c)
+        ratios.append((h - body_high) / hl_range)
+    if len(ratios) < window:
+        return None
+    return sum(1 for r in ratios if r > threshold) >= min_count
+
+
+def _check_overheated(rsi: float | None, boll_position: float | None) -> bool | None:
+    """过热标签: RSI14 > 70 且 boll_position > 0.8."""
+    if rsi is None or boll_position is None:
+        return None
+    return rsi > 70 and boll_position > 0.8
+
+
+# ── RPS20 全市场排序 ────────────────────────────────────────────────
+
+
+def compute_rps20(indicators_df: pd.DataFrame) -> pd.Series:
+    """基于 return_20d 计算全市场 RPS20 排名 (0-100).
+
+    需要 indicators_df 包含 code 和 return_20d 列.
+    返回以 code 为索引的 Series.
+    """
+    if indicators_df.empty or "return_20d" not in indicators_df.columns:
+        return pd.Series(dtype=float)
+    valid = indicators_df.loc[indicators_df["return_20d"].notna(), ["code", "return_20d"]].copy()
+    if valid.empty:
+        return pd.Series(dtype=float)
+    valid["rps20"] = valid["return_20d"].rank(pct=True) * 100
+    return valid.set_index("code")["rps20"]

@@ -250,13 +250,22 @@ def _parse_created_at(value: str) -> datetime | None:
 
 
 def _fetch_efinance() -> pd.DataFrame:
-    """Fetch via efinance."""
+    """Fetch via efinance with retry on connection errors."""
     import efinance as ef
 
-    df = ef.stock.get_realtime_quotes()
-    if df is None or df.empty:
-        raise RuntimeError("efinance returned empty data")
-    return _normalize(df, source="efinance")
+    max_attempts = 3
+    last_error: Exception | None = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            df = ef.stock.get_realtime_quotes()
+            if df is None or df.empty:
+                raise RuntimeError("efinance returned empty data")
+            return _normalize(df, source="efinance")
+        except Exception as exc:
+            last_error = exc
+            if attempt < max_attempts:
+                time.sleep(0.5 * (2 ** (attempt - 1)))
+    raise RuntimeError(f"efinance failed after {max_attempts} attempts: {last_error}")
 
 
 def _fetch_akshare_em() -> pd.DataFrame:
@@ -369,11 +378,19 @@ def _fetch_em_datacenter() -> pd.DataFrame:
     """Fetch via eastmoney datacenter xuangu API.
 
     This works even on weekends (returns last trading day data).
+    Each page is retried up to 3 times with exponential backoff to handle
+    transient connection errors or rate-limiting from the East Money API.
     """
     url = "https://data.eastmoney.com/dataapi/xuangu/list"
     all_items = []
     page = 1
     page_size = 500
+    max_page_attempts = 3
+
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Referer": "https://data.eastmoney.com/xuangu/",
+    }
 
     while True:
         params = {
@@ -384,26 +401,38 @@ def _fetch_em_datacenter() -> pd.DataFrame:
             "sty": "SECUCODE,SECURITY_CODE,SECURITY_NAME_ABBR,NEW_PRICE,"
                    "CHANGE_RATE,VOLUME_RATIO,DEAL_AMOUNT,TURNOVERRATE,"
                    "PE9,PBNEWMRQ,TOTAL_MARKET_CAP,CIRCULATION_MARKET_CAP,"
+                   "OPEN_PRICE,HIGH_PRICE,LOW_PRICE,PRE_CLOSE_PRICE,"
                    "INDUSTRY,CONCEPT",
             "filter": '(MARKET+in+("上交所主板","深交所主板","深交所创业板","上交所科创板","北交所"))',
             "source": "SELECT_SECURITIES",
             "client": "WEB",
         }
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            "Referer": "https://data.eastmoney.com/xuangu/",
-        }
 
-        resp = _eastmoney_get(url, params=params, headers=headers, timeout=30)
-        data = resp.json()
+        # ── page-level retry with exponential backoff ──
+        page_error: Exception | None = None
+        for page_attempt in range(1, max_page_attempts + 1):
+            try:
+                resp = _eastmoney_get(url, params=params, headers=headers, timeout=30)
+                data = resp.json()
+                if not data.get("success"):
+                    raise RuntimeError(
+                        f"em_datacenter API error page={page}: {data.get('message', 'unknown')}"
+                    )
+                items = data["result"]["data"]
+                all_items.extend(items)
+                total_count = data["result"]["count"]
+                page_error = None
+                break
+            except Exception as exc:
+                page_error = exc
+                if page_attempt < max_page_attempts:
+                    time.sleep(1.0 * page_attempt)
 
-        if not data.get("success"):
-            raise RuntimeError(f"em_datacenter API error: {data.get('message', 'unknown')}")
+        if page_error is not None:
+            raise RuntimeError(
+                f"em_datacenter page {page} failed after {max_page_attempts} attempts: {page_error}"
+            )
 
-        items = data["result"]["data"]
-        all_items.extend(items)
-
-        total_count = data["result"]["count"]
         if page * page_size >= total_count:
             break
         page += 1
@@ -440,8 +469,8 @@ def _eastmoney_get(url: str, **kwargs) -> requests.Response:
 def _build_eastmoney_session() -> requests.Session:
     session = requests.Session()
     retry = Retry(
-        total=2,
-        backoff_factor=0.5,
+        total=3,
+        backoff_factor=1.0,
         status_forcelist=(429, 500, 502, 503, 504),
         allowed_methods=frozenset({"GET"}),
         raise_on_status=False,
@@ -635,6 +664,10 @@ def _normalize(df: pd.DataFrame, source: str) -> pd.DataFrame:
             "code": ["SECURITY_CODE"],
             "name": ["SECURITY_NAME_ABBR"],
             "price": ["NEW_PRICE"],
+            "pre_close": ["PRE_CLOSE_PRICE"],
+            "open": ["OPEN_PRICE"],
+            "high": ["HIGH_PRICE"],
+            "low": ["LOW_PRICE"],
             "change_pct": ["CHANGE_RATE"],
             "amount": ["DEAL_AMOUNT"],
             "total_mv": ["TOTAL_MARKET_CAP"],

@@ -108,7 +108,11 @@ def fetch_reference_snapshot_with_bse_fallback(
     bse_fetcher: Callable[[pd.DataFrame], pd.DataFrame] | None = None,
     min_bse_rows: int = 300,
 ) -> pd.DataFrame:
-    """Fetch reference fields, refreshing cached BSE symbols via Tencent on outage."""
+    """Fetch reference fields, refreshing cached BSE symbols via Tencent on outage.
+
+    Tries em_datacenter first (more reliable, includes OHLC via datacenter API),
+    then falls back to efinance if em_datacenter is unavailable.
+    """
     if fetcher is None:
         from marketbase.snapshot import fetch_cn_snapshot
 
@@ -116,21 +120,53 @@ def fetch_reference_snapshot_with_bse_fallback(
     bse_fetcher = bse_fetcher or fetch_tencent_bse_snapshot
     errors: list[str] = []
 
+    # ── 1. em_datacenter (primary, more reliable) ──
+    try:
+        mainland = fetcher("em_datacenter")
+    except Exception as exc:
+        errors.append(f"em_datacenter: {exc}")
+        mainland = pd.DataFrame()
+
+    if not mainland.empty:
+        # em_datacenter succeeded → add BSE from Tencent
+        cached = cached_snapshot if cached_snapshot is not None else pd.DataFrame()
+        if cached.empty or "code" not in cached.columns:
+            raise RuntimeError(
+                "BSE live fallback requires an existing snapshot code list; "
+                + "; ".join(errors)
+            )
+        cached_codes = _normalize_codes(cached["code"])
+        cached_bse = cached.loc[cached_codes.str.startswith(("4", "8", "9"))].copy()
+        cached_bse["code"] = cached_codes.loc[cached_bse.index]
+        if len(cached_bse) < min_bse_rows:
+            raise RuntimeError(
+                f"cached BSE universe rows={len(cached_bse)} required={min_bse_rows}; "
+                + "; ".join(errors)
+            )
+        refreshed_bse = bse_fetcher(cached_bse)
+        required_refresh_rows = max(min_bse_rows, int(len(cached_bse) * 0.98))
+        if len(refreshed_bse) < required_refresh_rows:
+            raise RuntimeError(
+                f"Tencent BSE live rows={len(refreshed_bse)} required={required_refresh_rows}"
+            )
+        result = pd.concat([mainland, refreshed_bse], ignore_index=True, sort=False)
+        result["code"] = _normalize_codes(result["code"])
+        result = result.drop_duplicates("code", keep="last").reset_index(drop=True)
+        result.attrs["snapshot_source"] = "em_datacenter+tencent_bse"
+        result.attrs["source_errors"] = errors
+        return result
+
+    # ── 2. efinance (fallback if em_datacenter is unavailable) ──
     try:
         reference = fetcher("efinance")
         if _market_counts(reference["code"]).get("bj", 0) < min_bse_rows:
             raise ValueError("efinance reference missing BSE coverage")
         reference.attrs["snapshot_source"] = "efinance"
         return reference
-    except Exception as exc:  # noqa: BLE001 - continue to independent providers.
+    except Exception as exc:
         errors.append(f"efinance: {exc}")
 
-    try:
-        mainland = fetcher("em_datacenter")
-    except Exception as exc:  # noqa: BLE001 - Sina still supplies live SH/SZ quotes.
-        errors.append(f"em_datacenter: {exc}")
-        mainland = pd.DataFrame()
-
+    # ── 3. Last resort: cached BSE universe ──
     cached = cached_snapshot if cached_snapshot is not None else pd.DataFrame()
     if cached.empty or "code" not in cached.columns:
         raise RuntimeError(
@@ -145,7 +181,6 @@ def fetch_reference_snapshot_with_bse_fallback(
             f"cached BSE universe rows={len(cached_bse)} required={min_bse_rows}; "
             + "; ".join(errors)
         )
-
     refreshed_bse = bse_fetcher(cached_bse)
     required_refresh_rows = max(min_bse_rows, int(len(cached_bse) * 0.98))
     if len(refreshed_bse) < required_refresh_rows:
@@ -612,10 +647,18 @@ def _fetch_tencent_bse(
                 "code": code,
                 "name": fields[1].strip() if len(fields) > 1 else "",
                 "price": price,
+                "pre_close": _quote_float(fields, 4),
+                "open": _quote_float(fields, 5),
+                "high": _quote_float(fields, 33),
+                "low": _quote_float(fields, 34),
                 "change_pct": _quote_float(fields, 32),
                 "volume": _quote_float(fields, 36) * 100,  # Tencent BSE returns 手, convert to 股
                 "amount": _quote_amount(fields),
                 "turnover_rate": _quote_float(fields, 38),
+                "total_mv": _quote_float(fields, 45),
+                "circ_mv": _quote_float(fields, 47),
+                "pe_ratio": _quote_float(fields, 44),
+                "pb_ratio": _quote_float(fields, 46),
                 "volume_ratio": float("nan"),
                 "quote_time": _quote_time(fields),
                 "source": "tencent_bse",

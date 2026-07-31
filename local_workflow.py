@@ -50,8 +50,9 @@ from marketbase.minute_collector import collect_requested_data
 from marketbase.security_master import collect_security_master
 from marketbase.tradability import enrich_tradability
 from marketbase.volume_ratio import compute_volume_ratios_batch
-from marketbase.market_breadth import compute_market_breadth
+from marketbase.market_breadth import compute_market_breadth, compute_industry_ma_distribution
 from marketbase.intraday import append_minute_snapshot, build_intraday_sequence, audit_minute_sequence
+from marketbase.indicators import compute_rps20
 
 
 # ── 指标字段定义 ─────────────────────────────────────────────────────
@@ -68,6 +69,15 @@ _INDICATOR_VALUE_FIELDS = (
     "macd_hist",
     "atr14",
     "atr14_pct",
+    "boll_upper",
+    "boll_middle",
+    "boll_lower",
+    "boll_position",
+    "return_5d",
+    "return_10d",
+    "return_20d",
+    "upper_shadow_ratio",
+    "lower_shadow_ratio",
 )
 _INDICATOR_FIELDS = (
     *_INDICATOR_VALUE_FIELDS,
@@ -237,6 +247,11 @@ def _run_collection_locked(
          f"跌{breadth.get('full_market', {}).get('decline_count', 0)} "
          f"平{breadth.get('full_market', {}).get('unchanged_count', 0)}")
 
+    # --- 行业MA分布 ---
+    ind_ma = compute_industry_ma_distribution(frame, indicators_df)
+    _write_json_atomic(run_dir / "industry_ma_distribution.json", ind_ma)
+    emit(f"行业MA分布: {len(ind_ma)} 行业")
+
     summary = _write_outputs_and_manifest(
         run_dir, root, observed_at, frame, indicators_df, classification,
         market_audit, classification_audit, result, daily_report, codes,
@@ -327,25 +342,49 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 1
 
 def _run_minute_snapshot(frame, cache_root, observed_at, emit):
-    minute_audit = {"status": "collected"}
+    minute_audit: dict[str, object] = {"status": "pending"}
+    # ── runtime check: parquet requires pyarrow or fastparquet ──
+    try:
+        import pyarrow  # noqa: F401
+    except ImportError:
+        try:
+            import fastparquet  # noqa: F401
+        except ImportError:
+            minute_audit["status"] = "failed"
+            minute_audit["append_error"] = (
+                "missing parquet engine: install pyarrow (pip install pyarrow) or fastparquet"
+            )
+            emit(f"minute append failed: {minute_audit['append_error']}")
+            return minute_audit
     intraday_path = cache_root / "intraday_1m.parquet"
     try:
         append_minute_snapshot(frame, intraday_path)
         emit("minutes appended to intraday_1m.parquet")
     except Exception as exc:
+        minute_audit["status"] = "failed"
         minute_audit["append_error"] = _neutral_text(str(exc) or type(exc).__name__)
         emit(f"minute append failed: {minute_audit['append_error']}")
         return minute_audit
     try:
         seq = build_intraday_sequence(intraday_path)
         if not seq.empty:
-            min_audit = audit_minute_sequence(seq, observed_at=observed_at)
-            minute_audit["sequence_audit"] = min_audit
-            minute_audit["total_minutes"] = min_audit.get("actual_minutes", 0)
-            minute_audit["total_stocks"] = int(seq["code"].nunique())
-            emit(f"minute seq: {minute_audit['total_minutes']}min x {minute_audit['total_stocks']}stocks")
+            # ── filter to today's data only: intraday_1m.parquet accumulates across runs ──
+            target_date = observed_at.date()
+            if "time" in seq.columns:
+                seq_time = pd.to_datetime(seq["time"])
+                seq = seq[seq_time.dt.date == target_date].copy()
+            if seq.empty:
+                minute_audit["sequence_error"] = f"no minute data for {target_date}"
+                emit(f"minute seq: empty for {target_date}")
+            else:
+                min_audit = audit_minute_sequence(seq, observed_at=observed_at)
+                minute_audit["sequence_audit"] = min_audit
+                minute_audit["total_minutes"] = min_audit.get("actual_minutes", 0)
+                minute_audit["total_stocks"] = int(seq["code"].nunique())
+                emit(f"minute seq: {minute_audit['total_minutes']}min x {minute_audit['total_stocks']}stocks")
     except Exception as exc:
         minute_audit["sequence_error"] = _neutral_text(str(exc) or type(exc).__name__)
+        emit(f"minute sequence build failed: {minute_audit['sequence_error']}")
     try:
         vwap = frame["amount"] / frame["volume"].replace(0, float("nan"))
         minute_audit["vwap_coverage"] = int(vwap.notna().sum())
@@ -353,6 +392,9 @@ def _run_minute_snapshot(frame, cache_root, observed_at, emit):
         emit(f"VWAP computable: {minute_audit['vwap_coverage']}/{len(frame)}")
     except Exception as exc:
         minute_audit["vwap_error"] = _neutral_text(str(exc) or type(exc).__name__)
+    # Mark as collected only after all steps succeed without critical errors
+    if minute_audit.get("status") != "failed":
+        minute_audit["status"] = "collected"
     return minute_audit
 
 
@@ -372,7 +414,12 @@ def _run_enrich_classification(frame, classification, emit):
                 class_indexed[col].replace("", float("nan")).dropna()
             )
             filled = fill_values.notna().sum()
-            frame.loc[missing, col] = frame.loc[missing, col].fillna(fill_values)
+            # Convert empty strings to NaN before fillna (fillna skips empty strings)
+            frame.loc[missing, col] = (
+                frame.loc[missing, col]
+                .replace({"": float("nan"), "nan": float("nan"), "None": float("nan"), "<NA>": float("nan")})
+                .fillna(fill_values)
+            )
             enriched += filled
         if enriched:
             emit(f"class enrichment: {enriched} rows filled")
@@ -557,16 +604,55 @@ def _quality_status(
     market_audit: dict[str, object],
     daily_report: DailyCollectionReport,
     bse_codes_set: set[str],
+    *,
+    minute_audit: dict[str, object] | None = None,
 ) -> str:
-    """Return 'pass', 'partial', or 'blocked' based on coverage thresholds."""
-    # Compute market coverage from field_coverage if available, otherwise from total_rows vs field nulls
+    """Return 'data_ready' or 'data_not_ready' based on coverage, errors, and minute data.
+
+    'data_ready' means the data is complete enough for formal 15:30 post-close
+    full-market review and position-operation advice.
+  
+    'data_not_ready' covers any degradation: actual data gaps (not just
+    preferred-source failures that were handled by fallback), missing minute
+    sequences, or insufficient daily/market coverage.
+
+    Provider errors are recorded in the audit for transparency but do NOT block
+    quality_status when the data was successfully collected from a fallback source
+    (e.g. efinance failed but em_datacenter succeeded).
+    """
+    # ── minute data: must be present and auditable for VWAP / late-session review ──
+    if minute_audit:
+        if minute_audit.get("append_error"):
+            return "data_not_ready"
+        if minute_audit.get("sequence_error"):
+            return "data_not_ready"
+        if minute_audit.get("status") not in ("collected", "not_requested"):
+            return "data_not_ready"
+
+    # ── actual data gaps (not provider errors handled by fallback) ──
+    coverage_gaps = market_audit.get("coverage_gaps", [])
+    if isinstance(coverage_gaps, list):
+        for gap in coverage_gaps:
+            gap_str = str(gap)
+            # provider_error_count is informational — it means a preferred source
+            # failed but the fallback may have succeeded. Only block on actual
+            # data gaps like missing markets, duplicates, stale rows, etc.
+            if gap_str.startswith("provider_error_count"):
+                continue
+            return "data_not_ready"
+
+    # ── market coverage ──
     field_coverage = market_audit.get("field_coverage", {})
     if isinstance(field_coverage, dict) and field_coverage:
         market_coverage = sum(float(v) for v in field_coverage.values()) / max(len(field_coverage), 1)
     else:
         market_coverage = 1.0
+
+    # ── daily coverage ──
     daily_success = daily_report.success_count + daily_report.cache_hit_count
     daily_rate = daily_success / max(daily_report.total_count, 1)
+
+    # ── BSE coverage ──
     bse_total = len(bse_codes_set)
     bse_unavailable = sum(
         1 for entry in daily_report.short_history
@@ -575,10 +661,10 @@ def _quality_status(
     bse_rate = (bse_total - bse_unavailable) / max(bse_total, 1) if bse_total else 1.0
 
     if market_coverage < 0.5 or daily_rate < 0.5:
-        return "blocked"
-    if market_coverage < 0.95 or daily_rate < 0.95 or (bse_total > 0 and bse_rate < 0.9):
-        return "partial"
-    return "pass"
+        return "data_not_ready"
+    if market_coverage < 0.95 or daily_rate < 0.95 or (bse_total > 0 and bse_rate < 0.8):
+        return "data_not_ready"
+    return "data_ready"
 
 
 def _write_outputs_and_manifest(
@@ -605,6 +691,10 @@ def _write_outputs_and_manifest(
     )
     # Sort indicators by code before writing
     indicators_df_sorted = indicators_df.sort_values("code", ignore_index=True) if not indicators_df.empty else indicators_df
+    # RPS20 全市场排名
+    if not indicators_df_sorted.empty:
+        rps20 = compute_rps20(indicators_df_sorted)
+        indicators_df_sorted["rps20"] = indicators_df_sorted["code"].map(rps20)
     _write_csv_atomic(run_dir / "daily_indicators.csv", indicators_df_sorted)
     _write_csv_atomic(run_dir / "classification_map.csv", classification)
     _write_csv_atomic(root / "classification_map.csv", classification)
@@ -654,7 +744,7 @@ def _write_outputs_and_manifest(
         "generated_at": observed_at.isoformat(),
         "collection_started_at": collection_started_at,
         "collection_completed_at": collection_completed_at,
-        "quality_status": _quality_status(market_audit, daily_report, bse_codes_set),
+        "quality_status": _quality_status(market_audit, daily_report, bse_codes_set, minute_audit=minute_audit),
         "market": _json_value(market_audit),
         "daily": daily_audit,
         "indicators": {

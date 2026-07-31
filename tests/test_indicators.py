@@ -1,8 +1,9 @@
 from datetime import datetime, timedelta, timezone
 
 import pandas as pd
+import pytest
 
-from marketbase.indicators import compute_daily_indicators, compute_vwap
+from marketbase.indicators import compute_daily_indicators, compute_vwap, compute_rps20
 
 
 def make_daily(rows: int = 250) -> pd.DataFrame:
@@ -40,6 +41,17 @@ def test_daily_indicators_have_exact_keys_and_full_history_values():
         "macd_hist",
         "atr14",
         "atr14_pct",
+        "boll_upper",
+        "boll_middle",
+        "boll_lower",
+        "boll_position",
+        "return_5d",
+        "return_10d",
+        "return_20d",
+        "upper_shadow_ratio",
+        "lower_shadow_ratio",
+        "repeated_upper_shadow",
+        "overheated",
         "input_rows",
         "first_date",
         "last_date",
@@ -157,3 +169,122 @@ def test_vwap_handles_zero_volume_and_known_values():
     assert compute_vwap(pd.DataFrame({"price": [10, 20], "volume": [0, 0], "amount": [0, 0]})) is None
     frame = pd.DataFrame({"time": ["09:30", "09:31"], "price": [10, 20], "volume": [2, 3], "amount": [20, 60]})
     assert compute_vwap(frame) == 16.0
+
+
+# ── 新增指标测试 ────────────────────────────────────────────────────
+
+
+def test_bollinger_returns_expected_values():
+    frame = make_daily(250)
+    result = compute_daily_indicators(frame)
+    # 上升趋势中，boll_middle ≈ MA20, boll_position > 0.5
+    assert result["boll_middle"] == pytest.approx(241.0, rel=0.01)
+    assert result["boll_upper"] > result["boll_middle"]
+    assert result["boll_lower"] < result["boll_middle"]
+    assert 0 < result["boll_position"] < 1
+
+
+def test_bollinger_short_history_returns_none():
+    result = compute_daily_indicators(make_daily(10))
+    assert result["boll_upper"] is None
+    assert result["boll_middle"] is None
+    assert result["boll_lower"] is None
+    assert result["boll_position"] is None
+
+
+def test_return_n():
+    close = pd.Series([100, 102, 105, 103, 108, 110])
+    result = compute_daily_indicators(
+        pd.DataFrame({"date": pd.date_range("2025-01-01", periods=6, freq="D"),
+                      "close": close, "high": close + 1, "low": close - 1})
+    )
+    assert result["return_5d"] == pytest.approx(0.10, rel=0.01)  # 110/100 - 1
+
+
+def test_return_n_short_history():
+    result = compute_daily_indicators(make_daily(3))
+    assert result["return_5d"] is None
+    assert result["return_10d"] is None
+    assert result["return_20d"] is None
+
+
+def test_shadow_ratio():
+    # 长上影线: high=110, open=100, close=101, low=99
+    frame = pd.DataFrame({
+        "date": pd.date_range("2025-01-01", periods=250, freq="D"),
+        "open": [100.0] * 250,
+        "high": [110.0] * 250,
+        "low": [99.0] * 250,
+        "close": [101.0] * 250,
+        "volume": 100,
+        "amount": 10100,
+    })
+    result = compute_daily_indicators(frame)
+    # upper_shadow = (110 - 101) / (110 - 99) = 9/11 ≈ 0.818
+    assert result["upper_shadow_ratio"] == pytest.approx(9 / 11, rel=0.01)
+    # lower_shadow = (100 - 99) / (110 - 99) = 1/11 ≈ 0.091
+    assert result["lower_shadow_ratio"] == pytest.approx(1 / 11, rel=0.01)
+
+
+def test_repeated_upper_shadow_detected():
+    # 最近5天中3天有长上影
+    highs = [105, 105, 105, 105, 105]
+    lows = [100, 100, 100, 100, 100]
+    opens = [100, 100, 100, 100, 100]
+    closes = [101, 101, 104, 101, 101]  # days 1,2,4 have upper_shadow=4/5=0.8
+    frame = pd.DataFrame({
+        "date": pd.date_range("2025-01-01", periods=5, freq="D"),
+        "open": opens, "high": highs, "low": lows, "close": closes,
+        "volume": 100, "amount": 10100,
+    })
+    result = compute_daily_indicators(frame)
+    assert result["repeated_upper_shadow"] is True
+
+
+def test_repeated_upper_shadow_not_detected():
+    # No repeated upper shadows
+    highs = [105, 105, 105, 105, 105]
+    lows = [100, 100, 100, 100, 100]
+    opens = [100, 100, 100, 100, 100]
+    closes = [104, 104, 104, 104, 104]  # upper_shadow=1/5=0.2 < 0.6
+    frame = pd.DataFrame({
+        "date": pd.date_range("2025-01-01", periods=5, freq="D"),
+        "open": opens, "high": highs, "low": lows, "close": closes,
+        "volume": 100, "amount": 10100,
+    })
+    result = compute_daily_indicators(frame)
+    assert result["repeated_upper_shadow"] is False
+
+
+def test_overheated_true():
+    # RSI = 100 (all up), boll_position high
+    frame = make_daily(250)
+    result = compute_daily_indicators(frame)
+    # RSI14 = 100, boll_position close to 1
+    assert result["rsi14"] == 100.0
+    assert result["boll_position"] > 0.8
+    assert result["overheated"] is True
+
+
+def test_overheated_none_when_missing():
+    result = compute_daily_indicators(make_daily(10))
+    assert result["rsi14"] is None
+    assert result["boll_position"] is None
+    assert result["overheated"] is None
+
+
+def test_rps20_ranking():
+    indicators = pd.DataFrame({
+        "code": ["A", "B", "C", "D"],
+        "return_20d": [0.10, 0.05, -0.02, 0.20],
+    })
+    rps = compute_rps20(indicators)
+    assert rps["D"] == 100.0  # highest return
+    assert rps["C"] == 25.0   # lowest return
+    assert rps["A"] == 75.0
+    assert rps["B"] == 50.0
+
+
+def test_rps20_empty():
+    assert compute_rps20(pd.DataFrame()).empty
+    assert compute_rps20(pd.DataFrame({"code": ["A"], "return_20d": [None]})).empty

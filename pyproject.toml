@@ -12,6 +12,7 @@ license-files = ["LICENSE"]
 requires-python = ">=3.10"
 dependencies = [
     "pandas>=2.0",
+    "pyarrow>=15",
     "requests>=2.28",
 ]
 

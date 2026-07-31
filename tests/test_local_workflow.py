@@ -174,6 +174,7 @@ def test_run_collection_collects_every_market_code_and_writes_only_protocol_file
         "daily_indicators.csv",
         "classification_map.csv",
         "market_breadth.json",
+        "industry_ma_distribution.json",
         "data_audit.json",
         "manifest.json",
         "workflow.log",
@@ -301,7 +302,7 @@ def test_daily_audit_scans_requested_code_caches_and_handoff_includes_coverage(t
     assert daily["invalid_or_missing_cache"] == [{"code": "000002", "reason": "fetch_error"}]
     assert daily["latest_date_distribution"]
     assert daily["source_counts"] == {"fixture": 2}
-    assert handoff["quality_status"] == "partial"
+    assert handoff["quality_status"] == "data_not_ready"
     assert handoff["daily_success"] == 2
     assert handoff["daily_failure"] == 1
 

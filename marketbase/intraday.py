@@ -5,6 +5,9 @@
   - 锚定 VWAP (从指定时刻起的 VWAP)
   - 近 N 分钟量能变化
   - 分钟数据质量审计
+  - 分钟摆动高/低点 (named pivot)
+  - 开盘代理价 (开盘集合竞价或第一笔成交)
+  - 午后摆动低点 (13:00 后最近摆动低点)
 
 用于盘中连续性确认（如连续3分钟站稳VWAP）和尾盘确认.
 """
@@ -78,7 +81,7 @@ def audit_minute_sequence(
 
     # 时间连续性断点 (>2分钟间隔)
     if len(valid_times) > 1:
-        sorted_times = valid_times.sort_values()
+        sorted_times = valid_times.sort_values().reset_index(drop=True)
         gaps = sorted_times.diff().dropna()
         breaks = gaps[gaps > timedelta(minutes=2)]
         audit["time_continuity_breaks"] = [
@@ -238,3 +241,132 @@ def compute_intraday_metrics(
         results.append(group)
 
     return pd.concat(results, ignore_index=True) if results else df
+
+
+# ── 分钟摆动点 ─────────────────────────────────────────────────────
+
+
+def find_named_pivots(
+    minute_df: pd.DataFrame,
+    *,
+    time_col: str = "time",
+    price_col: str = "price",
+    window: int = 3,
+) -> pd.DataFrame:
+    """从分钟序列中识别摆动高/低点.
+
+    摆动高点: 价格高于前后各 window 根 K 线
+    摆动低点: 价格低于前后各 window 根 K 线
+
+    返回 DataFrame 包含: code, time, price, pivot_type (high/low), sequence
+    """
+    if minute_df.empty:
+        return pd.DataFrame(columns=["code", "time", "price", "pivot_type", "sequence"])
+
+    df = minute_df.copy()
+    for col in (time_col, price_col):
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce") if col == price_col else pd.to_datetime(df[col], errors="coerce")
+
+    pivots: list[dict[str, object]] = []
+    for code, group in df.groupby("code"):
+        group = group.sort_values(time_col).reset_index(drop=True)
+        prices = group[price_col].values
+        times = group[time_col].values
+        if len(prices) < 2 * window + 1:
+            continue
+
+        for i in range(window, len(prices) - window):
+            left = prices[i - window : i]
+            right = prices[i + 1 : i + window + 1]
+            if prices[i] > max(left) and prices[i] > max(right):
+                pivots.append({
+                    "code": code,
+                    "time": str(times[i]),
+                    "price": float(prices[i]),
+                    "pivot_type": "high",
+                    "sequence": int(i),
+                })
+            elif prices[i] < min(left) and prices[i] < min(right):
+                pivots.append({
+                    "code": code,
+                    "time": str(times[i]),
+                    "price": float(prices[i]),
+                    "pivot_type": "low",
+                    "sequence": int(i),
+                })
+
+    return pd.DataFrame(pivots) if pivots else pd.DataFrame(columns=["code", "time", "price", "pivot_type", "sequence"])
+
+
+# ── 开盘代理价 ─────────────────────────────────────────────────────
+
+
+def extract_open_proxy_price(
+    minute_df: pd.DataFrame,
+    *,
+    time_col: str = "time",
+    price_col: str = "price",
+    open_minute: str = "09:30",
+) -> pd.Series:
+    """提取每只股票的开盘代理价.
+
+    优先取开盘集合竞价成交价，无则取第一笔分钟成交价（09:30）.
+    返回以 code 为索引的 Series.
+    """
+    if minute_df.empty:
+        return pd.Series(dtype="float64")
+
+    df = minute_df.copy()
+    if time_col not in df.columns or price_col not in df.columns:
+        return pd.Series(dtype="float64")
+
+    df[time_col] = pd.to_datetime(df[time_col], errors="coerce")
+    df[price_col] = pd.to_numeric(df[price_col], errors="coerce")
+
+    # 筛选 09:30 的分钟数据（开盘第一分钟）
+    first_minute = df.loc[
+        df[time_col].dt.strftime("%H:%M") == open_minute,
+        ["code", price_col],
+    ].dropna(subset=[price_col])
+
+    if first_minute.empty:
+        return pd.Series(dtype="float64")
+
+    # 取第一笔成交价
+    result = first_minute.groupby("code")[price_col].first()
+    return result
+
+
+# ── 午后摆动低点 ───────────────────────────────────────────────────
+
+
+def find_afternoon_swing_low(
+    pivots_df: pd.DataFrame,
+    *,
+    afternoon_start: str = "13:00",
+) -> pd.DataFrame:
+    """从命名摆动点中筛选 13:00 之后的最近摆动低点.
+
+    输入: find_named_pivots 的输出
+    返回: 每只股票在 13:00 后最近的 swing low 记录
+    """
+    if pivots_df.empty:
+        return pd.DataFrame(columns=pivots_df.columns)
+
+    df = pivots_df.copy()
+    df["time"] = pd.to_datetime(df["time"], errors="coerce")
+
+    # 筛选午后低点
+    afternoon = df.loc[
+        (df["pivot_type"] == "low") &
+        (df["time"].dt.time >= pd.Timestamp(afternoon_start).time())
+    ].copy()
+
+    if afternoon.empty:
+        return pd.DataFrame(columns=pivots_df.columns)
+
+    # 每只股票取最近（时间最大）的午后低点
+    afternoon = afternoon.sort_values("time")
+    result = afternoon.groupby("code").last().reset_index()
+    return result
