@@ -1,7 +1,8 @@
 """中性技术指标 —— 纯数学计算，不含方向标签或信号分。
 
-输出指标包括：MA(5/10/20/60/120/250)、RSI(14)、MACD(DIF/DEA/Hist)、ATR(14)、
-BOLL(上轨/中轨/下轨/位置)、RPS(20)、多周期回报、上/下影比率、重复上影线标签、过热标签。
+输出指标包括：MA(5/10/11/20/23/60/120/250)、RSI(14)、MACD(DIF/DEA/Hist)、ATR(14)、
+BOLL(上轨/中轨/下轨/位置)、RPS(20)、多周期回报、上/下影比率、重复上影线标签、过热标签、
+动量增量(momentum_delta_1/3)、动量改善(momentum_improving)。
 """
 
 from __future__ import annotations
@@ -15,7 +16,9 @@ import pandas as pd
 _OUTPUT_KEYS = (
     "ma5",
     "ma10",
+    "ma11",
     "ma20",
+    "ma23",
     "ma60",
     "ma120",
     "ma250",
@@ -36,6 +39,9 @@ _OUTPUT_KEYS = (
     "lower_shadow_ratio",
     "repeated_upper_shadow",
     "overheated",
+    "momentum_delta_1",
+    "momentum_delta_3",
+    "momentum_improving",
     "input_rows",
     "first_date",
     "last_date",
@@ -88,14 +94,19 @@ def compute_daily_indicators(
     if close.empty:
         return result
 
-    for period in (5, 10, 20, 60, 120, 250):
+    for period in (5, 10, 11, 20, 23, 60, 120, 250):
         result[f"ma{period}"] = _last_value(close.rolling(period, min_periods=period).mean())
 
     result["rsi14"] = _rsi_wilder(close, 14)
-    dif, dea, hist = _macd(close)
+    dif, dea, hist, hist_series = _macd_with_series(close)
     result["macd_dif"] = dif
     result["macd_dea"] = dea
     result["macd_hist"] = hist
+
+    # ── 动量增量 ──────────────────────────────────────────────────
+    result["momentum_delta_1"] = _momentum_delta(hist_series, 1)
+    result["momentum_delta_3"] = _momentum_delta(hist_series, 3)
+    result["momentum_improving"] = _momentum_improving(hist_series)
 
     atr = _atr_wilder(df, 14)
     result["atr14"] = atr
@@ -171,15 +182,48 @@ def _rsi_wilder(close: pd.Series, period: int) -> float | None:
     return 100.0 - 100.0 / (1.0 + avg_gain / avg_loss)
 
 
-def _macd(close: pd.Series) -> tuple[float | None, float | None, float | None]:
+def _macd_with_series(
+    close: pd.Series,
+) -> tuple[float | None, float | None, float | None, pd.Series]:
+    """返回 (last_dif, last_dea, last_hist, hist_series)."""
     ema12 = close.ewm(span=12, adjust=False, min_periods=12).mean()
     ema26 = close.ewm(span=26, adjust=False, min_periods=26).mean()
     dif = ema12 - ema26
     dea = dif.ewm(span=9, adjust=False, min_periods=9).mean()
     last_dif = _last_value(dif)
     last_dea = _last_value(dea)
-    hist = None if last_dif is None or last_dea is None else (last_dif - last_dea) * 2
-    return last_dif, last_dea, hist
+    last_hist_val = None if last_dif is None or last_dea is None else (last_dif - last_dea) * 2
+    hist_series = (dif - dea) * 2
+    return last_dif, last_dea, last_hist_val, hist_series
+
+
+def _macd(close: pd.Series) -> tuple[float | None, float | None, float | None]:
+    """兼容旧接口."""
+    dif, dea, hist, _ = _macd_with_series(close)
+    return dif, dea, hist
+
+
+def _momentum_delta(hist_series: pd.Series, lag: int) -> float | None:
+    """MACD 柱在最近一根 K 线与 lag 根前 K 线的差值.
+
+    momentum_delta_n = hist[t] - hist[t-n]
+    """
+    if hist_series.empty or len(hist_series) <= lag:
+        return None
+    current = float(hist_series.iloc[-1])
+    prev = float(hist_series.iloc[-(lag + 1)])
+    if pd.isna(current) or pd.isna(prev):
+        return None
+    return current - prev
+
+
+def _momentum_improving(hist_series: pd.Series) -> bool | None:
+    """动量改善: momentum_delta_1 > 0 且 momentum_delta_3 > 0."""
+    d1 = _momentum_delta(hist_series, 1)
+    d3 = _momentum_delta(hist_series, 3)
+    if d1 is None or d3 is None:
+        return None
+    return d1 > 0 and d3 > 0
 
 
 def _atr_wilder(frame: pd.DataFrame, period: int) -> float | None:

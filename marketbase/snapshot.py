@@ -16,13 +16,18 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
+from marketbase.shared_utils import (
+    _DEFAULT_TUSHARE_HTTP_URL,
+    _configure_tushare_client,
+    _ensure_dir,
+    _serialize_frame,
+)
 from marketbase.source_guard import call_with_timeout, parse_source_timeout_seconds
 from marketbase.source_health import SourceHealth
 
 logger = logging.getLogger(__name__)
 
 _SNAPSHOT_CACHE_VERSION = 1
-_DEFAULT_TUSHARE_HTTP_URL = "http://api.waditu.com"
 _EM_REQUEST_MIN_INTERVAL_SECONDS = 1.0
 _EM_REQUEST_JITTER_SECONDS = 0.3
 _SNAPSHOT_CALL_TIMEOUT_SECONDS = 60.0
@@ -148,7 +153,7 @@ def _write_last_good_snapshot(
         return
     path = Path(path_like)
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
+        _ensure_dir(path)
         payload = {
             "version": _SNAPSHOT_CACHE_VERSION,
             "created_at": datetime.now(timezone.utc).isoformat(),
@@ -157,13 +162,13 @@ def _write_last_good_snapshot(
                 "row_count": int(len(df)),
                 "columns": list(df.columns),
             },
-            "frame": json.loads(
-                df.to_json(orient="split", date_format="iso", force_ascii=False)
-            ),
+            "frame": _serialize_frame(df),
         }
+        from marketbase.shared_utils import _atomic_replace
+
         tmp_path = path.with_name(f".{path.name}.{time.time_ns()}.tmp")
         tmp_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-        tmp_path.replace(path)
+        _atomic_replace(tmp_path, path)
     except Exception as exc:  # noqa: BLE001 - live snapshot should remain usable.
         logger.warning("Failed to write last-good snapshot cache %s: %s", path, exc)
 
@@ -536,23 +541,6 @@ def _fetch_tushare() -> pd.DataFrame:
         raise RuntimeError(f"tushare daily_basic returned empty data for {trade_date}")
 
     return _prepare_tushare_snapshot(daily, daily_basic, stock_basic)
-
-
-def _configure_tushare_client(pro: object, *, token: str) -> None:
-    try:
-        setattr(pro, "_DataApi__token", token)
-    except Exception:
-        pass
-
-    http_url = (
-        os.getenv("TUSHARE_API_URL", "").strip()
-        or os.getenv("TUSHARE_HTTP_URL", "").strip()
-        or _DEFAULT_TUSHARE_HTTP_URL
-    )
-    try:
-        setattr(pro, "_DataApi__http_url", http_url)
-    except Exception:
-        pass
 
 
 def _resolve_tushare_trade_date(pro) -> str:

@@ -1,0 +1,10 @@
+{
+  "name": "add-to-chat",
+  "version": "1.0.0",
+  "description": "选中文本后一键添加到对话上下文，支持编辑器、终端、输出区域。类似 Trae IDE 的交互体验。",
+  "author": {
+    "name": "MarketBase"
+  },
+  "keywords": ["context", "chat", "selection", "add-to-conversation"],
+  "defaultEnabled": true
+}

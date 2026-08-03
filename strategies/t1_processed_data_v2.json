@@ -1,0 +1,3952 @@
+{
+  "meta": {
+    "source_run": "181208_postclose_objective_data",
+    "source_generated_at": "2026-07-31T18:30:44.286031+08:00",
+    "formula_version": "2.0.0",
+    "quality_status": "unknown",
+    "strategy_profile_id": "watchlist_t1_v1",
+    "strategy_version": "2.0.0-dev",
+    "lifecycle_contract_version": "1.6.0",
+    "schema_version": "2.0.0",
+    "execution_rule_version": "2.0.0-dev",
+    "skill_version": "2.0.0-dev"
+  },
+  "market": {
+    "full_market": {
+      "total": 5534,
+      "advance_count": 4692,
+      "decline_count": 727,
+      "unchanged_count": 112,
+      "avg_change_pct": 2.5981,
+      "median_change_pct": 2.029,
+      "total_amount": 2560792127883.0,
+      "avg_turnover_rate": 3.6052
+    },
+    "advance_ratio": 0.8478496566678714
+  },
+  "summary": {
+    "total": 23,
+    "candidates": 11,
+    "conditional": 0,
+    "rejected": 12
+  },
+  "stocks": [
+    {
+      "code": "600030",
+      "name": "中信证券",
+      "snapshot": {
+        "price": 28.43,
+        "pre_close": 28.49,
+        "open": 28.51,
+        "high": 28.83,
+        "low": 28.38,
+        "change_pct": -0.211,
+        "volume": 165775529.0,
+        "amount": 4740201886.0,
+        "turnover_rate": 1.36143,
+        "volume_ratio": 1.3313,
+        "total_mv": 421348146348.47,
+        "circ_mv": 346179344190.82,
+        "industry": "非银行金融",
+        "board": "主板",
+        "is_st": false,
+        "is_suspended": false
+      },
+      "daily": {
+        "ma5": 28.258,
+        "ma10": 28.243,
+        "ma20": 28.348000000000003,
+        "ma60": 27.127,
+        "ma120": 26.49108333333333,
+        "ma250": 27.47532,
+        "rsi14": 54.1041428048558,
+        "atr14": 0.7065590362508676,
+        "atr14_pct": 2.4800246972652427,
+        "boll_upper": 29.087746756098337,
+        "boll_middle": 28.348000000000003,
+        "boll_lower": 27.608253243901668,
+        "return_5d": -0.0045422781271838,
+        "return_10d": 0.0138790035587187,
+        "return_20d": -0.0045422781271838,
+        "rps20": 66.06302064469395
+      },
+      "computed_v2": {
+        "formula_version": "2.0.0",
+        "decision_id": "554c5faa-1a7",
+        "strategy_profile_id": "watchlist_t1_v1",
+        "strategy_version": "2.0.0-dev",
+        "channels": {
+          "trend_continuation": {
+            "passed": false,
+            "production_buyable": true,
+            "reason": "price_not_above_ma_sequence; rps20_below_70 (66.1); momentum_not_improving; terminal_distribution_risk",
+            "evidence": {
+              "close_above_ma11": true,
+              "ma11_above_ma23": false,
+              "rps20": 66.06302064469395,
+              "momentum_improving": false,
+              "overheated": false,
+              "repeated_upper_shadow": true
+            }
+          },
+          "strong_pullback_reclaim": {
+            "passed": false,
+            "production_buyable": true,
+            "reason": "return_20d_below_8pct (-0.45%); terminal_distribution_risk",
+            "evidence": {
+              "close_above_ma23": true,
+              "return_20d": -0.0045422781271838,
+              "repeated_upper_shadow": true,
+              "pullback_boundary_pass": null,
+              "pullback_depth": null
+            }
+          },
+          "high_momentum": {
+            "passed": false,
+            "production_buyable": false,
+            "reason": "research_only; production_buyable=false",
+            "evidence": {
+              "mode": "research_only",
+              "atr14_pct": 2.4800246972652427
+            }
+          },
+          "sector_reversal_challenger": {
+            "passed": false,
+            "production_buyable": false,
+            "reason": "shadow_only; contract_not_verified",
+            "evidence": {}
+          }
+        },
+        "primary_channel": null,
+        "dual_axis": {
+          "decision": "reject",
+          "opportunity_quality": "weak",
+          "tail_risk": "high",
+          "op_score": 30,
+          "op_detail": "trend_not_aligned | rsi_healthy(54) | volume_normal(1.3x) | rps_medium(66) | industry_sync_failed",
+          "tr_count": 3,
+          "tr_flags": [
+            "high_atr_warning",
+            "long_upper_shadow",
+            "repeated_upper_shadow"
+          ],
+          "reason_code": "terminal_distribution_risk"
+        },
+        "buy_zone": {
+          "lower": 28.38,
+          "upper": 28.53,
+          "no_chase_price": 28.53,
+          "trigger_reference": 28.37314,
+          "empty": false,
+          "confirmation_above_no_chase": false
+        },
+        "sell_zone": {
+          "first_lower": 29.03,
+          "first_upper": 29.09,
+          "first_center": 29.05991927718815,
+          "second_lower": 29.38,
+          "second_upper": 29.44,
+          "second_center": 29.413198795313587,
+          "second_available": true,
+          "error": null
+        },
+        "protection": {
+          "price": 28.240000000000002,
+          "constructible": true,
+          "structural_support": 28.348000000000003,
+          "reason": ""
+        },
+        "fees": {
+          "buy_commission": 5.0,
+          "sell_commission": 5.0,
+          "stamp_tax": 1.4515,
+          "buy_transfer": 0.028530000000000003,
+          "sell_transfer": 0.029030000000000004,
+          "total_cost": 11.50906,
+          "net_profit": 38.49094,
+          "net_loss": -61.50906,
+          "fee_policy_id": "default_v1"
+        },
+        "upper_shadow": {
+          "upper_shadow_ratio": 0.7111,
+          "long_upper_shadow": true
+        },
+        "industry_sync": {
+          "pass": false,
+          "detail": "行业未同步(涨幅<=0)",
+          "advance_ratio": 0.0
+        },
+        "market": {
+          "veto": false,
+          "advance_ratio": 0.8478496566678714,
+          "broad_market_detail": 4692
+        },
+        "entry_state": "rejected",
+        "entry_state_history": [
+          {
+            "from": "unassessed",
+            "to": "rejected",
+            "decision_id": "554c5faa-1a7",
+            "reason_code": "all_channels_hard_fail"
+          }
+        ],
+        "daily_context": {
+          "trend_aligned": false,
+          "boll_position": 0.5554243728167811,
+          "rsi14": 54.1041428048558,
+          "atr14": 0.7065590362508676,
+          "atr14_pct": 2.4800246972652427,
+          "rps20": 66.06302064469395,
+          "return_5d": -0.0045422781271838,
+          "return_20d": -0.0045422781271838
+        }
+      }
+    },
+    {
+      "code": "600036",
+      "name": "招商银行",
+      "snapshot": {
+        "price": 39.62,
+        "pre_close": 40.55,
+        "open": 39.85,
+        "high": 40.17,
+        "low": 39.04,
+        "change_pct": -2.293,
+        "volume": 149155003.0,
+        "amount": 5898211993.0,
+        "turnover_rate": 0.72304,
+        "volume_ratio": 1.4145,
+        "total_mv": 999210282711.62,
+        "circ_mv": 817318778276.9801,
+        "industry": "银行",
+        "board": "主板",
+        "is_st": false,
+        "is_suspended": false
+      },
+      "daily": {
+        "ma5": 39.6,
+        "ma10": 39.054,
+        "ma20": 37.99325,
+        "ma60": 37.07858333333333,
+        "ma120": 37.665375,
+        "ma250": 39.045928,
+        "rsi14": 72.08048018890824,
+        "atr14": 0.750982977855485,
+        "atr14_pct": 1.8519925471158687,
+        "boll_upper": 40.53704466855916,
+        "boll_middle": 37.99325,
+        "boll_lower": 35.449455331440845,
+        "return_5d": 0.0421485479311231,
+        "return_10d": 0.0764534112025483,
+        "return_20d": 0.1391409388431608,
+        "rps20": 94.9293734154292
+      },
+      "computed_v2": {
+        "formula_version": "2.0.0",
+        "decision_id": "d1179e22-136",
+        "strategy_profile_id": "watchlist_t1_v1",
+        "strategy_version": "2.0.0-dev",
+        "channels": {
+          "trend_continuation": {
+            "passed": true,
+            "production_buyable": true,
+            "reason": "pass",
+            "evidence": {
+              "close_above_ma11": true,
+              "ma11_above_ma23": true,
+              "rps20": 94.9293734154292,
+              "momentum_improving": true,
+              "overheated": false,
+              "repeated_upper_shadow": false
+            }
+          },
+          "strong_pullback_reclaim": {
+            "passed": false,
+            "production_buyable": true,
+            "reason": "pullback_boundary_failed",
+            "evidence": {
+              "close_above_ma23": true,
+              "return_20d": 0.1391409388431608,
+              "repeated_upper_shadow": false,
+              "pullback_boundary_pass": null,
+              "pullback_depth": null
+            }
+          },
+          "high_momentum": {
+            "passed": false,
+            "production_buyable": false,
+            "reason": "research_only; production_buyable=false",
+            "evidence": {
+              "mode": "research_only",
+              "atr14_pct": 1.8519925471158687
+            }
+          },
+          "sector_reversal_challenger": {
+            "passed": false,
+            "production_buyable": false,
+            "reason": "shadow_only; contract_not_verified",
+            "evidence": {}
+          }
+        },
+        "primary_channel": "trend_continuation",
+        "dual_axis": {
+          "decision": "can_enter_candidate",
+          "opportunity_quality": "moderate",
+          "tail_risk": "medium",
+          "op_score": 55,
+          "op_detail": "trend_aligned | volume_normal(1.4x) | rps_strong(95) | return_5d_positive | return_20d_positive | industry_sync_failed",
+          "tr_count": 1,
+          "tr_flags": [
+            "high_atr_warning"
+          ],
+          "reason_code": ""
+        },
+        "buy_zone": {
+          "lower": 39.550000000000004,
+          "upper": 39.730000000000004,
+          "no_chase_price": 39.730000000000004,
+          "trigger_reference": 39.54076,
+          "empty": false,
+          "confirmation_above_no_chase": false
+        },
+        "sell_zone": {
+          "first_lower": 40.26,
+          "first_upper": 40.33,
+          "first_center": 40.293237233391615,
+          "second_lower": 40.64,
+          "second_upper": 40.7,
+          "second_center": 40.66872872231936,
+          "second_available": true,
+          "error": null
+        },
+        "protection": {
+          "price": 39.12,
+          "constructible": true,
+          "structural_support": 37.99325,
+          "reason": ""
+        },
+        "fees": {
+          "buy_commission": 5.0,
+          "sell_commission": 5.0,
+          "stamp_tax": 2.013,
+          "buy_transfer": 0.03973000000000001,
+          "sell_transfer": 0.040260000000000004,
+          "total_cost": 12.09299,
+          "net_profit": 40.9070099999994,
+          "net_loss": -65.0929899999994,
+          "fee_policy_id": "default_v1"
+        },
+        "upper_shadow": {
+          "upper_shadow_ratio": 0.2832,
+          "long_upper_shadow": false
+        },
+        "industry_sync": {
+          "pass": false,
+          "detail": "行业未同步(涨幅<=0)",
+          "advance_ratio": 0.0
+        },
+        "market": {
+          "veto": false,
+          "advance_ratio": 0.8478496566678714,
+          "broad_market_detail": 4692
+        },
+        "entry_state": "deep_watch",
+        "entry_state_history": [
+          {
+            "from": "unassessed",
+            "to": "deep_watch",
+            "decision_id": "d1179e22-136",
+            "reason_code": "data_complete_channel_pass"
+          }
+        ],
+        "daily_context": {
+          "trend_aligned": true,
+          "boll_position": 0.8197486849285301,
+          "rsi14": 72.08048018890824,
+          "atr14": 0.750982977855485,
+          "atr14_pct": 1.8519925471158687,
+          "rps20": 94.9293734154292,
+          "return_5d": 0.0421485479311231,
+          "return_20d": 0.1391409388431608
+        }
+      }
+    },
+    {
+      "code": "600519",
+      "name": "贵州茅台",
+      "snapshot": {
+        "price": 1350.6,
+        "pre_close": 1361.76,
+        "open": 1330.03,
+        "high": 1355.72,
+        "low": 1325.77,
+        "change_pct": -0.82,
+        "volume": 5512752.0,
+        "amount": 7373462605.0,
+        "turnover_rate": 0.44099,
+        "volume_ratio": 1.0808,
+        "total_mv": 1688360210310.6,
+        "circ_mv": 1688360210310.6,
+        "industry": "饮料",
+        "board": "主板",
+        "is_st": false,
+        "is_suspended": false
+      },
+      "daily": {
+        "ma5": 1317.934,
+        "ma10": 1307.518,
+        "ma20": 1259.3865,
+        "ma60": 1255.4936666666665,
+        "ma120": 1334.7743333333333,
+        "ma250": 1364.249196,
+        "rsi14": 70.68143607845468,
+        "atr14": 32.0112881555986,
+        "atr14_pct": 2.3507290679413844,
+        "boll_upper": 1371.1822097896315,
+        "boll_middle": 1259.3865,
+        "boll_lower": 1147.5907902103686,
+        "return_5d": 0.0539856502658648,
+        "return_10d": 0.0816289247730323,
+        "return_20d": 0.1319700748129675,
+        "rps20": 94.25932633103947
+      },
+      "computed_v2": {
+        "formula_version": "2.0.0",
+        "decision_id": "c0349275-01b",
+        "strategy_profile_id": "watchlist_t1_v1",
+        "strategy_version": "2.0.0-dev",
+        "channels": {
+          "trend_continuation": {
+            "passed": true,
+            "production_buyable": true,
+            "reason": "pass",
+            "evidence": {
+              "close_above_ma11": true,
+              "ma11_above_ma23": true,
+              "rps20": 94.25932633103947,
+              "momentum_improving": true,
+              "overheated": false,
+              "repeated_upper_shadow": false
+            }
+          },
+          "strong_pullback_reclaim": {
+            "passed": false,
+            "production_buyable": true,
+            "reason": "pullback_boundary_failed",
+            "evidence": {
+              "close_above_ma23": true,
+              "return_20d": 0.1319700748129675,
+              "repeated_upper_shadow": false,
+              "pullback_boundary_pass": null,
+              "pullback_depth": null
+            }
+          },
+          "high_momentum": {
+            "passed": false,
+            "production_buyable": false,
+            "reason": "research_only; production_buyable=false",
+            "evidence": {
+              "mode": "research_only",
+              "atr14_pct": 2.3507290679413844
+            }
+          },
+          "sector_reversal_challenger": {
+            "passed": false,
+            "production_buyable": false,
+            "reason": "shadow_only; contract_not_verified",
+            "evidence": {}
+          }
+        },
+        "primary_channel": "trend_continuation",
+        "dual_axis": {
+          "decision": "can_enter_candidate",
+          "opportunity_quality": "moderate",
+          "tail_risk": "medium",
+          "op_score": 55,
+          "op_detail": "trend_aligned | volume_normal(1.1x) | rps_strong(94) | return_5d_positive | return_20d_positive | industry_sync_failed",
+          "tr_count": 1,
+          "tr_flags": [
+            "high_atr_warning"
+          ],
+          "reason_code": ""
+        },
+        "buy_zone": {
+          "lower": 1347.9,
+          "upper": 1355.4,
+          "no_chase_price": 1355.4,
+          "trigger_reference": 1347.8988,
+          "empty": false,
+          "confirmation_above_no_chase": false
+        },
+        "sell_zone": {
+          "first_lower": 1377.81,
+          "first_upper": 1381.0,
+          "first_center": 1379.408466116699,
+          "second_lower": 1393.82,
+          "second_upper": 1397.01,
+          "second_center": 1395.4141101944983,
+          "second_available": true,
+          "error": null
+        },
+        "protection": {
+          "price": 1329.79,
+          "constructible": true,
+          "structural_support": 1259.3865,
+          "reason": ""
+        },
+        "fees": {
+          "buy_commission": 40.662,
+          "sell_commission": 41.3343,
+          "stamp_tax": 68.8905,
+          "buy_transfer": 1.3554000000000002,
+          "sell_transfer": 1.3778100000000002,
+          "total_cost": 153.62001,
+          "net_profit": 2087.3799899999854,
+          "net_loss": -2394.6200099999855,
+          "fee_policy_id": "default_v1"
+        },
+        "upper_shadow": {
+          "upper_shadow_ratio": 0.171,
+          "long_upper_shadow": false
+        },
+        "industry_sync": {
+          "pass": false,
+          "detail": "行业未同步(涨幅<=0)",
+          "advance_ratio": 0.0
+        },
+        "market": {
+          "veto": false,
+          "advance_ratio": 0.8478496566678714,
+          "broad_market_detail": 4692
+        },
+        "entry_state": "deep_watch",
+        "entry_state_history": [
+          {
+            "from": "unassessed",
+            "to": "deep_watch",
+            "decision_id": "c0349275-01b",
+            "reason_code": "data_complete_channel_pass"
+          }
+        ],
+        "daily_context": {
+          "trend_aligned": true,
+          "boll_position": 0.9079472287963392,
+          "rsi14": 70.68143607845468,
+          "atr14": 32.0112881555986,
+          "atr14_pct": 2.3507290679413844,
+          "rps20": 94.25932633103947,
+          "return_5d": 0.0539856502658648,
+          "return_20d": 0.1319700748129675
+        }
+      }
+    },
+    {
+      "code": "600809",
+      "name": "XD山西汾",
+      "snapshot": {
+        "price": 127.24,
+        "pre_close": 129.4,
+        "open": 124.0,
+        "high": 128.81,
+        "low": 122.08,
+        "change_pct": -1.669,
+        "volume": 17193560.0,
+        "amount": 2165613493.0,
+        "turnover_rate": 1.40935,
+        "volume_ratio": 1.339,
+        "total_mv": 155228247607.28,
+        "circ_mv": 155228247607.28,
+        "industry": "饮料",
+        "board": "主板",
+        "is_st": false,
+        "is_suspended": false
+      },
+      "daily": {
+        "ma5": 120.248,
+        "ma10": 117.618,
+        "ma20": 111.0055,
+        "ma60": 117.97216666666668,
+        "ma120": 135.85625,
+        "ma250": 162.85576,
+        "rsi14": 69.82211925825013,
+        "atr14": 4.999863456483857,
+        "atr14_pct": 3.863882114747957,
+        "boll_upper": 127.58887084012098,
+        "boll_middle": 111.0055,
+        "boll_lower": 94.42212915987903,
+        "return_5d": 0.1114928706407834,
+        "return_10d": 0.1493027799982236,
+        "return_20d": 0.2610856641652861,
+        "rps20": 99.0220934444042
+      },
+      "computed_v2": {
+        "formula_version": "2.0.0",
+        "decision_id": "5c4bef17-7fd",
+        "strategy_profile_id": "watchlist_t1_v1",
+        "strategy_version": "2.0.0-dev",
+        "channels": {
+          "trend_continuation": {
+            "passed": true,
+            "production_buyable": true,
+            "reason": "pass",
+            "evidence": {
+              "close_above_ma11": true,
+              "ma11_above_ma23": true,
+              "rps20": 99.0220934444042,
+              "momentum_improving": true,
+              "overheated": false,
+              "repeated_upper_shadow": false
+            }
+          },
+          "strong_pullback_reclaim": {
+            "passed": false,
+            "production_buyable": true,
+            "reason": "pullback_boundary_failed",
+            "evidence": {
+              "close_above_ma23": true,
+              "return_20d": 0.2610856641652861,
+              "repeated_upper_shadow": false,
+              "pullback_boundary_pass": null,
+              "pullback_depth": null
+            }
+          },
+          "high_momentum": {
+            "passed": false,
+            "production_buyable": false,
+            "reason": "research_only; production_buyable=false",
+            "evidence": {
+              "mode": "research_only",
+              "atr14_pct": 3.863882114747957
+            }
+          },
+          "sector_reversal_challenger": {
+            "passed": false,
+            "production_buyable": false,
+            "reason": "shadow_only; contract_not_verified",
+            "evidence": {}
+          }
+        },
+        "primary_channel": "trend_continuation",
+        "dual_axis": {
+          "decision": "can_enter_candidate",
+          "opportunity_quality": "moderate",
+          "tail_risk": "medium",
+          "op_score": 45,
+          "op_detail": "trend_not_aligned | rsi_healthy(70) | volume_normal(1.3x) | rps_strong(99) | return_5d_positive | return_20d_positive | industry_sync_failed",
+          "tr_count": 1,
+          "tr_flags": [
+            "high_atr_warning"
+          ],
+          "reason_code": ""
+        },
+        "buy_zone": {
+          "lower": 126.99000000000001,
+          "upper": 127.87,
+          "no_chase_price": 127.98,
+          "trigger_reference": 126.98552,
+          "empty": false,
+          "confirmation_above_no_chase": false
+        },
+        "sell_zone": {
+          "first_lower": 131.37,
+          "first_upper": 131.86,
+          "first_center": 131.6198975923629,
+          "second_lower": 133.87,
+          "second_upper": 134.36,
+          "second_center": 134.11982932060482,
+          "second_available": true,
+          "error": null
+        },
+        "protection": {
+          "price": 123.87,
+          "constructible": true,
+          "structural_support": 111.0055,
+          "reason": ""
+        },
+        "fees": {
+          "buy_commission": 5.0,
+          "sell_commission": 5.0,
+          "stamp_tax": 6.5685,
+          "buy_transfer": 0.12787,
+          "sell_transfer": 0.13137000000000001,
+          "total_cost": 16.827740000000002,
+          "net_profit": 333.17226,
+          "net_loss": -366.82774,
+          "fee_policy_id": "default_v1"
+        },
+        "upper_shadow": {
+          "upper_shadow_ratio": 0.2333,
+          "long_upper_shadow": false
+        },
+        "industry_sync": {
+          "pass": false,
+          "detail": "行业未同步(涨幅<=0)",
+          "advance_ratio": 0.0
+        },
+        "market": {
+          "veto": false,
+          "advance_ratio": 0.8478496566678714,
+          "broad_market_detail": 4692
+        },
+        "entry_state": "deep_watch",
+        "entry_state_history": [
+          {
+            "from": "unassessed",
+            "to": "deep_watch",
+            "decision_id": "5c4bef17-7fd",
+            "reason_code": "data_complete_channel_pass"
+          }
+        ],
+        "daily_context": {
+          "trend_aligned": false,
+          "boll_position": 0.9894813049926816,
+          "rsi14": 69.82211925825013,
+          "atr14": 4.999863456483857,
+          "atr14_pct": 3.863882114747957,
+          "rps20": 99.0220934444042,
+          "return_5d": 0.1114928706407834,
+          "return_20d": 0.2610856641652861
+        }
+      }
+    },
+    {
+      "code": "601012",
+      "name": "隆基绿能",
+      "snapshot": {
+        "price": 12.99,
+        "pre_close": 13.02,
+        "open": 12.88,
+        "high": 13.09,
+        "low": 12.85,
+        "change_pct": -0.23,
+        "volume": 94351963.0,
+        "amount": 1227218726.0,
+        "turnover_rate": 1.24507,
+        "volume_ratio": 0.8313,
+        "total_mv": 98439118232.52,
+        "circ_mv": 98439020209.98,
+        "industry": "电源设备",
+        "board": "主板",
+        "is_st": false,
+        "is_suspended": false
+      },
+      "daily": {
+        "ma5": 12.714,
+        "ma10": 12.462,
+        "ma20": 12.2315,
+        "ma60": 13.480166666666666,
+        "ma120": 15.74025,
+        "ma250": 17.013240000000003,
+        "rsi14": 56.55241990160622,
+        "atr14": 0.4649969755618223,
+        "atr14_pct": 3.5714053422567,
+        "boll_upper": 13.091421049008057,
+        "boll_middle": 12.2315,
+        "boll_lower": 11.371578950991944,
+        "return_5d": 0.0171874999999999,
+        "return_10d": 0.0978077571669477,
+        "return_20d": 0.0187793427230047,
+        "rps20": 72.47374139804418
+      },
+      "computed_v2": {
+        "formula_version": "2.0.0",
+        "decision_id": "630fc3c8-9db",
+        "strategy_profile_id": "watchlist_t1_v1",
+        "strategy_version": "2.0.0-dev",
+        "channels": {
+          "trend_continuation": {
+            "passed": false,
+            "production_buyable": true,
+            "reason": "terminal_distribution_risk",
+            "evidence": {
+              "close_above_ma11": true,
+              "ma11_above_ma23": true,
+              "rps20": 72.47374139804418,
+              "momentum_improving": true,
+              "overheated": false,
+              "repeated_upper_shadow": true
+            }
+          },
+          "strong_pullback_reclaim": {
+            "passed": false,
+            "production_buyable": true,
+            "reason": "return_20d_below_8pct (1.88%); terminal_distribution_risk",
+            "evidence": {
+              "close_above_ma23": true,
+              "return_20d": 0.0187793427230047,
+              "repeated_upper_shadow": true,
+              "pullback_boundary_pass": null,
+              "pullback_depth": null
+            }
+          },
+          "high_momentum": {
+            "passed": false,
+            "production_buyable": false,
+            "reason": "research_only; production_buyable=false",
+            "evidence": {
+              "mode": "research_only",
+              "atr14_pct": 3.5714053422567
+            }
+          },
+          "sector_reversal_challenger": {
+            "passed": false,
+            "production_buyable": false,
+            "reason": "shadow_only; contract_not_verified",
+            "evidence": {}
+          }
+        },
+        "primary_channel": null,
+        "dual_axis": {
+          "decision": "reject",
+          "opportunity_quality": "moderate",
+          "tail_risk": "high",
+          "op_score": 40,
+          "op_detail": "trend_not_aligned | rsi_healthy(57) | volume_normal(0.8x) | rps_medium(72) | return_5d_positive | return_20d_positive | industry_sync_failed",
+          "tr_count": 3,
+          "tr_flags": [
+            "high_atr_warning",
+            "long_upper_shadow",
+            "repeated_upper_shadow"
+          ],
+          "reason_code": "terminal_distribution_risk"
+        },
+        "buy_zone": {
+          "lower": 12.97,
+          "upper": 13.05,
+          "no_chase_price": 13.05,
+          "trigger_reference": 12.96402,
+          "empty": false,
+          "confirmation_above_no_chase": false
+        },
+        "sell_zone": {
+          "first_lower": 13.38,
+          "first_upper": 13.42,
+          "first_center": 13.398747731671367,
+          "second_lower": 13.61,
+          "second_upper": 13.65,
+          "second_center": 13.63124621945228,
+          "second_available": true,
+          "error": null
+        },
+        "protection": {
+          "price": 12.67,
+          "constructible": true,
+          "structural_support": 12.2315,
+          "reason": ""
+        },
+        "fees": {
+          "buy_commission": 5.0,
+          "sell_commission": 5.0,
+          "stamp_tax": 0.669,
+          "buy_transfer": 0.01305,
+          "sell_transfer": 0.013380000000000001,
+          "total_cost": 10.69543,
+          "net_profit": 22.304570000000005,
+          "net_loss": -43.69543000000001,
+          "fee_policy_id": "default_v1"
+        },
+        "upper_shadow": {
+          "upper_shadow_ratio": 0.4167,
+          "long_upper_shadow": true
+        },
+        "industry_sync": {
+          "pass": false,
+          "detail": "行业未同步(涨幅<=0)",
+          "advance_ratio": 0.0
+        },
+        "market": {
+          "veto": false,
+          "advance_ratio": 0.8478496566678714,
+          "broad_market_detail": 4692
+        },
+        "entry_state": "rejected",
+        "entry_state_history": [
+          {
+            "from": "unassessed",
+            "to": "rejected",
+            "decision_id": "630fc3c8-9db",
+            "reason_code": "all_channels_hard_fail"
+          }
+        ],
+        "daily_context": {
+          "trend_aligned": false,
+          "boll_position": 0.9410288600767195,
+          "rsi14": 56.55241990160622,
+          "atr14": 0.4649969755618223,
+          "atr14_pct": 3.5714053422567,
+          "rps20": 72.47374139804418,
+          "return_5d": 0.0171874999999999,
+          "return_20d": 0.0187793427230047
+        }
+      }
+    },
+    {
+      "code": "601318",
+      "name": "中国平安",
+      "snapshot": {
+        "price": 54.9,
+        "pre_close": 55.8,
+        "open": 54.91,
+        "high": 55.03,
+        "low": 54.2,
+        "change_pct": -1.613,
+        "volume": 105512965.0,
+        "amount": 5765094131.0,
+        "turnover_rate": 0.9898,
+        "volume_ratio": 1.2885,
+        "total_mv": 994109545525.5,
+        "circ_mv": 585237573056.7,
+        "industry": "非银行金融",
+        "board": "主板",
+        "is_st": false,
+        "is_suspended": false
+      },
+      "daily": {
+        "ma5": 54.346,
+        "ma10": 53.68000000000001,
+        "ma20": 51.727,
+        "ma60": 52.14883333333333,
+        "ma120": 55.77708333333333,
+        "ma250": 57.257160000000006,
+        "rsi14": 68.63086888611386,
+        "atr14": 1.4373310815827125,
+        "atr14_pct": 2.5758621533740365,
+        "boll_upper": 56.20130135681364,
+        "boll_middle": 51.727,
+        "boll_lower": 47.25269864318636,
+        "return_5d": 0.0276243093922651,
+        "return_10d": 0.1012433392539963,
+        "return_20d": 0.1406377759607521,
+        "rps20": 95.09235784136185
+      },
+      "computed_v2": {
+        "formula_version": "2.0.0",
+        "decision_id": "9f2e9c0f-d18",
+        "strategy_profile_id": "watchlist_t1_v1",
+        "strategy_version": "2.0.0-dev",
+        "channels": {
+          "trend_continuation": {
+            "passed": true,
+            "production_buyable": true,
+            "reason": "pass",
+            "evidence": {
+              "close_above_ma11": true,
+              "ma11_above_ma23": true,
+              "rps20": 95.09235784136185,
+              "momentum_improving": true,
+              "overheated": false,
+              "repeated_upper_shadow": false
+            }
+          },
+          "strong_pullback_reclaim": {
+            "passed": false,
+            "production_buyable": true,
+            "reason": "pullback_boundary_failed",
+            "evidence": {
+              "close_above_ma23": true,
+              "return_20d": 0.1406377759607521,
+              "repeated_upper_shadow": false,
+              "pullback_boundary_pass": null,
+              "pullback_depth": null
+            }
+          },
+          "high_momentum": {
+            "passed": false,
+            "production_buyable": false,
+            "reason": "research_only; production_buyable=false",
+            "evidence": {
+              "mode": "research_only",
+              "atr14_pct": 2.5758621533740365
+            }
+          },
+          "sector_reversal_challenger": {
+            "passed": false,
+            "production_buyable": false,
+            "reason": "shadow_only; contract_not_verified",
+            "evidence": {}
+          }
+        },
+        "primary_channel": "trend_continuation",
+        "dual_axis": {
+          "decision": "can_enter_candidate",
+          "opportunity_quality": "moderate",
+          "tail_risk": "medium",
+          "op_score": 45,
+          "op_detail": "trend_not_aligned | rsi_healthy(69) | volume_normal(1.3x) | rps_strong(95) | return_5d_positive | return_20d_positive | industry_sync_failed",
+          "tr_count": 1,
+          "tr_flags": [
+            "high_atr_warning"
+          ],
+          "reason_code": ""
+        },
+        "buy_zone": {
+          "lower": 54.800000000000004,
+          "upper": 55.11,
+          "no_chase_price": 55.11,
+          "trigger_reference": 54.7902,
+          "empty": false,
+          "confirmation_above_no_chase": false
+        },
+        "sell_zone": {
+          "first_lower": 56.120000000000005,
+          "first_upper": 56.25,
+          "first_center": 56.18799831118703,
+          "second_lower": 56.84,
+          "second_upper": 56.97,
+          "second_center": 56.906663851978394,
+          "second_available": true,
+          "error": null
+        },
+        "protection": {
+          "price": 53.96,
+          "constructible": true,
+          "structural_support": 51.727,
+          "reason": ""
+        },
+        "fees": {
+          "buy_commission": 5.0,
+          "sell_commission": 5.0,
+          "stamp_tax": 2.806,
+          "buy_transfer": 0.055110000000000006,
+          "sell_transfer": 0.05612,
+          "total_cost": 12.917230000000002,
+          "net_profit": 88.08277000000051,
+          "net_loss": -113.91723000000052,
+          "fee_policy_id": "default_v1"
+        },
+        "upper_shadow": {
+          "upper_shadow_ratio": 0.1446,
+          "long_upper_shadow": false
+        },
+        "industry_sync": {
+          "pass": false,
+          "detail": "行业未同步(涨幅<=0)",
+          "advance_ratio": 0.0
+        },
+        "market": {
+          "veto": false,
+          "advance_ratio": 0.8478496566678714,
+          "broad_market_detail": 4692
+        },
+        "entry_state": "deep_watch",
+        "entry_state_history": [
+          {
+            "from": "unassessed",
+            "to": "deep_watch",
+            "decision_id": "9f2e9c0f-d18",
+            "reason_code": "data_complete_channel_pass"
+          }
+        ],
+        "daily_context": {
+          "trend_aligned": false,
+          "boll_position": 0.8545804972622186,
+          "rsi14": 68.63086888611386,
+          "atr14": 1.4373310815827125,
+          "atr14_pct": 2.5758621533740365,
+          "rps20": 95.09235784136185,
+          "return_5d": 0.0276243093922651,
+          "return_20d": 0.1406377759607521
+        }
+      }
+    },
+    {
+      "code": "603019",
+      "name": "中科曙光",
+      "snapshot": {
+        "price": 83.46,
+        "pre_close": 81.0,
+        "open": 85.86,
+        "high": 86.38,
+        "low": 83.38,
+        "change_pct": 3.037,
+        "volume": 54482366.0,
+        "amount": 4621758330.0,
+        "turnover_rate": 3.72388,
+        "volume_ratio": 0.8393,
+        "total_mv": 122111643332.64,
+        "circ_mv": 122106515550.24,
+        "industry": "计算机硬件",
+        "board": "主板",
+        "is_st": false,
+        "is_suspended": false
+      },
+      "daily": {
+        "ma5": 90.796,
+        "ma10": 93.076,
+        "ma20": 96.1795,
+        "ma60": 93.085,
+        "ma120": 89.95866666666667,
+        "ma250": 91.60808,
+        "rsi14": 36.73573881336719,
+        "atr14": 7.277022415940836,
+        "atr14_pct": 8.983978291284982,
+        "boll_upper": 109.36509417258893,
+        "boll_middle": 96.1795,
+        "boll_lower": 82.99390582741106,
+        "return_5d": -0.1719484767941115,
+        "return_10d": -0.1705918492729879,
+        "return_20d": -0.1434010152284264,
+        "rps20": 35.711698659905835
+      },
+      "computed_v2": {
+        "formula_version": "2.0.0",
+        "decision_id": "657cfa3f-63b",
+        "strategy_profile_id": "watchlist_t1_v1",
+        "strategy_version": "2.0.0-dev",
+        "channels": {
+          "trend_continuation": {
+            "passed": false,
+            "production_buyable": true,
+            "reason": "price_not_above_ma_sequence; rps20_below_70 (35.7); momentum_not_improving",
+            "evidence": {
+              "close_above_ma11": false,
+              "ma11_above_ma23": false,
+              "rps20": 35.711698659905835,
+              "momentum_improving": false,
+              "overheated": false,
+              "repeated_upper_shadow": false
+            }
+          },
+          "strong_pullback_reclaim": {
+            "passed": false,
+            "production_buyable": true,
+            "reason": "price_not_above_ma23; return_20d_below_8pct (-14.34%)",
+            "evidence": {
+              "close_above_ma23": false,
+              "return_20d": -0.1434010152284264,
+              "repeated_upper_shadow": false,
+              "pullback_boundary_pass": null,
+              "pullback_depth": null
+            }
+          },
+          "high_momentum": {
+            "passed": false,
+            "production_buyable": false,
+            "reason": "research_only; production_buyable=false",
+            "evidence": {
+              "mode": "research_only",
+              "atr14_pct": 8.983978291284982
+            }
+          },
+          "sector_reversal_challenger": {
+            "passed": false,
+            "production_buyable": false,
+            "reason": "shadow_only; contract_not_verified",
+            "evidence": {}
+          }
+        },
+        "primary_channel": null,
+        "dual_axis": {
+          "decision": "reject",
+          "opportunity_quality": "weak",
+          "tail_risk": "medium",
+          "op_score": 20,
+          "op_detail": "trend_not_aligned | volume_normal(0.8x) | change_moderate(+3.0%) | industry_sync_failed",
+          "tr_count": 2,
+          "tr_flags": [
+            "below_ma20",
+            "high_atr_warning"
+          ],
+          "reason_code": ""
+        },
+        "buy_zone": {
+          "lower": 83.3,
+          "upper": 83.87,
+          "no_chase_price": 84.54,
+          "trigger_reference": 83.29307999999999,
+          "empty": false,
+          "confirmation_above_no_chase": false
+        },
+        "sell_zone": {
+          "first_lower": 88.97,
+          "first_upper": 89.69,
+          "first_center": 89.32776681195563,
+          "second_lower": 92.61,
+          "second_upper": 93.33,
+          "second_center": 92.96627801992605,
+          "second_available": true,
+          "error": null
+        },
+        "protection": {
+          "price": 83.28,
+          "constructible": true,
+          "structural_support": 96.1795,
+          "reason": ""
+        },
+        "fees": {
+          "buy_commission": 5.0,
+          "sell_commission": 5.0,
+          "stamp_tax": 4.4485,
+          "buy_transfer": 0.08387,
+          "sell_transfer": 0.08897000000000001,
+          "total_cost": 14.621339999999998,
+          "net_profit": 495.37865999999946,
+          "net_loss": -524.6213399999995,
+          "fee_policy_id": "default_v1"
+        },
+        "upper_shadow": {
+          "upper_shadow_ratio": 0.1733,
+          "long_upper_shadow": false
+        },
+        "industry_sync": {
+          "pass": false,
+          "detail": "行业同步(涨幅>0)",
+          "advance_ratio": 0.0
+        },
+        "market": {
+          "veto": false,
+          "advance_ratio": 0.8478496566678714,
+          "broad_market_detail": 4692
+        },
+        "entry_state": "rejected",
+        "entry_state_history": [
+          {
+            "from": "unassessed",
+            "to": "rejected",
+            "decision_id": "657cfa3f-63b",
+            "reason_code": "all_channels_hard_fail"
+          }
+        ],
+        "daily_context": {
+          "trend_aligned": false,
+          "boll_position": 0.017674371230000593,
+          "rsi14": 36.73573881336719,
+          "atr14": 7.277022415940836,
+          "atr14_pct": 8.983978291284982,
+          "rps20": 35.711698659905835,
+          "return_5d": -0.1719484767941115,
+          "return_20d": -0.1434010152284264
+        }
+      }
+    },
+    {
+      "code": "603986",
+      "name": "兆易创新",
+      "snapshot": {
+        "price": 378.6,
+        "pre_close": 371.1,
+        "open": 408.21,
+        "high": 408.21,
+        "low": 378.0,
+        "change_pct": 2.021,
+        "volume": 85692178.0,
+        "amount": 34043468918.0,
+        "turnover_rate": 12.81873,
+        "volume_ratio": 1.2407,
+        "total_mv": 265680669872.4,
+        "circ_mv": 253091046212.4,
+        "industry": "半导体",
+        "board": "主板",
+        "is_st": false,
+        "is_suspended": false
+      },
+      "daily": {
+        "ma5": 403.358,
+        "ma10": 430.973,
+        "ma20": 518.0820000000001,
+        "ma60": 522.4291666666667,
+        "ma120": 403.9120833333334,
+        "ma250": 295.92252,
+        "rsi14": 32.531804084603465,
+        "atr14": 51.53393628373658,
+        "atr14_pct": 13.886805789204145,
+        "boll_upper": 718.7133044367703,
+        "boll_middle": 518.0820000000001,
+        "boll_lower": 317.45069556322994,
+        "return_5d": -0.1789096380210637,
+        "return_10d": -0.2788713783253337,
+        "return_20d": -0.4658971517393243,
+        "rps20": 3.6580948931546544
+      },
+      "computed_v2": {
+        "formula_version": "2.0.0",
+        "decision_id": "391951ec-2eb",
+        "strategy_profile_id": "watchlist_t1_v1",
+        "strategy_version": "2.0.0-dev",
+        "channels": {
+          "trend_continuation": {
+            "passed": false,
+            "production_buyable": true,
+            "reason": "price_not_above_ma_sequence; rps20_below_70 (3.7); momentum_not_improving",
+            "evidence": {
+              "close_above_ma11": false,
+              "ma11_above_ma23": false,
+              "rps20": 3.6580948931546544,
+              "momentum_improving": false,
+              "overheated": false,
+              "repeated_upper_shadow": false
+            }
+          },
+          "strong_pullback_reclaim": {
+            "passed": false,
+            "production_buyable": true,
+            "reason": "price_not_above_ma23; return_20d_below_8pct (-46.59%)",
+            "evidence": {
+              "close_above_ma23": false,
+              "return_20d": -0.4658971517393243,
+              "repeated_upper_shadow": false,
+              "pullback_boundary_pass": null,
+              "pullback_depth": null
+            }
+          },
+          "high_momentum": {
+            "passed": false,
+            "production_buyable": false,
+            "reason": "research_only; production_buyable=false",
+            "evidence": {
+              "mode": "research_only",
+              "atr14_pct": 13.886805789204145
+            }
+          },
+          "sector_reversal_challenger": {
+            "passed": false,
+            "production_buyable": false,
+            "reason": "shadow_only; contract_not_verified",
+            "evidence": {}
+          }
+        },
+        "primary_channel": null,
+        "dual_axis": {
+          "decision": "reject",
+          "opportunity_quality": "weak",
+          "tail_risk": "medium",
+          "op_score": 20,
+          "op_detail": "trend_not_aligned | volume_normal(1.2x) | change_moderate(+2.0%) | industry_sync_failed",
+          "tr_count": 2,
+          "tr_flags": [
+            "below_ma20",
+            "high_atr_warning"
+          ],
+          "reason_code": ""
+        },
+        "buy_zone": {
+          "lower": 377.85,
+          "upper": 380.49,
+          "no_chase_price": 383.51,
+          "trigger_reference": 377.8428,
+          "empty": false,
+          "confirmation_above_no_chase": false
+        },
+        "sell_zone": {
+          "first_lower": 416.57,
+          "first_upper": 421.71000000000004,
+          "first_center": 419.1404522128024,
+          "second_lower": 442.34000000000003,
+          "second_upper": 447.48,
+          "second_center": 444.90742035467076,
+          "second_available": true,
+          "error": null
+        },
+        "protection": {
+          "price": 377.83,
+          "constructible": true,
+          "structural_support": 518.0820000000001,
+          "reason": ""
+        },
+        "fees": {
+          "buy_commission": 11.4147,
+          "sell_commission": 12.4971,
+          "stamp_tax": 20.828500000000002,
+          "buy_transfer": 0.38049000000000005,
+          "sell_transfer": 0.41657000000000005,
+          "total_cost": 45.53736000000001,
+          "net_profit": 3562.4626399999984,
+          "net_loss": -3653.537359999998,
+          "fee_policy_id": "default_v1"
+        },
+        "upper_shadow": {
+          "upper_shadow_ratio": 0.0,
+          "long_upper_shadow": false
+        },
+        "industry_sync": {
+          "pass": false,
+          "detail": "行业同步(涨幅>0)",
+          "advance_ratio": 0.0
+        },
+        "market": {
+          "veto": false,
+          "advance_ratio": 0.8478496566678714,
+          "broad_market_detail": 4692
+        },
+        "entry_state": "rejected",
+        "entry_state_history": [
+          {
+            "from": "unassessed",
+            "to": "rejected",
+            "decision_id": "391951ec-2eb",
+            "reason_code": "all_channels_hard_fail"
+          }
+        ],
+        "daily_context": {
+          "trend_aligned": false,
+          "boll_position": 0.15239223163213184,
+          "rsi14": 32.531804084603465,
+          "atr14": 51.53393628373658,
+          "atr14_pct": 13.886805789204145,
+          "rps20": 3.6580948931546544,
+          "return_5d": -0.1789096380210637,
+          "return_20d": -0.4658971517393243
+        }
+      }
+    },
+    {
+      "code": "688256",
+      "name": "寒武纪",
+      "snapshot": {
+        "price": 1106.0,
+        "pre_close": 1042.43,
+        "open": 1139.5,
+        "high": 1179.5,
+        "low": 1101.58,
+        "change_pct": 6.098,
+        "volume": 16267445.0,
+        "amount": 18552276984.0,
+        "turnover_rate": 2.58915,
+        "volume_ratio": 1.2585,
+        "total_mv": 694892023714.0,
+        "circ_mv": 694892023714.0,
+        "industry": "半导体",
+        "board": "科创板",
+        "is_st": false,
+        "is_suspended": false
+      },
+      "daily": {
+        "ma5": 1156.67,
+        "ma10": 1209.1950000000002,
+        "ma20": 1298.947,
+        "ma60": 1324.8055833333335,
+        "ma120": 1055.0377999999998,
+        "ma250": 941.774044,
+        "rsi14": 34.6064645658649,
+        "atr14": 108.43778700756997,
+        "atr14_pct": 10.40240467058411,
+        "boll_upper": 1537.605858501115,
+        "boll_middle": 1298.947,
+        "boll_lower": 1060.288141498885,
+        "return_5d": -0.1653883106485187,
+        "return_10d": -0.1851049858507527,
+        "return_20d": -0.2402113702623906,
+        "rps20": 23.342991669684896
+      },
+      "computed_v2": {
+        "formula_version": "2.0.0",
+        "decision_id": "1aa945f5-e6d",
+        "strategy_profile_id": "watchlist_t1_v1",
+        "strategy_version": "2.0.0-dev",
+        "channels": {
+          "trend_continuation": {
+            "passed": false,
+            "production_buyable": true,
+            "reason": "price_not_above_ma_sequence; rps20_below_70 (23.3); momentum_not_improving; terminal_distribution_risk",
+            "evidence": {
+              "close_above_ma11": false,
+              "ma11_above_ma23": false,
+              "rps20": 23.342991669684896,
+              "momentum_improving": false,
+              "overheated": false,
+              "repeated_upper_shadow": true
+            }
+          },
+          "strong_pullback_reclaim": {
+            "passed": false,
+            "production_buyable": true,
+            "reason": "price_not_above_ma23; return_20d_below_8pct (-24.02%); terminal_distribution_risk",
+            "evidence": {
+              "close_above_ma23": false,
+              "return_20d": -0.2402113702623906,
+              "repeated_upper_shadow": true,
+              "pullback_boundary_pass": null,
+              "pullback_depth": null
+            }
+          },
+          "high_momentum": {
+            "passed": false,
+            "production_buyable": false,
+            "reason": "research_only; production_buyable=false",
+            "evidence": {
+              "mode": "research_only",
+              "atr14_pct": 10.40240467058411
+            }
+          },
+          "sector_reversal_challenger": {
+            "passed": false,
+            "production_buyable": false,
+            "reason": "shadow_only; contract_not_verified",
+            "evidence": {}
+          }
+        },
+        "primary_channel": null,
+        "dual_axis": {
+          "decision": "reject",
+          "opportunity_quality": "weak",
+          "tail_risk": "high",
+          "op_score": 20,
+          "op_detail": "trend_not_aligned | volume_normal(1.3x) | change_moderate(+6.1%) | industry_sync_failed",
+          "tr_count": 4,
+          "tr_flags": [
+            "below_ma20",
+            "high_atr_warning",
+            "long_upper_shadow",
+            "repeated_upper_shadow"
+          ],
+          "reason_code": "terminal_distribution_risk"
+        },
+        "buy_zone": {
+          "lower": 1103.79,
+          "upper": 1111.53,
+          "no_chase_price": 1120.34,
+          "trigger_reference": 1103.788,
+          "empty": false,
+          "confirmation_above_no_chase": false
+        },
+        "sell_zone": {
+          "first_lower": 1187.44,
+          "first_upper": 1198.28,
+          "first_center": 1192.8583402556774,
+          "second_lower": 1241.66,
+          "second_upper": 1252.49,
+          "second_center": 1247.0772337594624,
+          "second_available": true,
+          "error": null
+        },
+        "protection": {
+          "price": 1103.77,
+          "constructible": true,
+          "structural_support": 1298.947,
+          "reason": ""
+        },
+        "fees": {
+          "buy_commission": 33.3459,
+          "sell_commission": 35.6232,
+          "stamp_tax": 59.372,
+          "buy_transfer": 1.1115300000000001,
+          "sell_transfer": 1.18744,
+          "total_cost": 130.64006999999998,
+          "net_profit": 7460.359930000008,
+          "net_loss": -7721.640070000009,
+          "fee_policy_id": "default_v1"
+        },
+        "upper_shadow": {
+          "upper_shadow_ratio": 0.5133,
+          "long_upper_shadow": true
+        },
+        "industry_sync": {
+          "pass": false,
+          "detail": "行业同步(涨幅>0)",
+          "advance_ratio": 0.0
+        },
+        "market": {
+          "veto": false,
+          "advance_ratio": 0.8478496566678714,
+          "broad_market_detail": 4692
+        },
+        "entry_state": "rejected",
+        "entry_state_history": [
+          {
+            "from": "unassessed",
+            "to": "rejected",
+            "decision_id": "1aa945f5-e6d",
+            "reason_code": "all_channels_hard_fail"
+          }
+        ],
+        "daily_context": {
+          "trend_aligned": false,
+          "boll_position": 0.09576819982339252,
+          "rsi14": 34.6064645658649,
+          "atr14": 108.43778700756997,
+          "atr14_pct": 10.40240467058411,
+          "rps20": 23.342991669684896,
+          "return_5d": -0.1653883106485187,
+          "return_20d": -0.2402113702623906
+        }
+      }
+    },
+    {
+      "code": "688981",
+      "name": "中芯国际",
+      "snapshot": {
+        "price": 123.99,
+        "pre_close": 122.99,
+        "open": 134.0,
+        "high": 134.99,
+        "low": 123.69,
+        "change_pct": 0.813,
+        "volume": 77312980.0,
+        "amount": 10060990504.0,
+        "turnover_rate": 3.86649,
+        "volume_ratio": 1.225,
+        "total_mv": 1061454335320.0,
+        "circ_mv": 247925760450.51,
+        "industry": "半导体",
+        "board": "科创板",
+        "is_st": false,
+        "is_suspended": false
+      },
+      "daily": {
+        "ma5": 135.618,
+        "ma10": 142.265,
+        "ma20": 148.525,
+        "ma60": 139.503,
+        "ma120": 123.62566666666666,
+        "ma250": 118.5238,
+        "rsi14": 36.6956349047541,
+        "atr14": 11.485226184667168,
+        "atr14_pct": 9.338341478711412,
+        "boll_upper": 172.69646251264064,
+        "boll_middle": 148.525,
+        "boll_lower": 124.35353748735938,
+        "return_5d": -0.1523192501206148,
+        "return_10d": -0.1897891963109355,
+        "return_20d": -0.1464954892435808,
+        "rps20": 35.18652662078957
+      },
+      "computed_v2": {
+        "formula_version": "2.0.0",
+        "decision_id": "aa9f4ef8-a0c",
+        "strategy_profile_id": "watchlist_t1_v1",
+        "strategy_version": "2.0.0-dev",
+        "channels": {
+          "trend_continuation": {
+            "passed": false,
+            "production_buyable": true,
+            "reason": "price_not_above_ma_sequence; rps20_below_70 (35.2); momentum_not_improving",
+            "evidence": {
+              "close_above_ma11": false,
+              "ma11_above_ma23": false,
+              "rps20": 35.18652662078957,
+              "momentum_improving": false,
+              "overheated": false,
+              "repeated_upper_shadow": false
+            }
+          },
+          "strong_pullback_reclaim": {
+            "passed": false,
+            "production_buyable": true,
+            "reason": "price_not_above_ma23; return_20d_below_8pct (-14.65%)",
+            "evidence": {
+              "close_above_ma23": false,
+              "return_20d": -0.1464954892435808,
+              "repeated_upper_shadow": false,
+              "pullback_boundary_pass": null,
+              "pullback_depth": null
+            }
+          },
+          "high_momentum": {
+            "passed": false,
+            "production_buyable": false,
+            "reason": "research_only; production_buyable=false",
+            "evidence": {
+              "mode": "research_only",
+              "atr14_pct": 9.338341478711412
+            }
+          },
+          "sector_reversal_challenger": {
+            "passed": false,
+            "production_buyable": false,
+            "reason": "shadow_only; contract_not_verified",
+            "evidence": {}
+          }
+        },
+        "primary_channel": null,
+        "dual_axis": {
+          "decision": "reject",
+          "opportunity_quality": "poor",
+          "tail_risk": "medium",
+          "op_score": 10,
+          "op_detail": "trend_not_aligned | volume_normal(1.2x) | change_slight(+0.8%) | industry_sync_failed",
+          "tr_count": 2,
+          "tr_flags": [
+            "below_ma20",
+            "high_atr_warning"
+          ],
+          "reason_code": ""
+        },
+        "buy_zone": {
+          "lower": 123.75,
+          "upper": 124.60000000000001,
+          "no_chase_price": 125.59,
+          "trigger_reference": 123.74202,
+          "empty": false,
+          "confirmation_above_no_chase": false
+        },
+        "sell_zone": {
+          "first_lower": 132.64000000000001,
+          "first_upper": 133.78,
+          "first_center": 133.21391963850039,
+          "second_lower": 138.39000000000001,
+          "second_upper": 139.53,
+          "second_center": 138.95653273083397,
+          "second_available": true,
+          "error": null
+        },
+        "protection": {
+          "price": 123.73,
+          "constructible": true,
+          "structural_support": 148.525,
+          "reason": ""
+        },
+        "fees": {
+          "buy_commission": 5.0,
+          "sell_commission": 5.0,
+          "stamp_tax": 6.6320000000000014,
+          "buy_transfer": 0.12460000000000002,
+          "sell_transfer": 0.13264000000000004,
+          "total_cost": 16.88924,
+          "net_profit": 787.1107600000007,
+          "net_loss": -820.8892400000007,
+          "fee_policy_id": "default_v1"
+        },
+        "upper_shadow": {
+          "upper_shadow_ratio": 0.0876,
+          "long_upper_shadow": false
+        },
+        "industry_sync": {
+          "pass": false,
+          "detail": "行业同步(涨幅>0)",
+          "advance_ratio": 0.0
+        },
+        "market": {
+          "veto": false,
+          "advance_ratio": 0.8478496566678714,
+          "broad_market_detail": 4692
+        },
+        "entry_state": "rejected",
+        "entry_state_history": [
+          {
+            "from": "unassessed",
+            "to": "rejected",
+            "decision_id": "aa9f4ef8-a0c",
+            "reason_code": "all_channels_hard_fail"
+          }
+        ],
+        "daily_context": {
+          "trend_aligned": false,
+          "boll_position": -0.0075199729261162,
+          "rsi14": 36.6956349047541,
+          "atr14": 11.485226184667168,
+          "atr14_pct": 9.338341478711412,
+          "rps20": 35.18652662078957,
+          "return_5d": -0.1523192501206148,
+          "return_20d": -0.1464954892435808
+        }
+      }
+    },
+    {
+      "code": "000001",
+      "name": "平安银行",
+      "snapshot": {
+        "price": 11.63,
+        "pre_close": 11.61,
+        "open": 11.5,
+        "high": 11.63,
+        "low": 11.28,
+        "change_pct": 0.172,
+        "volume": 202497895.0,
+        "amount": 2318839881.0,
+        "turnover_rate": 1.0435,
+        "volume_ratio": 1.3594,
+        "total_mv": 225690828642.74,
+        "circ_mv": 225687135594.39,
+        "industry": "银行",
+        "board": "主板",
+        "is_st": false,
+        "is_suspended": false
+      },
+      "daily": {
+        "ma5": 11.26,
+        "ma10": 11.096,
+        "ma20": 10.83,
+        "ma60": 10.679,
+        "ma120": 10.66225,
+        "ma250": 10.956856,
+        "rsi14": 74.8579941171367,
+        "atr14": 0.2133502620946993,
+        "atr14_pct": 1.837642223037893,
+        "boll_upper": 11.504279342393763,
+        "boll_middle": 10.83,
+        "boll_lower": 10.155720657606237,
+        "return_5d": 0.0478339350180504,
+        "return_10d": 0.0779944289693593,
+        "return_20d": 0.1293774319066148,
+        "rps20": 94.1325606664252
+      },
+      "computed_v2": {
+        "formula_version": "2.0.0",
+        "decision_id": "52d41fda-bf4",
+        "strategy_profile_id": "watchlist_t1_v1",
+        "strategy_version": "2.0.0-dev",
+        "channels": {
+          "trend_continuation": {
+            "passed": true,
+            "production_buyable": true,
+            "reason": "pass",
+            "evidence": {
+              "close_above_ma11": true,
+              "ma11_above_ma23": true,
+              "rps20": 94.1325606664252,
+              "momentum_improving": true,
+              "overheated": false,
+              "repeated_upper_shadow": false
+            }
+          },
+          "strong_pullback_reclaim": {
+            "passed": false,
+            "production_buyable": true,
+            "reason": "pullback_boundary_failed",
+            "evidence": {
+              "close_above_ma23": true,
+              "return_20d": 0.1293774319066148,
+              "repeated_upper_shadow": false,
+              "pullback_boundary_pass": null,
+              "pullback_depth": null
+            }
+          },
+          "high_momentum": {
+            "passed": false,
+            "production_buyable": false,
+            "reason": "research_only; production_buyable=false",
+            "evidence": {
+              "mode": "research_only",
+              "atr14_pct": 1.837642223037893
+            }
+          },
+          "sector_reversal_challenger": {
+            "passed": false,
+            "production_buyable": false,
+            "reason": "shadow_only; contract_not_verified",
+            "evidence": {}
+          }
+        },
+        "primary_channel": "trend_continuation",
+        "dual_axis": {
+          "decision": "can_enter_candidate",
+          "opportunity_quality": "moderate",
+          "tail_risk": "medium",
+          "op_score": 55,
+          "op_detail": "trend_aligned | volume_normal(1.4x) | change_slight(+0.2%) | rps_strong(94) | return_5d_positive | return_20d_positive | industry_sync_failed",
+          "tr_count": 1,
+          "tr_flags": [
+            "high_atr_warning"
+          ],
+          "reason_code": ""
+        },
+        "buy_zone": {
+          "lower": 11.61,
+          "upper": 11.66,
+          "no_chase_price": 11.66,
+          "trigger_reference": 11.60674,
+          "empty": false,
+          "confirmation_above_no_chase": false
+        },
+        "sell_zone": {
+          "first_lower": 11.81,
+          "first_upper": 11.83,
+          "first_center": 11.820012696571025,
+          "second_lower": 11.92,
+          "second_upper": 11.93,
+          "second_center": 11.926687827618375,
+          "second_available": true,
+          "error": null
+        },
+        "protection": {
+          "price": 11.48,
+          "constructible": true,
+          "structural_support": 10.83,
+          "reason": ""
+        },
+        "fees": {
+          "buy_commission": 5.0,
+          "sell_commission": 5.0,
+          "stamp_tax": 0.5905,
+          "buy_transfer": 0.01166,
+          "sell_transfer": 0.011810000000000001,
+          "total_cost": 10.61397,
+          "net_profit": 4.386030000000035,
+          "net_loss": -25.613970000000037,
+          "fee_policy_id": "default_v1"
+        },
+        "upper_shadow": {
+          "upper_shadow_ratio": 0.0,
+          "long_upper_shadow": false
+        },
+        "industry_sync": {
+          "pass": false,
+          "detail": "行业同步(涨幅>0)",
+          "advance_ratio": 0.0
+        },
+        "market": {
+          "veto": false,
+          "advance_ratio": 0.8478496566678714,
+          "broad_market_detail": 4692
+        },
+        "entry_state": "deep_watch",
+        "entry_state_history": [
+          {
+            "from": "unassessed",
+            "to": "deep_watch",
+            "decision_id": "52d41fda-bf4",
+            "reason_code": "data_complete_channel_pass"
+          }
+        ],
+        "daily_context": {
+          "trend_aligned": true,
+          "boll_position": 1.0932259448731705,
+          "rsi14": 74.8579941171367,
+          "atr14": 0.2133502620946993,
+          "atr14_pct": 1.837642223037893,
+          "rps20": 94.1325606664252,
+          "return_5d": 0.0478339350180504,
+          "return_20d": 0.1293774319066148
+        }
+      }
+    },
+    {
+      "code": "000333",
+      "name": "美的集团",
+      "snapshot": {
+        "price": 87.6,
+        "pre_close": 88.95,
+        "open": 87.01,
+        "high": 87.79,
+        "low": 84.51,
+        "change_pct": -1.518,
+        "volume": 47504454.0,
+        "amount": 4107738670.0,
+        "turnover_rate": 0.69024,
+        "volume_ratio": 1.3631,
+        "total_mv": 668057117017.2,
+        "circ_mv": 602887667556.0,
+        "industry": "白色家电",
+        "board": "主板",
+        "is_st": false,
+        "is_suspended": false
+      },
+      "daily": {
+        "ma5": 85.992,
+        "ma10": 85.08099999999999,
+        "ma20": 82.58349999999999,
+        "ma60": 79.21833333333333,
+        "ma120": 76.55999999999999,
+        "ma250": 74.11724000000001,
+        "rsi14": 75.41191238454458,
+        "atr14": 2.107041891051836,
+        "atr14_pct": 2.368793581845796,
+        "boll_upper": 88.5735137070391,
+        "boll_middle": 82.58349999999999,
+        "boll_lower": 76.59348629296088,
+        "return_5d": 0.0493098973693524,
+        "return_10d": 0.0874083129584352,
+        "return_20d": 0.1550447993767043,
+        "rps20": 96.12459253893518
+      },
+      "computed_v2": {
+        "formula_version": "2.0.0",
+        "decision_id": "7ecba974-444",
+        "strategy_profile_id": "watchlist_t1_v1",
+        "strategy_version": "2.0.0-dev",
+        "channels": {
+          "trend_continuation": {
+            "passed": true,
+            "production_buyable": true,
+            "reason": "pass",
+            "evidence": {
+              "close_above_ma11": true,
+              "ma11_above_ma23": true,
+              "rps20": 96.12459253893518,
+              "momentum_improving": true,
+              "overheated": false,
+              "repeated_upper_shadow": false
+            }
+          },
+          "strong_pullback_reclaim": {
+            "passed": false,
+            "production_buyable": true,
+            "reason": "pullback_boundary_failed",
+            "evidence": {
+              "close_above_ma23": true,
+              "return_20d": 0.1550447993767043,
+              "repeated_upper_shadow": false,
+              "pullback_boundary_pass": null,
+              "pullback_depth": null
+            }
+          },
+          "high_momentum": {
+            "passed": false,
+            "production_buyable": false,
+            "reason": "research_only; production_buyable=false",
+            "evidence": {
+              "mode": "research_only",
+              "atr14_pct": 2.368793581845796
+            }
+          },
+          "sector_reversal_challenger": {
+            "passed": false,
+            "production_buyable": false,
+            "reason": "shadow_only; contract_not_verified",
+            "evidence": {}
+          }
+        },
+        "primary_channel": "trend_continuation",
+        "dual_axis": {
+          "decision": "can_enter_candidate",
+          "opportunity_quality": "moderate",
+          "tail_risk": "medium",
+          "op_score": 55,
+          "op_detail": "trend_aligned | volume_normal(1.4x) | rps_strong(96) | return_5d_positive | return_20d_positive | industry_sync_failed",
+          "tr_count": 1,
+          "tr_flags": [
+            "high_atr_warning"
+          ],
+          "reason_code": ""
+        },
+        "buy_zone": {
+          "lower": 87.43,
+          "upper": 87.91,
+          "no_chase_price": 87.91,
+          "trigger_reference": 87.42479999999999,
+          "empty": false,
+          "confirmation_above_no_chase": false
+        },
+        "sell_zone": {
+          "first_lower": 89.39,
+          "first_upper": 89.59,
+          "first_center": 89.49028141828887,
+          "second_lower": 90.44,
+          "second_upper": 90.64,
+          "second_center": 90.54380236381479,
+          "second_available": true,
+          "error": null
+        },
+        "protection": {
+          "price": 86.22,
+          "constructible": true,
+          "structural_support": 82.58349999999999,
+          "reason": ""
+        },
+        "fees": {
+          "buy_commission": 5.0,
+          "sell_commission": 5.0,
+          "stamp_tax": 4.4695,
+          "buy_transfer": 0.08791,
+          "sell_transfer": 0.08939000000000001,
+          "total_cost": 14.6468,
+          "net_profit": 133.35320000000038,
+          "net_loss": -162.6468000000004,
+          "fee_policy_id": "default_v1"
+        },
+        "upper_shadow": {
+          "upper_shadow_ratio": 0.0579,
+          "long_upper_shadow": false
+        },
+        "industry_sync": {
+          "pass": false,
+          "detail": "行业未同步(涨幅<=0)",
+          "advance_ratio": 0.0
+        },
+        "market": {
+          "veto": false,
+          "advance_ratio": 0.8478496566678714,
+          "broad_market_detail": 4692
+        },
+        "entry_state": "deep_watch",
+        "entry_state_history": [
+          {
+            "from": "unassessed",
+            "to": "deep_watch",
+            "decision_id": "7ecba974-444",
+            "reason_code": "data_complete_channel_pass"
+          }
+        ],
+        "daily_context": {
+          "trend_aligned": true,
+          "boll_position": 0.9187386077351469,
+          "rsi14": 75.41191238454458,
+          "atr14": 2.107041891051836,
+          "atr14_pct": 2.368793581845796,
+          "rps20": 96.12459253893518,
+          "return_5d": 0.0493098973693524,
+          "return_20d": 0.1550447993767043
+        }
+      }
+    },
+    {
+      "code": "000725",
+      "name": "京东方Ａ",
+      "snapshot": {
+        "price": 5.51,
+        "pre_close": 5.36,
+        "open": 5.69,
+        "high": 5.72,
+        "low": 5.51,
+        "change_pct": 2.799,
+        "volume": 2065917277.0,
+        "amount": 11597252907.0,
+        "turnover_rate": 5.84135,
+        "volume_ratio": 1.171,
+        "total_mv": 204114247632.64,
+        "circ_mv": 194872908984.67,
+        "industry": "电子器件",
+        "board": "主板",
+        "is_st": false,
+        "is_suspended": false
+      },
+      "daily": {
+        "ma5": 5.682,
+        "ma10": 5.868,
+        "ma20": 6.602499999999999,
+        "ma60": 6.0839333333333325,
+        "ma120": 5.108133333333333,
+        "ma250": 4.565304,
+        "rsi14": 37.2386031468685,
+        "atr14": 0.4906983917750106,
+        "atr14_pct": 9.154820742071092,
+        "boll_upper": 8.468955971818422,
+        "boll_middle": 6.602499999999999,
+        "boll_lower": 4.736044028181576,
+        "return_5d": -0.1155115511551154,
+        "return_10d": -0.1140495867768594,
+        "return_20d": -0.4109890109890109,
+        "rps20": 7.406736689605216
+      },
+      "computed_v2": {
+        "formula_version": "2.0.0",
+        "decision_id": "9ad5ad23-58a",
+        "strategy_profile_id": "watchlist_t1_v1",
+        "strategy_version": "2.0.0-dev",
+        "channels": {
+          "trend_continuation": {
+            "passed": false,
+            "production_buyable": true,
+            "reason": "price_not_above_ma_sequence; rps20_below_70 (7.4); momentum_not_improving",
+            "evidence": {
+              "close_above_ma11": false,
+              "ma11_above_ma23": false,
+              "rps20": 7.406736689605216,
+              "momentum_improving": false,
+              "overheated": false,
+              "repeated_upper_shadow": false
+            }
+          },
+          "strong_pullback_reclaim": {
+            "passed": false,
+            "production_buyable": true,
+            "reason": "price_not_above_ma23; return_20d_below_8pct (-41.10%)",
+            "evidence": {
+              "close_above_ma23": false,
+              "return_20d": -0.4109890109890109,
+              "repeated_upper_shadow": false,
+              "pullback_boundary_pass": null,
+              "pullback_depth": null
+            }
+          },
+          "high_momentum": {
+            "passed": false,
+            "production_buyable": false,
+            "reason": "research_only; production_buyable=false",
+            "evidence": {
+              "mode": "research_only",
+              "atr14_pct": 9.154820742071092
+            }
+          },
+          "sector_reversal_challenger": {
+            "passed": false,
+            "production_buyable": false,
+            "reason": "shadow_only; contract_not_verified",
+            "evidence": {}
+          }
+        },
+        "primary_channel": null,
+        "dual_axis": {
+          "decision": "reject",
+          "opportunity_quality": "weak",
+          "tail_risk": "medium",
+          "op_score": 20,
+          "op_detail": "trend_not_aligned | volume_normal(1.2x) | change_moderate(+2.8%) | industry_sync_failed",
+          "tr_count": 2,
+          "tr_flags": [
+            "below_ma20",
+            "high_atr_warning"
+          ],
+          "reason_code": ""
+        },
+        "buy_zone": {
+          "lower": 5.5,
+          "upper": 5.53,
+          "no_chase_price": 5.58,
+          "trigger_reference": 5.4989799999999995,
+          "empty": false,
+          "confirmation_above_no_chase": false
+        },
+        "sell_zone": {
+          "first_lower": 5.88,
+          "first_upper": 5.92,
+          "first_center": 5.898023793831258,
+          "second_lower": 6.12,
+          "second_upper": 6.16,
+          "second_center": 6.143372989718763,
+          "second_available": true,
+          "error": null
+        },
+        "protection": {
+          "price": 5.48,
+          "constructible": true,
+          "structural_support": 6.602499999999999,
+          "reason": ""
+        },
+        "fees": {
+          "buy_commission": 5.0,
+          "sell_commission": 5.0,
+          "stamp_tax": 0.294,
+          "buy_transfer": 0.00553,
+          "sell_transfer": 0.005880000000000001,
+          "total_cost": 10.30541,
+          "net_profit": 24.694589999999963,
+          "net_loss": -45.305409999999966,
+          "fee_policy_id": "default_v1"
+        },
+        "upper_shadow": {
+          "upper_shadow_ratio": 0.1429,
+          "long_upper_shadow": false
+        },
+        "industry_sync": {
+          "pass": false,
+          "detail": "行业同步(涨幅>0)",
+          "advance_ratio": 0.0
+        },
+        "market": {
+          "veto": false,
+          "advance_ratio": 0.8478496566678714,
+          "broad_market_detail": 4692
+        },
+        "entry_state": "rejected",
+        "entry_state_history": [
+          {
+            "from": "unassessed",
+            "to": "rejected",
+            "decision_id": "9ad5ad23-58a",
+            "reason_code": "all_channels_hard_fail"
+          }
+        ],
+        "daily_context": {
+          "trend_aligned": false,
+          "boll_position": 0.20733303745289675,
+          "rsi14": 37.2386031468685,
+          "atr14": 0.4906983917750106,
+          "atr14_pct": 9.154820742071092,
+          "rps20": 7.406736689605216,
+          "return_5d": -0.1155115511551154,
+          "return_20d": -0.4109890109890109
+        }
+      }
+    },
+    {
+      "code": "000858",
+      "name": "五 粮 液",
+      "snapshot": {
+        "price": 78.0,
+        "pre_close": 78.56,
+        "open": 76.99,
+        "high": 78.68,
+        "low": 76.59,
+        "change_pct": -0.713,
+        "volume": 49786045.0,
+        "amount": 3882961625.0,
+        "turnover_rate": 1.28265,
+        "volume_ratio": 1.2662,
+        "total_mv": 302765424390.0,
+        "circ_mv": 302758044498.0,
+        "industry": "饮料",
+        "board": "主板",
+        "is_st": false,
+        "is_suspended": false
+      },
+      "daily": {
+        "ma5": 75.2,
+        "ma10": 74.897,
+        "ma20": 74.0125,
+        "ma60": 77.79433333333334,
+        "ma120": 89.19800000000001,
+        "ma250": 101.938776,
+        "rsi14": 59.81353548709898,
+        "atr14": 2.26127200246544,
+        "atr14_pct": 2.878401225134216,
+        "boll_upper": 77.57903967637228,
+        "boll_middle": 74.0125,
+        "boll_lower": 70.44596032362773,
+        "return_5d": 0.0497060395510422,
+        "return_10d": 0.0630581867388362,
+        "return_20d": 0.068843537414966,
+        "rps20": 85.15030785947121
+      },
+      "computed_v2": {
+        "formula_version": "2.0.0",
+        "decision_id": "eaa3c467-886",
+        "strategy_profile_id": "watchlist_t1_v1",
+        "strategy_version": "2.0.0-dev",
+        "channels": {
+          "trend_continuation": {
+            "passed": true,
+            "production_buyable": true,
+            "reason": "pass",
+            "evidence": {
+              "close_above_ma11": true,
+              "ma11_above_ma23": true,
+              "rps20": 85.15030785947121,
+              "momentum_improving": true,
+              "overheated": false,
+              "repeated_upper_shadow": false
+            }
+          },
+          "strong_pullback_reclaim": {
+            "passed": false,
+            "production_buyable": true,
+            "reason": "return_20d_below_8pct (6.88%)",
+            "evidence": {
+              "close_above_ma23": true,
+              "return_20d": 0.068843537414966,
+              "repeated_upper_shadow": false,
+              "pullback_boundary_pass": null,
+              "pullback_depth": null
+            }
+          },
+          "high_momentum": {
+            "passed": false,
+            "production_buyable": false,
+            "reason": "research_only; production_buyable=false",
+            "evidence": {
+              "mode": "research_only",
+              "atr14_pct": 2.878401225134216
+            }
+          },
+          "sector_reversal_challenger": {
+            "passed": false,
+            "production_buyable": false,
+            "reason": "shadow_only; contract_not_verified",
+            "evidence": {}
+          }
+        },
+        "primary_channel": "trend_continuation",
+        "dual_axis": {
+          "decision": "can_enter_candidate",
+          "opportunity_quality": "moderate",
+          "tail_risk": "medium",
+          "op_score": 45,
+          "op_detail": "trend_not_aligned | rsi_healthy(60) | volume_normal(1.3x) | rps_strong(85) | return_5d_positive | return_20d_positive | industry_sync_failed",
+          "tr_count": 1,
+          "tr_flags": [
+            "high_atr_warning"
+          ],
+          "reason_code": ""
+        },
+        "buy_zone": {
+          "lower": 77.85000000000001,
+          "upper": 78.33,
+          "no_chase_price": 78.33,
+          "trigger_reference": 77.844,
+          "empty": false,
+          "confirmation_above_no_chase": false
+        },
+        "sell_zone": {
+          "first_lower": 79.92,
+          "first_upper": 80.13,
+          "first_center": 80.02595400184907,
+          "second_lower": 81.05,
+          "second_upper": 81.26,
+          "second_center": 81.1565900030818,
+          "second_available": true,
+          "error": null
+        },
+        "protection": {
+          "price": 76.52,
+          "constructible": true,
+          "structural_support": 74.0125,
+          "reason": ""
+        },
+        "fees": {
+          "buy_commission": 5.0,
+          "sell_commission": 5.0,
+          "stamp_tax": 3.996,
+          "buy_transfer": 0.07833000000000001,
+          "sell_transfer": 0.07992,
+          "total_cost": 14.15425,
+          "net_profit": 144.84575000000035,
+          "net_loss": -173.15425000000033,
+          "fee_policy_id": "default_v1"
+        },
+        "upper_shadow": {
+          "upper_shadow_ratio": 0.3254,
+          "long_upper_shadow": false
+        },
+        "industry_sync": {
+          "pass": false,
+          "detail": "行业未同步(涨幅<=0)",
+          "advance_ratio": 0.0
+        },
+        "market": {
+          "veto": false,
+          "advance_ratio": 0.8478496566678714,
+          "broad_market_detail": 4692
+        },
+        "entry_state": "deep_watch",
+        "entry_state_history": [
+          {
+            "from": "unassessed",
+            "to": "deep_watch",
+            "decision_id": "eaa3c467-886",
+            "reason_code": "data_complete_channel_pass"
+          }
+        ],
+        "daily_context": {
+          "trend_aligned": false,
+          "boll_position": 1.0590152307033784,
+          "rsi14": 59.81353548709898,
+          "atr14": 2.26127200246544,
+          "atr14_pct": 2.878401225134216,
+          "rps20": 85.15030785947121,
+          "return_5d": 0.0497060395510422,
+          "return_20d": 0.068843537414966
+        }
+      }
+    },
+    {
+      "code": "002230",
+      "name": "科大讯飞",
+      "snapshot": {
+        "price": 42.22,
+        "pre_close": 39.87,
+        "open": 40.47,
+        "high": 43.22,
+        "low": 40.3,
+        "change_pct": 5.894,
+        "volume": 95553680.0,
+        "amount": 4014826117.0,
+        "turnover_rate": 4.36325,
+        "volume_ratio": 2.9978,
+        "total_mv": 101415810887.02,
+        "circ_mv": 92460404206.8,
+        "industry": "计算机软件",
+        "board": "中小板",
+        "is_st": false,
+        "is_suspended": false
+      },
+      "daily": {
+        "ma5": 39.672,
+        "ma10": 40.347,
+        "ma20": 40.925,
+        "ma60": 43.91516666666666,
+        "ma120": 47.60625,
+        "ma250": 49.90576,
+        "rsi14": 42.39423782550781,
+        "atr14": 1.4223554127442148,
+        "atr14_pct": 3.5674828511266994,
+        "boll_upper": 43.00010050485815,
+        "boll_middle": 40.925,
+        "boll_lower": 38.84989949514185,
+        "return_5d": -0.0153124228204496,
+        "return_10d": -0.0504882114789236,
+        "return_20d": -0.0294547224926971,
+        "rps20": 59.00036218761319
+      },
+      "computed_v2": {
+        "formula_version": "2.0.0",
+        "decision_id": "22e1c84d-55b",
+        "strategy_profile_id": "watchlist_t1_v1",
+        "strategy_version": "2.0.0-dev",
+        "channels": {
+          "trend_continuation": {
+            "passed": false,
+            "production_buyable": true,
+            "reason": "price_not_above_ma_sequence; rps20_below_70 (59.0); momentum_not_improving",
+            "evidence": {
+              "close_above_ma11": true,
+              "ma11_above_ma23": false,
+              "rps20": 59.00036218761319,
+              "momentum_improving": false,
+              "overheated": false,
+              "repeated_upper_shadow": false
+            }
+          },
+          "strong_pullback_reclaim": {
+            "passed": false,
+            "production_buyable": true,
+            "reason": "return_20d_below_8pct (-2.95%)",
+            "evidence": {
+              "close_above_ma23": true,
+              "return_20d": -0.0294547224926971,
+              "repeated_upper_shadow": false,
+              "pullback_boundary_pass": null,
+              "pullback_depth": null
+            }
+          },
+          "high_momentum": {
+            "passed": false,
+            "production_buyable": false,
+            "reason": "research_only; production_buyable=false",
+            "evidence": {
+              "mode": "research_only",
+              "atr14_pct": 3.5674828511266994
+            }
+          },
+          "sector_reversal_challenger": {
+            "passed": false,
+            "production_buyable": false,
+            "reason": "shadow_only; contract_not_verified",
+            "evidence": {}
+          }
+        },
+        "primary_channel": null,
+        "dual_axis": {
+          "decision": "can_enter_candidate",
+          "opportunity_quality": "moderate",
+          "tail_risk": "medium",
+          "op_score": 55,
+          "op_detail": "trend_not_aligned | rsi_healthy(42) | volume_high(3.0x) | change_moderate(+5.9%) | rps_medium(59) | industry_sync_failed",
+          "tr_count": 1,
+          "tr_flags": [
+            "high_atr_warning"
+          ],
+          "reason_code": ""
+        },
+        "buy_zone": {
+          "lower": 42.14,
+          "upper": 42.43,
+          "no_chase_price": 42.43,
+          "trigger_reference": 42.13556,
+          "empty": false,
+          "confirmation_above_no_chase": false
+        },
+        "sell_zone": {
+          "first_lower": 43.43,
+          "first_upper": 43.56,
+          "first_center": 43.49676655955816,
+          "second_lower": 44.14,
+          "second_upper": 44.27,
+          "second_center": 44.207944265930266,
+          "second_available": true,
+          "error": null
+        },
+        "protection": {
+          "price": 41.29,
+          "constructible": true,
+          "structural_support": 40.925,
+          "reason": ""
+        },
+        "fees": {
+          "buy_commission": 5.0,
+          "sell_commission": 5.0,
+          "stamp_tax": 2.1715,
+          "buy_transfer": 0.04243,
+          "sell_transfer": 0.04343,
+          "total_cost": 12.25736,
+          "net_profit": 87.74264,
+          "net_loss": -112.25736,
+          "fee_policy_id": "default_v1"
+        },
+        "upper_shadow": {
+          "upper_shadow_ratio": 0.3425,
+          "long_upper_shadow": false
+        },
+        "industry_sync": {
+          "pass": false,
+          "detail": "行业同步(涨幅>0)",
+          "advance_ratio": 0.0
+        },
+        "market": {
+          "veto": false,
+          "advance_ratio": 0.8478496566678714,
+          "broad_market_detail": 4692
+        },
+        "entry_state": "rejected",
+        "entry_state_history": [
+          {
+            "from": "unassessed",
+            "to": "rejected",
+            "decision_id": "22e1c84d-55b",
+            "reason_code": "all_channels_hard_fail"
+          }
+        ],
+        "daily_context": {
+          "trend_aligned": false,
+          "boll_position": 0.8120330791130814,
+          "rsi14": 42.39423782550781,
+          "atr14": 1.4223554127442148,
+          "atr14_pct": 3.5674828511266994,
+          "rps20": 59.00036218761319,
+          "return_5d": -0.0153124228204496,
+          "return_20d": -0.0294547224926971
+        }
+      }
+    },
+    {
+      "code": "002353",
+      "name": "杰瑞股份",
+      "snapshot": {
+        "price": 134.7,
+        "pre_close": 125.73,
+        "open": 135.08,
+        "high": 138.3,
+        "low": 133.0,
+        "change_pct": 7.134,
+        "volume": 28423696.0,
+        "amount": 3882303328.0,
+        "turnover_rate": 4.11318,
+        "volume_ratio": 0.9619,
+        "total_mv": 137913380705.1,
+        "circ_mv": 93082901440.5,
+        "industry": "石油天然气",
+        "board": "中小板",
+        "is_st": false,
+        "is_suspended": false
+      },
+      "daily": {
+        "ma5": 137.932,
+        "ma10": 130.583,
+        "ma20": 141.649,
+        "ma60": 146.03866666666667,
+        "ma120": 127.34275,
+        "ma250": 90.83372,
+        "rsi14": 43.12959699555036,
+        "atr14": 12.647904746645285,
+        "atr14_pct": 10.059575874210838,
+        "boll_upper": 175.95293680031406,
+        "boll_middle": 141.649,
+        "boll_lower": 107.34506319968594,
+        "return_5d": -0.0694249130338243,
+        "return_10d": -0.036551724137931,
+        "return_20d": -0.1434119089794249,
+        "rps20": 35.69358927924665
+      },
+      "computed_v2": {
+        "formula_version": "2.0.0",
+        "decision_id": "42ec534b-8bc",
+        "strategy_profile_id": "watchlist_t1_v1",
+        "strategy_version": "2.0.0-dev",
+        "channels": {
+          "trend_continuation": {
+            "passed": false,
+            "production_buyable": true,
+            "reason": "price_not_above_ma_sequence; rps20_below_70 (35.7); momentum_not_improving; terminal_distribution_risk",
+            "evidence": {
+              "close_above_ma11": true,
+              "ma11_above_ma23": false,
+              "rps20": 35.69358927924665,
+              "momentum_improving": false,
+              "overheated": false,
+              "repeated_upper_shadow": true
+            }
+          },
+          "strong_pullback_reclaim": {
+            "passed": false,
+            "production_buyable": true,
+            "reason": "price_not_above_ma23; return_20d_below_8pct (-14.34%); terminal_distribution_risk",
+            "evidence": {
+              "close_above_ma23": false,
+              "return_20d": -0.1434119089794249,
+              "repeated_upper_shadow": true,
+              "pullback_boundary_pass": null,
+              "pullback_depth": null
+            }
+          },
+          "high_momentum": {
+            "passed": false,
+            "production_buyable": false,
+            "reason": "research_only; production_buyable=false",
+            "evidence": {
+              "mode": "research_only",
+              "atr14_pct": 10.059575874210838
+            }
+          },
+          "sector_reversal_challenger": {
+            "passed": false,
+            "production_buyable": false,
+            "reason": "shadow_only; contract_not_verified",
+            "evidence": {}
+          }
+        },
+        "primary_channel": null,
+        "dual_axis": {
+          "decision": "reject",
+          "opportunity_quality": "weak",
+          "tail_risk": "high",
+          "op_score": 25,
+          "op_detail": "trend_not_aligned | rsi_healthy(43) | volume_normal(1.0x) | change_excessive(+7.1%) | industry_sync_failed",
+          "tr_count": 4,
+          "tr_flags": [
+            "below_ma20",
+            "high_atr_warning",
+            "long_upper_shadow",
+            "repeated_upper_shadow"
+          ],
+          "reason_code": "terminal_distribution_risk"
+        },
+        "buy_zone": {
+          "lower": 134.44,
+          "upper": 135.37,
+          "no_chase_price": 136.44,
+          "trigger_reference": 134.4306,
+          "empty": false,
+          "confirmation_above_no_chase": false
+        },
+        "sell_zone": {
+          "first_lower": 144.23,
+          "first_upper": 145.48,
+          "first_center": 144.85592855998397,
+          "second_lower": 150.55,
+          "second_upper": 151.81,
+          "second_center": 151.1798809333066,
+          "second_available": true,
+          "error": null
+        },
+        "protection": {
+          "price": 134.41,
+          "constructible": true,
+          "structural_support": 141.649,
+          "reason": ""
+        },
+        "fees": {
+          "buy_commission": 5.0,
+          "sell_commission": 5.0,
+          "stamp_tax": 7.211499999999999,
+          "buy_transfer": 0.13537000000000002,
+          "sell_transfer": 0.14423,
+          "total_cost": 17.491100000000003,
+          "net_profit": 868.5088999999986,
+          "net_loss": -903.4910999999985,
+          "fee_policy_id": "default_v1"
+        },
+        "upper_shadow": {
+          "upper_shadow_ratio": 0.6075,
+          "long_upper_shadow": true
+        },
+        "industry_sync": {
+          "pass": false,
+          "detail": "行业同步(涨幅>0)",
+          "advance_ratio": 0.0
+        },
+        "market": {
+          "veto": false,
+          "advance_ratio": 0.8478496566678714,
+          "broad_market_detail": 4692
+        },
+        "entry_state": "rejected",
+        "entry_state_history": [
+          {
+            "from": "unassessed",
+            "to": "rejected",
+            "decision_id": "42ec534b-8bc",
+            "reason_code": "all_channels_hard_fail"
+          }
+        ],
+        "daily_context": {
+          "trend_aligned": false,
+          "boll_position": 0.3987142490313766,
+          "rsi14": 43.12959699555036,
+          "atr14": 12.647904746645285,
+          "atr14_pct": 10.059575874210838,
+          "rps20": 35.69358927924665,
+          "return_5d": -0.0694249130338243,
+          "return_20d": -0.1434119089794249
+        }
+      }
+    },
+    {
+      "code": "002415",
+      "name": "海康威视",
+      "snapshot": {
+        "price": 37.65,
+        "pre_close": 35.62,
+        "open": 36.15,
+        "high": 38.0,
+        "low": 35.56,
+        "change_pct": 5.699,
+        "volume": 171557416.0,
+        "amount": 6330183557.0,
+        "turnover_rate": 1.89648,
+        "volume_ratio": 1.2036,
+        "total_mv": 345057413857.50006,
+        "circ_mv": 340585428181.5,
+        "industry": "计算机硬件",
+        "board": "中小板",
+        "is_st": false,
+        "is_suspended": false
+      },
+      "daily": {
+        "ma5": 35.996,
+        "ma10": 35.392,
+        "ma20": 34.7395,
+        "ma60": 33.17033333333333,
+        "ma120": 32.602333333333334,
+        "ma250": 31.59068,
+        "rsi14": 57.08516902945003,
+        "atr14": 1.4089083234922113,
+        "atr14_pct": 3.955385523560391,
+        "boll_upper": 36.864038092212624,
+        "boll_middle": 34.7395,
+        "boll_lower": 32.614961907787375,
+        "return_5d": -0.0041934582052,
+        "return_10d": 0.0439624853458382,
+        "return_20d": 0.0598036298720618,
+        "rps20": 83.26693227091634
+      },
+      "computed_v2": {
+        "formula_version": "2.0.0",
+        "decision_id": "0c7e482f-00d",
+        "strategy_profile_id": "watchlist_t1_v1",
+        "strategy_version": "2.0.0-dev",
+        "channels": {
+          "trend_continuation": {
+            "passed": true,
+            "production_buyable": true,
+            "reason": "pass",
+            "evidence": {
+              "close_above_ma11": true,
+              "ma11_above_ma23": true,
+              "rps20": 83.26693227091634,
+              "momentum_improving": true,
+              "overheated": false,
+              "repeated_upper_shadow": false
+            }
+          },
+          "strong_pullback_reclaim": {
+            "passed": false,
+            "production_buyable": true,
+            "reason": "return_20d_below_8pct (5.98%)",
+            "evidence": {
+              "close_above_ma23": true,
+              "return_20d": 0.0598036298720618,
+              "repeated_upper_shadow": false,
+              "pullback_boundary_pass": null,
+              "pullback_depth": null
+            }
+          },
+          "high_momentum": {
+            "passed": false,
+            "production_buyable": false,
+            "reason": "research_only; production_buyable=false",
+            "evidence": {
+              "mode": "research_only",
+              "atr14_pct": 3.955385523560391
+            }
+          },
+          "sector_reversal_challenger": {
+            "passed": false,
+            "production_buyable": false,
+            "reason": "shadow_only; contract_not_verified",
+            "evidence": {}
+          }
+        },
+        "primary_channel": "trend_continuation",
+        "dual_axis": {
+          "decision": "can_enter_candidate",
+          "opportunity_quality": "strong",
+          "tail_risk": "medium",
+          "op_score": 70,
+          "op_detail": "trend_aligned | rsi_healthy(57) | volume_normal(1.2x) | change_moderate(+5.7%) | rps_strong(83) | return_20d_positive | industry_sync_failed",
+          "tr_count": 1,
+          "tr_flags": [
+            "high_atr_warning"
+          ],
+          "reason_code": ""
+        },
+        "buy_zone": {
+          "lower": 37.58,
+          "upper": 37.83,
+          "no_chase_price": 37.86,
+          "trigger_reference": 37.5747,
+          "empty": false,
+          "confirmation_above_no_chase": false
+        },
+        "sell_zone": {
+          "first_lower": 38.82,
+          "first_upper": 38.95,
+          "first_center": 38.886681242619154,
+          "second_lower": 39.53,
+          "second_upper": 39.660000000000004,
+          "second_center": 39.59113540436526,
+          "second_available": true,
+          "error": null
+        },
+        "protection": {
+          "price": 36.7,
+          "constructible": true,
+          "structural_support": 34.7395,
+          "reason": ""
+        },
+        "fees": {
+          "buy_commission": 5.0,
+          "sell_commission": 5.0,
+          "stamp_tax": 1.941,
+          "buy_transfer": 0.03783,
+          "sell_transfer": 0.03882,
+          "total_cost": 12.01765,
+          "net_profit": 86.9823500000002,
+          "net_loss": -111.0176500000002,
+          "fee_policy_id": "default_v1"
+        },
+        "upper_shadow": {
+          "upper_shadow_ratio": 0.1434,
+          "long_upper_shadow": false
+        },
+        "industry_sync": {
+          "pass": false,
+          "detail": "行业同步(涨幅>0)",
+          "advance_ratio": 0.0
+        },
+        "market": {
+          "veto": false,
+          "advance_ratio": 0.8478496566678714,
+          "broad_market_detail": 4692
+        },
+        "entry_state": "deep_watch",
+        "entry_state_history": [
+          {
+            "from": "unassessed",
+            "to": "deep_watch",
+            "decision_id": "0c7e482f-00d",
+            "reason_code": "data_complete_channel_pass"
+          }
+        ],
+        "daily_context": {
+          "trend_aligned": true,
+          "boll_position": 1.1849724207507208,
+          "rsi14": 57.08516902945003,
+          "atr14": 1.4089083234922113,
+          "atr14_pct": 3.955385523560391,
+          "rps20": 83.26693227091634,
+          "return_5d": -0.0041934582052,
+          "return_20d": 0.0598036298720618
+        }
+      }
+    },
+    {
+      "code": "002460",
+      "name": "赣锋锂业",
+      "snapshot": {
+        "price": 49.71,
+        "pre_close": 49.93,
+        "open": 49.66,
+        "high": 50.92,
+        "low": 49.6,
+        "change_pct": -0.441,
+        "volume": 43778491.0,
+        "amount": 2190552801.0,
+        "turnover_rate": 3.61442,
+        "volume_ratio": 0.9592,
+        "total_mv": 104226678822.84,
+        "circ_mv": 60209648668.98,
+        "industry": "稀有金属",
+        "board": "中小板",
+        "is_st": false,
+        "is_suspended": false
+      },
+      "daily": {
+        "ma5": 49.6,
+        "ma10": 48.89,
+        "ma20": 52.354,
+        "ma60": 65.77749999999999,
+        "ma120": 70.07516666666668,
+        "ma250": 63.1478,
+        "rsi14": 37.1514413204629,
+        "atr14": 2.867470839476129,
+        "atr14_pct": 5.742981853547225,
+        "boll_upper": 62.4348633715457,
+        "boll_middle": 52.354,
+        "boll_lower": 42.273136628454296,
+        "return_5d": -0.0246141824575111,
+        "return_10d": -0.0008004802881728,
+        "return_20d": -0.2197218315361775,
+        "rps20": 25.53422672944585
+      },
+      "computed_v2": {
+        "formula_version": "2.0.0",
+        "decision_id": "93ad6ca3-02b",
+        "strategy_profile_id": "watchlist_t1_v1",
+        "strategy_version": "2.0.0-dev",
+        "channels": {
+          "trend_continuation": {
+            "passed": false,
+            "production_buyable": true,
+            "reason": "price_not_above_ma_sequence; rps20_below_70 (25.5); momentum_not_improving; terminal_distribution_risk",
+            "evidence": {
+              "close_above_ma11": true,
+              "ma11_above_ma23": false,
+              "rps20": 25.53422672944585,
+              "momentum_improving": false,
+              "overheated": false,
+              "repeated_upper_shadow": true
+            }
+          },
+          "strong_pullback_reclaim": {
+            "passed": false,
+            "production_buyable": true,
+            "reason": "price_not_above_ma23; return_20d_below_8pct (-21.97%); terminal_distribution_risk",
+            "evidence": {
+              "close_above_ma23": false,
+              "return_20d": -0.2197218315361775,
+              "repeated_upper_shadow": true,
+              "pullback_boundary_pass": null,
+              "pullback_depth": null
+            }
+          },
+          "high_momentum": {
+            "passed": false,
+            "production_buyable": false,
+            "reason": "research_only; production_buyable=false",
+            "evidence": {
+              "mode": "research_only",
+              "atr14_pct": 5.742981853547225
+            }
+          },
+          "sector_reversal_challenger": {
+            "passed": false,
+            "production_buyable": false,
+            "reason": "shadow_only; contract_not_verified",
+            "evidence": {}
+          }
+        },
+        "primary_channel": null,
+        "dual_axis": {
+          "decision": "reject",
+          "opportunity_quality": "poor",
+          "tail_risk": "high",
+          "op_score": 5,
+          "op_detail": "trend_not_aligned | volume_normal(1.0x) | industry_sync_failed",
+          "tr_count": 4,
+          "tr_flags": [
+            "below_ma20",
+            "high_atr_warning",
+            "long_upper_shadow",
+            "repeated_upper_shadow"
+          ],
+          "reason_code": "terminal_distribution_risk"
+        },
+        "buy_zone": {
+          "lower": 49.620000000000005,
+          "upper": 49.95,
+          "no_chase_price": 50.14,
+          "trigger_reference": 49.61058,
+          "empty": false,
+          "confirmation_above_no_chase": false
+        },
+        "sell_zone": {
+          "first_lower": 51.96,
+          "first_upper": 52.24,
+          "first_center": 52.1006031296071,
+          "second_lower": 53.4,
+          "second_upper": 53.67,
+          "second_center": 53.534338549345165,
+          "second_available": true,
+          "error": null
+        },
+        "protection": {
+          "price": 49.6,
+          "constructible": true,
+          "structural_support": 52.354,
+          "reason": ""
+        },
+        "fees": {
+          "buy_commission": 5.0,
+          "sell_commission": 5.0,
+          "stamp_tax": 2.598,
+          "buy_transfer": 0.04995,
+          "sell_transfer": 0.051960000000000006,
+          "total_cost": 12.69991,
+          "net_profit": 188.3000899999998,
+          "net_loss": -213.6999099999998,
+          "fee_policy_id": "default_v1"
+        },
+        "upper_shadow": {
+          "upper_shadow_ratio": 0.9167,
+          "long_upper_shadow": true
+        },
+        "industry_sync": {
+          "pass": false,
+          "detail": "行业未同步(涨幅<=0)",
+          "advance_ratio": 0.0
+        },
+        "market": {
+          "veto": false,
+          "advance_ratio": 0.8478496566678714,
+          "broad_market_detail": 4692
+        },
+        "entry_state": "rejected",
+        "entry_state_history": [
+          {
+            "from": "unassessed",
+            "to": "rejected",
+            "decision_id": "93ad6ca3-02b",
+            "reason_code": "all_channels_hard_fail"
+          }
+        ],
+        "daily_context": {
+          "trend_aligned": false,
+          "boll_position": 0.36886043870691837,
+          "rsi14": 37.1514413204629,
+          "atr14": 2.867470839476129,
+          "atr14_pct": 5.742981853547225,
+          "rps20": 25.53422672944585,
+          "return_5d": -0.0246141824575111,
+          "return_20d": -0.2197218315361775
+        }
+      }
+    },
+    {
+      "code": "002594",
+      "name": "比亚迪",
+      "snapshot": {
+        "price": 95.77,
+        "pre_close": 95.84,
+        "open": 93.72,
+        "high": 95.86,
+        "low": 93.13,
+        "change_pct": -0.073,
+        "volume": 43613050.0,
+        "amount": 4139523707.0,
+        "turnover_rate": 1.25087,
+        "volume_ratio": 1.1679,
+        "total_mv": 873154010800.05,
+        "circ_mv": 333912974895.0,
+        "industry": "汽车",
+        "board": "中小板",
+        "is_st": false,
+        "is_suspended": false
+      },
+      "daily": {
+        "ma5": 93.738,
+        "ma10": 93.46,
+        "ma20": 91.23,
+        "ma60": 91.52816666666666,
+        "ma120": 94.99875,
+        "ma250": 104.12808,
+        "rsi14": 62.96698818848684,
+        "atr14": 2.9601665692570776,
+        "atr14_pct": 3.077096225838958,
+        "boll_upper": 97.28328618885466,
+        "boll_middle": 91.23,
+        "boll_lower": 85.17671381114535,
+        "return_5d": 0.0383162439287641,
+        "return_10d": 0.0218823029530486,
+        "return_20d": 0.1511307885604883,
+        "rps20": 95.74429554509236
+      },
+      "computed_v2": {
+        "formula_version": "2.0.0",
+        "decision_id": "18d3e845-3fa",
+        "strategy_profile_id": "watchlist_t1_v1",
+        "strategy_version": "2.0.0-dev",
+        "channels": {
+          "trend_continuation": {
+            "passed": true,
+            "production_buyable": true,
+            "reason": "pass",
+            "evidence": {
+              "close_above_ma11": true,
+              "ma11_above_ma23": true,
+              "rps20": 95.74429554509236,
+              "momentum_improving": true,
+              "overheated": false,
+              "repeated_upper_shadow": false
+            }
+          },
+          "strong_pullback_reclaim": {
+            "passed": false,
+            "production_buyable": true,
+            "reason": "pullback_boundary_failed",
+            "evidence": {
+              "close_above_ma23": true,
+              "return_20d": 0.1511307885604883,
+              "repeated_upper_shadow": false,
+              "pullback_boundary_pass": null,
+              "pullback_depth": null
+            }
+          },
+          "high_momentum": {
+            "passed": false,
+            "production_buyable": false,
+            "reason": "research_only; production_buyable=false",
+            "evidence": {
+              "mode": "research_only",
+              "atr14_pct": 3.077096225838958
+            }
+          },
+          "sector_reversal_challenger": {
+            "passed": false,
+            "production_buyable": false,
+            "reason": "shadow_only; contract_not_verified",
+            "evidence": {}
+          }
+        },
+        "primary_channel": "trend_continuation",
+        "dual_axis": {
+          "decision": "can_enter_candidate",
+          "opportunity_quality": "moderate",
+          "tail_risk": "medium",
+          "op_score": 45,
+          "op_detail": "trend_not_aligned | rsi_healthy(63) | volume_normal(1.2x) | rps_strong(96) | return_5d_positive | return_20d_positive | industry_sync_failed",
+          "tr_count": 1,
+          "tr_flags": [
+            "high_atr_warning"
+          ],
+          "reason_code": ""
+        },
+        "buy_zone": {
+          "lower": 95.58,
+          "upper": 96.21000000000001,
+          "no_chase_price": 96.21000000000001,
+          "trigger_reference": 95.57845999999999,
+          "empty": false,
+          "confirmation_above_no_chase": false
+        },
+        "sell_zone": {
+          "first_lower": 98.29,
+          "first_upper": 98.57000000000001,
+          "first_center": 98.43012492694281,
+          "second_lower": 99.77,
+          "second_upper": 100.05,
+          "second_center": 99.91020821157136,
+          "second_available": true,
+          "error": null
+        },
+        "protection": {
+          "price": 93.84,
+          "constructible": true,
+          "structural_support": 91.23,
+          "reason": ""
+        },
+        "fees": {
+          "buy_commission": 5.0,
+          "sell_commission": 5.0,
+          "stamp_tax": 4.9145,
+          "buy_transfer": 0.09621,
+          "sell_transfer": 0.09829,
+          "total_cost": 15.109,
+          "net_profit": 192.89099999999982,
+          "net_loss": -223.10899999999984,
+          "fee_policy_id": "default_v1"
+        },
+        "upper_shadow": {
+          "upper_shadow_ratio": 0.033,
+          "long_upper_shadow": false
+        },
+        "industry_sync": {
+          "pass": false,
+          "detail": "行业未同步(涨幅<=0)",
+          "advance_ratio": 0.0
+        },
+        "market": {
+          "veto": false,
+          "advance_ratio": 0.8478496566678714,
+          "broad_market_detail": 4692
+        },
+        "entry_state": "deep_watch",
+        "entry_state_history": [
+          {
+            "from": "unassessed",
+            "to": "deep_watch",
+            "decision_id": "18d3e845-3fa",
+            "reason_code": "data_complete_channel_pass"
+          }
+        ],
+        "daily_context": {
+          "trend_aligned": false,
+          "boll_position": 0.8750029205920468,
+          "rsi14": 62.96698818848684,
+          "atr14": 2.9601665692570776,
+          "atr14_pct": 3.077096225838958,
+          "rps20": 95.74429554509236,
+          "return_5d": 0.0383162439287641,
+          "return_20d": 0.1511307885604883
+        }
+      }
+    },
+    {
+      "code": "300033",
+      "name": "同花顺",
+      "snapshot": {
+        "price": 234.96,
+        "pre_close": 225.88,
+        "open": 221.82,
+        "high": 241.0,
+        "low": 221.72,
+        "change_pct": 4.02,
+        "volume": 23039332.0,
+        "amount": 5399906169.0,
+        "turnover_rate": 5.25519,
+        "volume_ratio": 1.7016,
+        "total_mv": 176840294400.0,
+        "circ_mv": 103009028353.44,
+        "industry": "互联网金融",
+        "board": "创业板",
+        "is_st": false,
+        "is_suspended": false
+      },
+      "daily": {
+        "ma5": 219.412,
+        "ma10": 222.235,
+        "ma20": 225.5705,
+        "ma60": 229.43566666666663,
+        "ma120": 265.0810833333333,
+        "ma250": 306.45332,
+        "rsi14": 49.76814323674162,
+        "atr14": 11.818782016061933,
+        "atr14_pct": 5.2323277917752495,
+        "boll_upper": 243.7100589513037,
+        "boll_middle": 225.5705,
+        "boll_lower": 207.43094104869624,
+        "return_5d": -0.0107734080756766,
+        "return_10d": 0.0248638838475498,
+        "return_20d": -0.0879063194023824,
+        "rps20": 45.18290474465773
+      },
+      "computed_v2": {
+        "formula_version": "2.0.0",
+        "decision_id": "ada2aec5-8ea",
+        "strategy_profile_id": "watchlist_t1_v1",
+        "strategy_version": "2.0.0-dev",
+        "channels": {
+          "trend_continuation": {
+            "passed": false,
+            "production_buyable": true,
+            "reason": "price_not_above_ma_sequence; rps20_below_70 (45.2); momentum_not_improving",
+            "evidence": {
+              "close_above_ma11": true,
+              "ma11_above_ma23": false,
+              "rps20": 45.18290474465773,
+              "momentum_improving": false,
+              "overheated": false,
+              "repeated_upper_shadow": false
+            }
+          },
+          "strong_pullback_reclaim": {
+            "passed": false,
+            "production_buyable": true,
+            "reason": "return_20d_below_8pct (-8.79%)",
+            "evidence": {
+              "close_above_ma23": true,
+              "return_20d": -0.0879063194023824,
+              "repeated_upper_shadow": false,
+              "pullback_boundary_pass": null,
+              "pullback_depth": null
+            }
+          },
+          "high_momentum": {
+            "passed": false,
+            "production_buyable": false,
+            "reason": "research_only; production_buyable=false",
+            "evidence": {
+              "mode": "research_only",
+              "atr14_pct": 5.2323277917752495
+            }
+          },
+          "sector_reversal_challenger": {
+            "passed": false,
+            "production_buyable": false,
+            "reason": "shadow_only; contract_not_verified",
+            "evidence": {}
+          }
+        },
+        "primary_channel": null,
+        "dual_axis": {
+          "decision": "can_enter_candidate",
+          "opportunity_quality": "moderate",
+          "tail_risk": "medium",
+          "op_score": 50,
+          "op_detail": "trend_not_aligned | rsi_healthy(50) | volume_high(1.7x) | change_moderate(+4.0%) | industry_sync_failed",
+          "tr_count": 1,
+          "tr_flags": [
+            "high_atr_warning"
+          ],
+          "reason_code": ""
+        },
+        "buy_zone": {
+          "lower": 234.5,
+          "upper": 236.13,
+          "no_chase_price": 236.73000000000002,
+          "trigger_reference": 234.49008,
+          "empty": false,
+          "confirmation_above_no_chase": false
+        },
+        "sell_zone": {
+          "first_lower": 244.41,
+          "first_upper": 245.58,
+          "first_center": 244.99408651204644,
+          "second_lower": 250.32,
+          "second_upper": 251.49,
+          "second_center": 250.90347752007742,
+          "second_available": true,
+          "error": null
+        },
+        "protection": {
+          "price": 226.67000000000002,
+          "constructible": true,
+          "structural_support": 225.5705,
+          "reason": ""
+        },
+        "fees": {
+          "buy_commission": 7.083899999999999,
+          "sell_commission": 7.332299999999999,
+          "stamp_tax": 12.2205,
+          "buy_transfer": 0.23613,
+          "sell_transfer": 0.24441000000000002,
+          "total_cost": 27.117239999999995,
+          "net_profit": 800.8827600000001,
+          "net_loss": -855.1172400000002,
+          "fee_policy_id": "default_v1"
+        },
+        "upper_shadow": {
+          "upper_shadow_ratio": 0.3133,
+          "long_upper_shadow": false
+        },
+        "industry_sync": {
+          "pass": false,
+          "detail": "行业同步(涨幅>0)",
+          "advance_ratio": 0.0
+        },
+        "market": {
+          "veto": false,
+          "advance_ratio": 0.8478496566678714,
+          "broad_market_detail": 4692
+        },
+        "entry_state": "rejected",
+        "entry_state_history": [
+          {
+            "from": "unassessed",
+            "to": "rejected",
+            "decision_id": "ada2aec5-8ea",
+            "reason_code": "all_channels_hard_fail"
+          }
+        ],
+        "daily_context": {
+          "trend_aligned": false,
+          "boll_position": 0.7588127976321386,
+          "rsi14": 49.76814323674162,
+          "atr14": 11.818782016061933,
+          "atr14_pct": 5.2323277917752495,
+          "rps20": 45.18290474465773,
+          "return_5d": -0.0107734080756766,
+          "return_20d": -0.0879063194023824
+        }
+      }
+    },
+    {
+      "code": "300059",
+      "name": "东方财富",
+      "snapshot": {
+        "price": 20.17,
+        "pre_close": 19.99,
+        "open": 19.98,
+        "high": 20.52,
+        "low": 19.91,
+        "change_pct": 0.9,
+        "volume": 342484008.0,
+        "amount": 6938438040.0,
+        "turnover_rate": 2.56479,
+        "volume_ratio": 1.3376,
+        "total_mv": 319133771478.75,
+        "circ_mv": 269335975801.92,
+        "industry": "互联网金融",
+        "board": "创业板",
+        "is_st": false,
+        "is_suspended": false
+      },
+      "daily": {
+        "ma5": 19.672,
+        "ma10": 19.889,
+        "ma20": 20.0865,
+        "ma60": 19.792,
+        "ma120": 20.339166666666664,
+        "ma250": 22.69124,
+        "rsi14": 50.53697240032741,
+        "atr14": 0.6881313907515777,
+        "atr14_pct": 3.442378142829303,
+        "boll_upper": 21.02788252194905,
+        "boll_middle": 20.0865,
+        "boll_lower": 19.14511747805096,
+        "return_5d": -0.0142998027613413,
+        "return_10d": 0.0085771947527748,
+        "return_20d": -0.0356970574047275,
+        "rps20": 57.22564288301341
+      },
+      "computed_v2": {
+        "formula_version": "2.0.0",
+        "decision_id": "d098854d-81a",
+        "strategy_profile_id": "watchlist_t1_v1",
+        "strategy_version": "2.0.0-dev",
+        "channels": {
+          "trend_continuation": {
+            "passed": false,
+            "production_buyable": true,
+            "reason": "price_not_above_ma_sequence; rps20_below_70 (57.2); momentum_not_improving; terminal_distribution_risk",
+            "evidence": {
+              "close_above_ma11": true,
+              "ma11_above_ma23": false,
+              "rps20": 57.22564288301341,
+              "momentum_improving": false,
+              "overheated": false,
+              "repeated_upper_shadow": true
+            }
+          },
+          "strong_pullback_reclaim": {
+            "passed": false,
+            "production_buyable": true,
+            "reason": "return_20d_below_8pct (-3.57%); terminal_distribution_risk",
+            "evidence": {
+              "close_above_ma23": true,
+              "return_20d": -0.0356970574047275,
+              "repeated_upper_shadow": true,
+              "pullback_boundary_pass": null,
+              "pullback_depth": null
+            }
+          },
+          "high_momentum": {
+            "passed": false,
+            "production_buyable": false,
+            "reason": "research_only; production_buyable=false",
+            "evidence": {
+              "mode": "research_only",
+              "atr14_pct": 3.442378142829303
+            }
+          },
+          "sector_reversal_challenger": {
+            "passed": false,
+            "production_buyable": false,
+            "reason": "shadow_only; contract_not_verified",
+            "evidence": {}
+          }
+        },
+        "primary_channel": null,
+        "dual_axis": {
+          "decision": "reject",
+          "opportunity_quality": "weak",
+          "tail_risk": "high",
+          "op_score": 35,
+          "op_detail": "trend_not_aligned | rsi_healthy(51) | volume_normal(1.3x) | change_slight(+0.9%) | rps_medium(57) | industry_sync_failed",
+          "tr_count": 3,
+          "tr_flags": [
+            "high_atr_warning",
+            "long_upper_shadow",
+            "repeated_upper_shadow"
+          ],
+          "reason_code": "terminal_distribution_risk"
+        },
+        "buy_zone": {
+          "lower": 20.13,
+          "upper": 20.27,
+          "no_chase_price": 20.27,
+          "trigger_reference": 20.12966,
+          "empty": false,
+          "confirmation_above_no_chase": false
+        },
+        "sell_zone": {
+          "first_lower": 20.76,
+          "first_upper": 20.82,
+          "first_center": 20.786098543063684,
+          "second_lower": 21.1,
+          "second_upper": 21.16,
+          "second_center": 21.130164238439473,
+          "second_available": true,
+          "error": null
+        },
+        "protection": {
+          "price": 19.98,
+          "constructible": true,
+          "structural_support": 20.0865,
+          "reason": ""
+        },
+        "fees": {
+          "buy_commission": 5.0,
+          "sell_commission": 5.0,
+          "stamp_tax": 1.038,
+          "buy_transfer": 0.020270000000000003,
+          "sell_transfer": 0.02076,
+          "total_cost": 11.07903,
+          "net_profit": 37.920970000000196,
+          "net_loss": -60.0790300000002,
+          "fee_policy_id": "default_v1"
+        },
+        "upper_shadow": {
+          "upper_shadow_ratio": 0.5738,
+          "long_upper_shadow": true
+        },
+        "industry_sync": {
+          "pass": false,
+          "detail": "行业同步(涨幅>0)",
+          "advance_ratio": 0.0
+        },
+        "market": {
+          "veto": false,
+          "advance_ratio": 0.8478496566678714,
+          "broad_market_detail": 4692
+        },
+        "entry_state": "rejected",
+        "entry_state_history": [
+          {
+            "from": "unassessed",
+            "to": "rejected",
+            "decision_id": "d098854d-81a",
+            "reason_code": "all_channels_hard_fail"
+          }
+        ],
+        "daily_context": {
+          "trend_aligned": false,
+          "boll_position": 0.5443496655467526,
+          "rsi14": 50.53697240032741,
+          "atr14": 0.6881313907515777,
+          "atr14_pct": 3.442378142829303,
+          "rps20": 57.22564288301341,
+          "return_5d": -0.0142998027613413,
+          "return_20d": -0.0356970574047275
+        }
+      }
+    },
+    {
+      "code": "300274",
+      "name": "阳光电源",
+      "snapshot": {
+        "price": 103.37,
+        "pre_close": 103.71,
+        "open": 107.0,
+        "high": 107.7,
+        "low": 103.02,
+        "change_pct": -0.328,
+        "volume": 47164010.0,
+        "amount": 4963731254.0,
+        "turnover_rate": 2.97091,
+        "volume_ratio": 0.8167,
+        "total_mv": 214307864898.88,
+        "circ_mv": 164102787346.38,
+        "industry": "电源设备",
+        "board": "创业板",
+        "is_st": false,
+        "is_suspended": false
+      },
+      "daily": {
+        "ma5": 110.394,
+        "ma10": 108.717,
+        "ma20": 113.17050000000002,
+        "ma60": 141.45783333333333,
+        "ma120": 144.712,
+        "ma250": 145.306,
+        "rsi14": 34.97959475014292,
+        "atr14": 7.92129473946419,
+        "atr14_pct": 7.637927624591834,
+        "boll_upper": 130.89556696594764,
+        "boll_middle": 113.17050000000002,
+        "boll_lower": 95.4454330340524,
+        "return_5d": -0.1195347652602089,
+        "return_10d": -0.020124716553288,
+        "return_20d": -0.1887515644555695,
+        "rps20": 29.06555595798624
+      },
+      "computed_v2": {
+        "formula_version": "2.0.0",
+        "decision_id": "86f964d4-61c",
+        "strategy_profile_id": "watchlist_t1_v1",
+        "strategy_version": "2.0.0-dev",
+        "channels": {
+          "trend_continuation": {
+            "passed": false,
+            "production_buyable": true,
+            "reason": "price_not_above_ma_sequence; rps20_below_70 (29.1); momentum_not_improving",
+            "evidence": {
+              "close_above_ma11": false,
+              "ma11_above_ma23": false,
+              "rps20": 29.06555595798624,
+              "momentum_improving": false,
+              "overheated": false,
+              "repeated_upper_shadow": false
+            }
+          },
+          "strong_pullback_reclaim": {
+            "passed": false,
+            "production_buyable": true,
+            "reason": "price_not_above_ma23; return_20d_below_8pct (-18.88%)",
+            "evidence": {
+              "close_above_ma23": false,
+              "return_20d": -0.1887515644555695,
+              "repeated_upper_shadow": false,
+              "pullback_boundary_pass": null,
+              "pullback_depth": null
+            }
+          },
+          "high_momentum": {
+            "passed": false,
+            "production_buyable": false,
+            "reason": "research_only; production_buyable=false",
+            "evidence": {
+              "mode": "research_only",
+              "atr14_pct": 7.637927624591834
+            }
+          },
+          "sector_reversal_challenger": {
+            "passed": false,
+            "production_buyable": false,
+            "reason": "shadow_only; contract_not_verified",
+            "evidence": {}
+          }
+        },
+        "primary_channel": null,
+        "dual_axis": {
+          "decision": "reject",
+          "opportunity_quality": "poor",
+          "tail_risk": "medium",
+          "op_score": 5,
+          "op_detail": "trend_not_aligned | volume_normal(0.8x) | industry_sync_failed",
+          "tr_count": 2,
+          "tr_flags": [
+            "below_ma20",
+            "high_atr_warning"
+          ],
+          "reason_code": ""
+        },
+        "buy_zone": {
+          "lower": 103.17,
+          "upper": 103.88,
+          "no_chase_price": 104.55,
+          "trigger_reference": 103.16326000000001,
+          "empty": false,
+          "confirmation_above_no_chase": false
+        },
+        "sell_zone": {
+          "first_lower": 109.43,
+          "first_upper": 110.21000000000001,
+          "first_center": 109.82097105459813,
+          "second_lower": 113.39,
+          "second_upper": 114.17,
+          "second_center": 113.78161842433023,
+          "second_available": true,
+          "error": null
+        },
+        "protection": {
+          "price": 103.15,
+          "constructible": true,
+          "structural_support": 113.17050000000002,
+          "reason": ""
+        },
+        "fees": {
+          "buy_commission": 5.0,
+          "sell_commission": 5.0,
+          "stamp_tax": 5.4715,
+          "buy_transfer": 0.10388000000000001,
+          "sell_transfer": 0.10943000000000001,
+          "total_cost": 15.684809999999999,
+          "net_profit": 539.3151900000012,
+          "net_loss": -570.6848100000011,
+          "fee_policy_id": "default_v1"
+        },
+        "upper_shadow": {
+          "upper_shadow_ratio": 0.1496,
+          "long_upper_shadow": false
+        },
+        "industry_sync": {
+          "pass": false,
+          "detail": "行业未同步(涨幅<=0)",
+          "advance_ratio": 0.0
+        },
+        "market": {
+          "veto": false,
+          "advance_ratio": 0.8478496566678714,
+          "broad_market_detail": 4692
+        },
+        "entry_state": "rejected",
+        "entry_state_history": [
+          {
+            "from": "unassessed",
+            "to": "rejected",
+            "decision_id": "86f964d4-61c",
+            "reason_code": "all_channels_hard_fail"
+          }
+        ],
+        "daily_context": {
+          "trend_aligned": false,
+          "boll_position": 0.22354124193640082,
+          "rsi14": 34.97959475014292,
+          "atr14": 7.92129473946419,
+          "atr14_pct": 7.637927624591834,
+          "rps20": 29.06555595798624,
+          "return_5d": -0.1195347652602089,
+          "return_20d": -0.1887515644555695
+        }
+      }
+    },
+    {
+      "code": "300750",
+      "name": "宁德时代",
+      "snapshot": {
+        "price": 395.3,
+        "pre_close": 401.88,
+        "open": 395.55,
+        "high": 400.2,
+        "low": 389.0,
+        "change_pct": -1.637,
+        "volume": 39414948.0,
+        "amount": 15602984033.0,
+        "turnover_rate": 0.92522,
+        "volume_ratio": 1.0073,
+        "total_mv": 1828916689480.7,
+        "circ_mv": 1684010026810.7,
+        "industry": "电源设备",
+        "board": "创业板",
+        "is_st": false,
+        "is_suspended": false
+      },
+      "daily": {
+        "ma5": 394.518,
+        "ma10": 384.947,
+        "ma20": 376.2,
+        "ma60": 398.0061666666667,
+        "ma120": 395.81575,
+        "ma250": 371.14344,
+        "rsi14": 57.25938079915635,
+        "atr14": 15.777491187050687,
+        "atr14_pct": 3.925920968212076,
+        "boll_upper": 404.821757642157,
+        "boll_middle": 376.2,
+        "boll_lower": 347.5782423578429,
+        "return_5d": 0.0411668696080209,
+        "return_10d": 0.0974330966684871,
+        "return_20d": 0.0510788544527264,
+        "rps20": 81.36544730170229
+      },
+      "computed_v2": {
+        "formula_version": "2.0.0",
+        "decision_id": "1771651c-7b1",
+        "strategy_profile_id": "watchlist_t1_v1",
+        "strategy_version": "2.0.0-dev",
+        "channels": {
+          "trend_continuation": {
+            "passed": false,
+            "production_buyable": true,
+            "reason": "terminal_distribution_risk",
+            "evidence": {
+              "close_above_ma11": true,
+              "ma11_above_ma23": true,
+              "rps20": 81.36544730170229,
+              "momentum_improving": true,
+              "overheated": false,
+              "repeated_upper_shadow": true
+            }
+          },
+          "strong_pullback_reclaim": {
+            "passed": false,
+            "production_buyable": true,
+            "reason": "return_20d_below_8pct (5.11%); terminal_distribution_risk",
+            "evidence": {
+              "close_above_ma23": true,
+              "return_20d": 0.0510788544527264,
+              "repeated_upper_shadow": true,
+              "pullback_boundary_pass": null,
+              "pullback_depth": null
+            }
+          },
+          "high_momentum": {
+            "passed": false,
+            "production_buyable": false,
+            "reason": "research_only; production_buyable=false",
+            "evidence": {
+              "mode": "research_only",
+              "atr14_pct": 3.925920968212076
+            }
+          },
+          "sector_reversal_challenger": {
+            "passed": false,
+            "production_buyable": false,
+            "reason": "shadow_only; contract_not_verified",
+            "evidence": {}
+          }
+        },
+        "primary_channel": null,
+        "dual_axis": {
+          "decision": "reject",
+          "opportunity_quality": "moderate",
+          "tail_risk": "high",
+          "op_score": 45,
+          "op_detail": "trend_not_aligned | rsi_healthy(57) | volume_normal(1.0x) | rps_strong(81) | return_5d_positive | return_20d_positive | industry_sync_failed",
+          "tr_count": 3,
+          "tr_flags": [
+            "high_atr_warning",
+            "long_upper_shadow",
+            "repeated_upper_shadow"
+          ],
+          "reason_code": "terminal_distribution_risk"
+        },
+        "buy_zone": {
+          "lower": 394.51,
+          "upper": 397.27,
+          "no_chase_price": 397.66,
+          "trigger_reference": 394.5094,
+          "empty": false,
+          "confirmation_above_no_chase": false
+        },
+        "sell_zone": {
+          "first_lower": 408.32,
+          "first_upper": 409.89,
+          "first_center": 409.103118390288,
+          "second_lower": 416.21000000000004,
+          "second_upper": 417.78000000000003,
+          "second_center": 416.99186398381335,
+          "second_available": true,
+          "error": null
+        },
+        "protection": {
+          "price": 384.64,
+          "constructible": true,
+          "structural_support": 376.2,
+          "reason": ""
+        },
+        "fees": {
+          "buy_commission": 11.918099999999999,
+          "sell_commission": 12.2496,
+          "stamp_tax": 20.416,
+          "buy_transfer": 0.39727,
+          "sell_transfer": 0.40832,
+          "total_cost": 45.389289999999995,
+          "net_profit": 1059.610710000001,
+          "net_loss": -1150.3892900000012,
+          "fee_policy_id": "default_v1"
+        },
+        "upper_shadow": {
+          "upper_shadow_ratio": 0.4152,
+          "long_upper_shadow": true
+        },
+        "industry_sync": {
+          "pass": false,
+          "detail": "行业未同步(涨幅<=0)",
+          "advance_ratio": 0.0
+        },
+        "market": {
+          "veto": false,
+          "advance_ratio": 0.8478496566678714,
+          "broad_market_detail": 4692
+        },
+        "entry_state": "rejected",
+        "entry_state_history": [
+          {
+            "from": "unassessed",
+            "to": "rejected",
+            "decision_id": "1771651c-7b1",
+            "reason_code": "all_channels_hard_fail"
+          }
+        ],
+        "daily_context": {
+          "trend_aligned": false,
+          "boll_position": 0.8336622481190256,
+          "rsi14": 57.25938079915635,
+          "atr14": 15.777491187050687,
+          "atr14_pct": 3.925920968212076,
+          "rps20": 81.36544730170229,
+          "return_5d": 0.0411668696080209,
+          "return_20d": 0.0510788544527264
+        }
+      }
+    }
+  ],
+  "audit": {
+    "total_decisions": 23,
+    "metrics": {
+      "total_decisions": 23,
+      "total_audits": 0,
+      "by_category": {}
+    }
+  }
+}

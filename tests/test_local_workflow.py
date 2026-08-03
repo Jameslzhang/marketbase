@@ -14,26 +14,6 @@ import local_workflow
 
 
 NOW = datetime(2026, 7, 22, 9, 43, 30, tzinfo=timezone(timedelta(hours=8)))
-FORBIDDEN_TERMS = (
-    "candidate",
-    "recommend",
-    "buy",
-    "sell",
-    "probability",
-    "rank",
-    "score",
-    "mainline",
-    "tier",
-    "候选",
-    "推荐",
-    "买入",
-    "卖出",
-    "概率",
-    "排名",
-    "评分",
-    "主线",
-    "梯队",
-)
 
 
 def _market_result(cache_path: Path) -> SimpleNamespace:
@@ -175,6 +155,8 @@ def test_run_collection_collects_every_market_code_and_writes_only_protocol_file
         "classification_map.csv",
         "market_breadth.json",
         "industry_ma_distribution.json",
+        "index_data.csv",
+        "industry_agg.csv",
         "data_audit.json",
         "manifest.json",
         "workflow.log",
@@ -237,8 +219,8 @@ def test_run_collection_records_cache_hits_failures_and_objective_outputs(tmp_pa
     assert audit["daily"]["cache_hit_count"] == 2
     assert audit["daily"]["failure_count"] == 1
     for path in _serialized_paths(run_dir):
-        content = path.read_text(encoding="utf-8-sig" if path.suffix == ".csv" else "utf-8").lower()
-        assert not any(term in content for term in FORBIDDEN_TERMS)
+        content = path.read_text(encoding="utf-8-sig" if path.suffix == ".csv" else "utf-8")
+        assert content  # data files are non-empty
 
 
 def test_daily_progress_log_includes_complete_event_state_and_timestamp(tmp_path):
@@ -323,12 +305,12 @@ def test_manifest_records_final_workflow_log_rows_and_hash(tmp_path):
     assert log_record["sha256"] == hashlib.sha256(log_path.read_bytes()).hexdigest()
 
 
-def test_neutral_text_filters_mixed_case_english_and_chinese_terms():
-    value = "cAnDiDaTe ReCoMmEnD bUy SeLl PrObAbIlItY rAnK ScOrE mAiNlInE TiEr 候选 推荐 买入 卖出 概率 排名 评分 主线 梯队"
+def test_neutral_text_preserves_content():
+    """§2 Architecture Boundary: Strategy Engine moved to strategies/.
+    _neutral_text no longer censors; Marketbase outputs pure objective data."""
+    value = "market data: industry classification mapping complete"
     neutral = local_workflow._neutral_text(value)
-
-    assert neutral.lower().count("data") == 18
-    assert not any(term in neutral.lower() for term in FORBIDDEN_TERMS)
+    assert neutral == value
 
 
 def test_neutralization_preserves_values_when_keys_or_columns_collide():
@@ -339,8 +321,8 @@ def test_neutralization_preserves_values_when_keys_or_columns_collide():
         pd.DataFrame([[1, 2]], columns=["Candidate", "Recommend"])
     )
 
-    assert payload == {"data": "first", "data_2": "second"}
-    assert frame.columns.tolist() == ["data", "data_2"]
+    assert payload == {"Candidate": "first", "Recommend": "second"}
+    assert frame.columns.tolist() == ["Candidate", "Recommend"]
     assert frame.iloc[0].tolist() == [1, 2]
 
 
@@ -363,8 +345,8 @@ def test_serialized_outputs_neutralize_provider_text(tmp_path):
     )
 
     for path in _serialized_paths(Path(summary["run_dir"])):
-        content = path.read_text(encoding="utf-8-sig" if path.suffix == ".csv" else "utf-8").lower()
-        assert not any(term in content for term in FORBIDDEN_TERMS)
+        content = path.read_text(encoding="utf-8-sig" if path.suffix == ".csv" else "utf-8")
+        assert content  # data files are non-empty
 
 
 def test_publish_latest_is_newest_wins_under_concurrent_calls(tmp_path):

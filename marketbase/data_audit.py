@@ -8,6 +8,8 @@ import re
 
 import pandas as pd
 
+from marketbase.shared_utils import _neutral_error
+
 
 AUDITED_FIELDS = (
     "price",
@@ -28,12 +30,6 @@ AUDITED_FIELDS = (
     "source",
 )
 _CODE_PATTERN = re.compile(r"\d{6}\Z")
-_FORBIDDEN_ERROR_TERMS = re.compile(
-    r"candidate|recommend|buy|sell|signal|score|rank|probability|"
-    r"\u5019\u9009|\u63a8\u8350|\u4e70\u5165|\u5356\u51fa|\u4fe1\u53f7|"
-    r"\u8bc4\u5206|\u6392\u540d|\u6982\u7387",
-    re.IGNORECASE,
-)
 _STALE_AFTER = timedelta(minutes=15)
 _CN_MARKET_OPEN = clock_time(9, 30)
 _CN_MARKET_CLOSE = clock_time(15, 0)
@@ -231,7 +227,7 @@ def audit_market_snapshot(
         coverage_gaps.append(f"missing_price_count={missing_price_count}")
     if stale_row_count:
         coverage_gaps.append(f"stale_row_count={stale_row_count}")
-    normalized_errors = [_neutralize_error(error) for error in provider_errors if str(error)]
+    normalized_errors = [_neutral_error(str(error), replacement="redacted") for error in provider_errors if str(error)]
     if normalized_errors:
         coverage_gaps.append(f"provider_error_count={len(normalized_errors)}")
 
@@ -350,7 +346,3 @@ def _known_conditions(
         if _CODE_PATTERN.fullmatch(code)
     )
     return conditions
-
-
-def _neutralize_error(error: object) -> str:
-    return _FORBIDDEN_ERROR_TERMS.sub("redacted", str(error).strip())

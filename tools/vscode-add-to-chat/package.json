@@ -1,0 +1,97 @@
+{
+  "name": "add-to-chat",
+  "displayName": "Add to Chat - 选中添加到对话",
+  "description": "选中编辑器/终端/输出区域的文本，一键添加到对话上下文",
+  "version": "1.0.0",
+  "publisher": "marketbase",
+  "icon": "icon.png",
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "add-to-chat.addSelection",
+        "title": "📎 添加到对话上下文"
+      },
+      {
+        "command": "add-to-chat.openPanel",
+        "title": "📋 打开对话上下文面板"
+      },
+      {
+        "command": "add-to-chat.copyAll",
+        "title": "📋 复制全部上下文"
+      },
+      {
+        "command": "add-to-chat.clearAll",
+        "title": "🗑 清空上下文"
+      },
+      {
+        "command": "add-to-chat.addFromTerminal",
+        "title": "📎 从终端添加选中内容"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "add-to-chat.addSelection",
+        "key": "ctrl+shift+a",
+        "mac": "cmd+shift+a",
+        "when": "editorTextFocus && editorHasSelection"
+      },
+      {
+        "command": "add-to-chat.addFromTerminal",
+        "key": "ctrl+shift+a",
+        "mac": "cmd+shift+a",
+        "when": "terminalFocus"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "add-to-chat.addSelection",
+          "when": "editorHasSelection",
+          "group": "navigation"
+        }
+      ],
+      "editor/title/context": [
+        {
+          "command": "add-to-chat.addSelection",
+          "when": "editorHasSelection",
+          "group": "navigation"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Add to Chat",
+      "properties": {
+        "add-to-chat.maxItems": {
+          "type": "number",
+          "default": 50,
+          "description": "最大保留上下文条数"
+        },
+        "add-to-chat.includeFileName": {
+          "type": "boolean",
+          "default": true,
+          "description": "是否在上下文中包含文件名"
+        },
+        "add-to-chat.includeLineNumbers": {
+          "type": "boolean",
+          "default": true,
+          "description": "是否在上下文中包含行号"
+        },
+        "add-to-chat.autoCopy": {
+          "type": "boolean",
+          "default": false,
+          "description": "添加时自动复制到剪贴板"
+        }
+      }
+    }
+  }
+}

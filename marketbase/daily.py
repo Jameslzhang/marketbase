@@ -14,13 +14,18 @@ import time
 import pandas as pd
 import requests
 
+from marketbase.shared_utils import (
+    _DEFAULT_TUSHARE_HTTP_URL,
+    _configure_tushare_client,
+    _ensure_dir,
+    _serialize_frame,
+)
 from marketbase.source_guard import call_with_timeout, parse_source_timeout_seconds
 from marketbase.source_health import SourceHealth
 
 _DAILY_HISTORY_CACHE_VERSION = 1
 _DAILY_HISTORY_CACHE_TTL_SECONDS = 24 * 60 * 60
 _DAILY_CALL_TIMEOUT_SECONDS = 20.0
-_DEFAULT_TUSHARE_HTTP_URL = "http://api.waditu.com"
 _BAOSTOCK_LOCK = threading.Lock()
 _BAOSTOCK_OUTAGE_ERROR: str | None = None
 _source_health = SourceHealth(failure_threshold=3, cooldown_seconds=300)
@@ -282,9 +287,19 @@ def _write_daily_history_cache(
     code: str,
     source: str,
     lookback_days: int,
+    metadata: Optional[dict] = None,
 ) -> None:
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
+        _ensure_dir(path)
+        # 使用传入的 metadata 覆盖 df.attrs
+        meta = metadata if metadata is not None else {
+            "daily_source": df.attrs.get("daily_source", source),
+            "daily_requested_source": df.attrs.get("daily_requested_source", source),
+            "daily_source_order": list(df.attrs.get("daily_source_order", [])),
+            "daily_source_order_notes": list(df.attrs.get("daily_source_order_notes", [])),
+            "source_errors": list(df.attrs.get("source_errors", [])),
+            "daily_source_health": df.attrs.get("daily_source_health", {}),
+        }
         payload = {
             "version": _DAILY_HISTORY_CACHE_VERSION,
             "key": {
@@ -292,20 +307,15 @@ def _write_daily_history_cache(
                 "source": source,
                 "lookback_days": int(lookback_days),
             },
-            "metadata": {
-                "daily_source": df.attrs.get("daily_source", source),
-                "daily_requested_source": df.attrs.get("daily_requested_source", source),
-                "daily_source_order": list(df.attrs.get("daily_source_order", [])),
-                "daily_source_order_notes": list(df.attrs.get("daily_source_order_notes", [])),
-                "source_errors": list(df.attrs.get("source_errors", [])),
-                "daily_source_health": df.attrs.get("daily_source_health", {}),
-            },
+            "metadata": meta,
             "created_at": datetime.now().isoformat(),
-            "frame": json.loads(df.to_json(orient="split", date_format="iso", force_ascii=False)),
+            "frame": _serialize_frame(df),
         }
+        from marketbase.shared_utils import _atomic_replace
+
         tmp_path = path.with_name(f".{path.name}.{time.time_ns()}.tmp")
         tmp_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-        tmp_path.replace(path)
+        _atomic_replace(tmp_path, path)
     except Exception:
         return
 
@@ -476,21 +486,7 @@ def _has_tushare_token() -> bool:
     return bool(_tushare_token())
 
 
-def _configure_tushare_client(pro: object, *, token: str) -> None:
-    try:
-        setattr(pro, "_DataApi__token", token)
-    except Exception:
-        pass
 
-    http_url = (
-        os.getenv("TUSHARE_API_URL", "").strip()
-        or os.getenv("TUSHARE_HTTP_URL", "").strip()
-        or _DEFAULT_TUSHARE_HTTP_URL
-    )
-    try:
-        setattr(pro, "_DataApi__http_url", http_url)
-    except Exception:
-        pass
 
 
 def _normalize_tushare_daily_frame(df: pd.DataFrame) -> pd.DataFrame:
@@ -638,3 +634,277 @@ def _is_baostock_network_outage(error_code: object, error_msg: object) -> bool:
     code = str(error_code)
     message = str(error_msg)
     return code in {"10002007"} or "利大" in message or "俊辺" in message
+
+
+# ── 指数日线数据 ──────────────────────────────────────────────────
+
+
+def _to_index_tencent_code(code: str) -> str:
+    """Map a market index code to the Tencent/Sina exchange-prefixed format.
+
+    A-share index codes differ from stock codes in exchange mapping:
+    - ``000xxx`` → Shanghai (sh)
+    - ``399xxx`` → Shenzhen (sz)
+    """
+    raw = str(code).strip().zfill(6)
+    if raw.startswith("399"):
+        return f"sz{raw}"
+    return f"sh{raw}"
+
+
+def fetch_index_daily_history(
+    code: str,
+    *,
+    lookback_days: int = 120,
+    source: str = "auto",
+    retries: int = 2,
+    cache_dir: str | Path | None = None,
+    cache_ttl_seconds: float | None = None,
+) -> pd.DataFrame:
+    """Fetch daily history for a market index code.
+
+    Unlike ``fetch_daily_history`` which targets individual stocks, this
+    function uses the correct exchange-prefix mapping for index codes
+    (e.g. ``000300`` → ``sh000300``) and defaults to ``source="auto"``
+    so it can fall back across multiple sources when akshare is unavailable.
+
+    Parameters match ``fetch_daily_history``.
+    """
+    normalized_code = str(code).strip().zfill(6)
+    normalized_lookback_days = int(lookback_days)
+    src = _normalize_daily_source(source)
+    if src == "auto":
+        sources: tuple[str, ...] = (
+            ("tushare", "tencent", "sina", "akshare", "baostock")
+            if _has_tushare_token()
+            else ("tencent", "sina", "akshare", "baostock")
+        )
+        sources, source_order_notes = _order_daily_sources_by_health(sources)
+    elif src in ("akshare", "baostock", "tushare", "tencent", "sina"):
+        sources = (src,)
+        source_order_notes = []
+    else:
+        raise ValueError(f"Unsupported daily source: {source}")
+
+    cache_path = None
+    if cache_dir is not None:
+        cache_path = _daily_history_cache_path(
+            Path(cache_dir),
+            code=normalized_code,
+            source=src,
+            lookback_days=normalized_lookback_days,
+        )
+        cached = _read_daily_history_cache(cache_path, ttl_seconds=cache_ttl_seconds)
+        if cached is not None:
+            return cached
+
+    attempts = max(int(retries), 0) + 1
+    errors: list[str] = []
+    for current in sources:
+        disabled_reason = _source_health.disabled_reason(current)
+        if disabled_reason:
+            errors.append(f"{current}: {disabled_reason}")
+            continue
+        last_error: Exception | None = None
+        for attempt in range(attempts):
+            try:
+                if current == "tencent":
+                    result = _fetch_daily_tencent_index(
+                        normalized_code,
+                        lookback_days=normalized_lookback_days,
+                    )
+                elif current == "sina":
+                    result = _fetch_daily_sina_index(
+                        normalized_code,
+                        lookback_days=normalized_lookback_days,
+                    )
+                elif current == "akshare":
+                    result = _call_daily_wrapper(
+                        _fetch_daily_akshare_index,
+                        current,
+                        normalized_code,
+                        lookback_days=normalized_lookback_days,
+                    )
+                elif current == "tushare":
+                    result = _call_daily_wrapper(
+                        _fetch_daily_tushare_index,
+                        current,
+                        normalized_code,
+                        lookback_days=normalized_lookback_days,
+                    )
+                else:
+                    result = _call_daily_wrapper(
+                        _fetch_daily_baostock_index,
+                        current,
+                        normalized_code,
+                        lookback_days=normalized_lookback_days,
+                    )
+                _source_health.record_success(current, rows=len(result))
+                result.attrs["daily_source"] = current
+                result.attrs["daily_requested_source"] = src
+                result.attrs["daily_source_order"] = list(sources)
+                result.attrs["daily_source_order_notes"] = list(source_order_notes)
+                result.attrs["source_errors"] = list(errors)
+                result.attrs["daily_source_health"] = _source_health.snapshot(sources)
+                if cache_path is not None:
+                    _write_daily_history_cache(
+                        cache_path,
+                        result,
+                        code=normalized_code,
+                        source=current,
+                        lookback_days=normalized_lookback_days,
+                    )
+                return result
+            except Exception as exc:
+                last_error = exc
+                if attempt < attempts - 1 and not _is_baostock_network_outage(
+                    getattr(exc, "code", ""), str(exc)
+                ):
+                    time.sleep(min(0.5 * (attempt + 1), 2.0))
+                else:
+                    break
+        if last_error is not None:
+            _source_health.record_failure(current, last_error)
+            errors.append(f"{current}: {last_error}")
+
+    if cache_path is not None:
+        stale = _read_daily_history_cache(cache_path, ttl_seconds=cache_ttl_seconds, allow_stale=True)
+        if stale is not None:
+            return stale
+
+    raise RuntimeError(
+        f"daily history fetch failed for {code}: "
+        + "; ".join(errors) if errors else "no sources available"
+    )
+
+
+# ── 指数专用 fetcher（使用正确的代码映射） ──────────────────────────
+
+
+def _fetch_daily_tencent_index(code: str, *, lookback_days: int) -> pd.DataFrame:
+    """Tencent daily K-line for an index code using correct exchange prefix."""
+    symbol = _to_index_tencent_code(code)
+    count = max(int(lookback_days), 30)
+    response = _get_http_session().get(
+        "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get",
+        params={"param": f"{symbol},day,,,{count},qfq"},
+        headers={"User-Agent": "Mozilla/5.0"},
+        timeout=10,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    if not isinstance(payload, dict) or payload.get("code") not in (0, "0", None):
+        message = payload.get("msg") if isinstance(payload, dict) else payload
+        raise RuntimeError(f"tencent daily API error for {code}: {message}")
+    data = payload.get("data") if isinstance(payload, dict) else None
+    stock_data = data.get(symbol) if isinstance(data, dict) else None
+    if not isinstance(stock_data, dict):
+        raise RuntimeError(f"tencent daily history missing payload for {code}")
+    rows = stock_data.get("qfqday") or stock_data.get("day") or []
+    if not isinstance(rows, list) or not rows:
+        raise RuntimeError(f"tencent daily history empty for {code}")
+
+    normalized_rows: list[dict[str, object]] = []
+    for row in rows:
+        if not isinstance(row, list) or len(row) < 6:
+            continue
+        normalized_rows.append({
+            "date": row[0],
+            "open": row[1],
+            "close": row[2],
+            "high": row[3],
+            "low": row[4],
+            "volume": float(row[5]) * 100 if row[5] else 0.0,
+            "amount": row[6] if len(row) > 6 else pd.NA,
+        })
+    if not normalized_rows:
+        raise RuntimeError(f"tencent daily history malformed for {code}")
+    df = pd.DataFrame(
+        normalized_rows,
+        columns=["date", "open", "close", "high", "low", "volume", "amount"],
+    )
+    for col in ("open", "close", "high", "low", "volume", "amount"):
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+    return df
+
+
+def _fetch_daily_sina_index(code: str, *, lookback_days: int) -> pd.DataFrame:
+    """Sina daily K-line for an index code using correct exchange prefix."""
+    symbol = _to_index_tencent_code(code)
+    count = max(int(lookback_days), 30)
+    response = _get_http_session().get(
+        "https://quotes.sina.cn/cn/api/openapi.php/CN_MarketDataService.getKLineData",
+        params={"symbol": symbol, "scale": 240, "ma": "no", "datalen": count},
+        headers={"User-Agent": "Mozilla/5.0"},
+        timeout=10,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    data = payload.get("result", {}).get("data") if isinstance(payload, dict) else None
+    if not isinstance(data, list) or not data:
+        raise RuntimeError(f"sina daily history empty for {code}")
+
+    rows: list[dict[str, object]] = []
+    for row in data:
+        if not isinstance(row, dict):
+            continue
+        rows.append({
+            "date": row.get("day") or row.get("date"),
+            "open": row.get("open"),
+            "close": row.get("close"),
+            "high": row.get("high"),
+            "low": row.get("low"),
+            "volume": row.get("volume"),
+            "amount": row.get("amount", pd.NA),
+        })
+    if not rows:
+        raise RuntimeError(f"sina daily history malformed for {code}")
+    df = pd.DataFrame(
+        rows,
+        columns=["date", "open", "close", "high", "low", "volume", "amount"],
+    )
+    for col in ("open", "close", "high", "low", "volume"):
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+    df["amount"] = pd.to_numeric(df["amount"], errors="coerce")
+    return df
+
+
+def _fetch_daily_akshare_index(code: str, *, lookback_days: int) -> pd.DataFrame:
+    """Fetch daily history for an index using akshare's index API."""
+    import akshare as ak
+
+    # Index codes need the exchange prefix for akshare: "sh000300", "sz399006"
+    symbol = _to_index_tencent_code(code)
+    df = ak.stock_zh_index_daily(symbol=symbol)
+    if df is None or df.empty:
+        raise RuntimeError(f"akshare index daily history empty for {code}")
+    return df.tail(max(lookback_days, 30)).copy()
+
+
+def _fetch_daily_tushare_index(code: str, *, lookback_days: int) -> pd.DataFrame:
+    """Fetch daily history for an index using Tushare Pro."""
+    token = _tushare_token()
+    if not token:
+        raise RuntimeError("tushare requires TUSHARE_TOKEN")
+
+    import tushare as ts
+
+    pro = ts.pro_api(token)
+    from marketbase.shared_utils import _configure_tushare_client
+    _configure_tushare_client(pro, token=token)
+
+    start_date = (datetime.now() - timedelta(days=max(lookback_days * 2, 90))).strftime("%Y%m%d")
+    end_date = datetime.now().strftime("%Y%m%d")
+    df = pro.index_daily(
+        ts_code=_to_index_tencent_code(code).upper(),
+        start_date=start_date,
+        end_date=end_date,
+    )
+    if df is None or df.empty:
+        raise RuntimeError(f"tushare index daily history empty for {code}")
+    return df.tail(max(lookback_days, 30)).copy()
+
+
+def _fetch_daily_baostock_index(code: str, *, lookback_days: int) -> pd.DataFrame:
+    """Fetch daily history for an index using baostock."""
+    raise RuntimeError("baostock index daily history not supported")

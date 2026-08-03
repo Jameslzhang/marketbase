@@ -47,3 +47,16 @@ freshness metadata before consuming the data.
 
 Providers may rate-limit or fail. Do not treat collected data as investment advice
 or as a guarantee of completeness, correctness, or timeliness.
+
+## Strategy Pipeline (v2.0.0-dev)
+
+Build T+1 lifecycle snapshot:
+```bash
+python -m marketbase.t1_snapshot --v2
+```
+
+Output: `strategies/t1_processed_data_v2.json` — read-only source for cloud Skills.
+
+**Boundary**: Local Python computes all deterministic indicators, state machines,
+and channel/double-axis decisions. Cloud Skills read the frozen output and
+generate user-facing prose only — never override computed values.

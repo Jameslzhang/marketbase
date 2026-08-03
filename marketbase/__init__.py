@@ -18,19 +18,35 @@ from marketbase.live_workflow import (
 )
 from marketbase.market_collector import MarketCollectionResult, collect_market_snapshot
 from marketbase.minute_collector import collect_requested_data
+from marketbase.objective_data_provider import (
+    DailyContext,
+    FrozenSnapshot,
+    MarketContext,
+    MinuteContext,
+    ObjectiveDataProvider,
+    ProviderType,
+    TradePlan,
+)
 from marketbase.snapshot import (
     fetch_cn_snapshot,
     fetch_snapshot_with_fallback,
     snapshot_source_health_snapshot,
 )
 
-__version__ = "0.2.0"
+__version__ = "0.3.0-dev"
 
 __all__ = [
     "DataRequest",
     "DailyCollectionReport",
     "DailyProgressEvent",
+    "DailyContext",
+    "FrozenSnapshot",
     "MarketCollectionResult",
+    "MarketContext",
+    "MinuteContext",
+    "ObjectiveDataProvider",
+    "ProviderType",
+    "TradePlan",
     "__version__",
     "acquire_live_snapshot",
     "audit_market_snapshot",

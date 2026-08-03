@@ -22,14 +22,10 @@ from marketbase.daily_collector import (
 from marketbase.data_request import DataRequest
 from marketbase.live_workflow import fetch_tencent_minute_rows
 from marketbase.indicators import compute_daily_indicators
+from marketbase.shared_utils import _neutral_error
 
 
 _MINUTE_COLUMNS = ("time", "price", "volume", "amount")
-_PROHIBITED_ERROR_TERMS = re.compile(
-    r"candidate|recommend|buy|sell|signal|score|rank|probability|"
-    r"候选|推荐|买入|卖出|信号|评分|排名|概率",
-    re.IGNORECASE,
-)
 
 
 def parse_minute_rows(rows: Iterable[str]) -> pd.DataFrame:
@@ -275,10 +271,6 @@ def _error_record(
         "error": _neutral_error(message),
         "observed_at": observed_at.isoformat(),
     }
-
-
-def _neutral_error(message: str) -> str:
-    return _PROHIBITED_ERROR_TERMS.sub("data", message)
 
 
 def _strict_json_value(value: object) -> object:

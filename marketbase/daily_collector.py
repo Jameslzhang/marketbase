@@ -17,19 +17,12 @@ import pandas as pd
 
 from marketbase.daily import fetch_daily_history
 from marketbase.indicators import compute_daily_indicators
-
-
-def _atomic_replace(temp_path: Path, target_path: Path, *, retries: int = 5, delay: float = 0.1) -> None:
-    """原子替换目标文件，Windows 锁冲突时重试."""
-    for attempt in range(retries):
-        try:
-            temp_path.replace(target_path)
-            return
-        except PermissionError:
-            if attempt == retries - 1:
-                raise
-            time.sleep(delay * (2 ** attempt))
-
+from marketbase.shared_utils import (
+    _atomic_replace,
+    _atomic_write_json,
+    _ensure_dir,
+    _neutral_error,
+)
 
 _SCHEMA_VERSION = 1
 _DAILY_COLUMNS = ("date", "open", "high", "low", "close", "volume", "amount")
@@ -58,7 +51,7 @@ def _is_daily_cache_fresh(latest_date: str, observed_at: datetime) -> bool:
     local = observed_at.astimezone(timezone(timedelta(hours=8)))
     after_close = local.hour >= _MARKET_CLOSE_HOUR
 
-    from marketbase.calendar import is_trading_day
+    from marketbase.trade_calendar import is_trading_day
 
     if not is_trading_day(local):  # weekend or holiday
         return days_behind <= 2
@@ -109,6 +102,7 @@ class DailyCollectionReport:
     cache_root: Path
     indicators: list[dict[str, object]]
     latest_date_distribution: dict[str, int]
+    latest_date_by_code: dict[str, str]
     short_history: list[dict[str, object]]
     invalid_or_missing_cache: list[dict[str, str]]
     indicator_insufficient: list[dict[str, object]]
@@ -177,6 +171,7 @@ def collect_daily_universe(
     errors: dict[str, str] = {}
     indicators_list: list[dict[str, object]] = []
     latest_date_distribution: dict[str, int] = {}
+    latest_date_by_code: dict[str, str] = {}
     short_history: list[dict[str, object]] = []
     invalid_or_missing: list[dict[str, str]] = []
     indicator_insufficient: list[dict[str, object]] = []
@@ -230,7 +225,7 @@ def collect_daily_universe(
         """Fetch and cache one code. Returns result with pre-computed indicators."""
         nonlocal cache_hit_count, success_count, failure_count
         nonlocal source_counts, errors, indicators_list
-        nonlocal latest_date_distribution, short_history, invalid_or_missing, indicator_insufficient
+        nonlocal latest_date_distribution, latest_date_by_code, short_history, invalid_or_missing, indicator_insufficient
         cache_path = cache_dir / f"{code}.json"
         observed_dt = _coerce_now(now)
 
@@ -259,6 +254,7 @@ def collect_daily_universe(
                             _mark_completed(completed_codes, failed_codes, code)
                             indicators_list.append({"code": code, **indicators})
                             latest_date_distribution[latest_str] = latest_date_distribution.get(latest_str, 0) + 1
+                            latest_date_by_code[code] = latest_str
                             if actual_rows < lookback:
                                 short_history.append({"code": code, "actual_rows": actual_rows, "reason": "short_history"})
                             _track_indicator_quality(code, actual_rows, indicators, indicator_insufficient)
@@ -289,6 +285,7 @@ def collect_daily_universe(
                             _mark_completed(completed_codes, failed_codes, code)
                             indicators_list.append({"code": code, **indicators})
                             latest_date_distribution[latest_str] = latest_date_distribution.get(latest_str, 0) + 1
+                            latest_date_by_code[code] = latest_str
                             if actual_rows < lookback:
                                 short_history.append({"code": code, "actual_rows": actual_rows, "reason": "short_history"})
                             _track_indicator_quality(code, actual_rows, indicators, indicator_insufficient)
@@ -320,6 +317,7 @@ def collect_daily_universe(
                 _mark_completed(completed_codes, failed_codes, code)
                 indicators_list.append({"code": code, **indicators})
                 latest_date_distribution[latest_str] = latest_date_distribution.get(latest_str, 0) + 1
+                latest_date_by_code[code] = latest_str
                 if actual_rows < lookback:
                     short_history.append({"code": code, "actual_rows": actual_rows, "reason": "short_history"})
                 _track_indicator_quality(code, actual_rows, indicators, indicator_insufficient)
@@ -367,6 +365,7 @@ def collect_daily_universe(
             source_counts[cached_src] = source_counts.get(cached_src, 0) + 1
             indicators_list.append({"code": code, **indicators})
             latest_date_distribution[latest_str] = latest_date_distribution.get(latest_str, 0) + 1
+            latest_date_by_code[code] = latest_str
             if actual_rows < lookback:
                 short_history.append({"code": code, "actual_rows": actual_rows, "reason": "short_history"})
             _track_indicator_quality(code, actual_rows, indicators, indicator_insufficient)
@@ -417,6 +416,7 @@ def collect_daily_universe(
         cache_root=cache_dir,
         indicators=indicators_list,
         latest_date_distribution=latest_date_distribution,
+        latest_date_by_code=latest_date_by_code,
         short_history=short_history,
         invalid_or_missing_cache=invalid_or_missing,
         indicator_insufficient=indicator_insufficient,
@@ -649,13 +649,6 @@ def _normalize_source_errors(value: object) -> list[str]:
     return [str(item) for item in value] if isinstance(value, (list, tuple)) else []
 
 
-def _neutral_error(value: str) -> str:
-    result = value
-    for term in ("候选", "推荐", "买入", "卖出", "概率"):
-        result = result.replace(term, "数据")
-    return result
-
-
 def _load_checkpoint(path: Path, *, trading_date: str, lookback: int, codes: list[str]) -> dict[str, list[str]]:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
@@ -759,11 +752,4 @@ def _eta_seconds(completed: int, pending: int, elapsed_seconds: float) -> float 
     return pending / (completed / elapsed_seconds)
 
 
-def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
-    try:
-        temporary.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-        _atomic_replace(temporary, path)
-    finally:
-        temporary.unlink(missing_ok=True)
+

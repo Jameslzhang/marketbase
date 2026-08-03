@@ -13,7 +13,9 @@ import time
 
 import pandas as pd
 
-from marketbase.data_audit import _neutralize_error, audit_market_snapshot
+from marketbase.shared_utils import _atomic_replace, _neutral_error
+
+from marketbase.data_audit import audit_market_snapshot
 from marketbase.live_workflow import (
     acquire_live_snapshot,
     collect_bse_snapshot,
@@ -144,7 +146,7 @@ def collect_market_snapshot(
         for err in bse_audit.get("errors", []):
             _emit(progress, observed_at, f"北交所 {err}")
     except Exception as exc:
-        _emit(progress, observed_at, f"北交所采集失败: {_neutralize_error(exc)}")
+        _emit(progress, observed_at, f"北交所采集失败: {_neutral_error(str(exc))}")
         bse_audit = {"bj_expected": 0, "bj_actual": 0, "bj_missing": 0, "source": "", "errors": [str(exc)]}
 
     # --- Merge SH/SZ + BSE ---
@@ -223,7 +225,7 @@ def collect_market_snapshot(
         report["cache_written"] = True
     except OSError as exc:
         report["cache_written"] = False
-        report["cache_error"] = _neutralize_error(exc)
+        report["cache_error"] = _neutral_error(str(exc))
         _emit(progress, observed_at, "缓存写入失败")
 
     return MarketCollectionResult(
@@ -439,18 +441,6 @@ def _read_cached_rows(path: Path) -> pd.DataFrame:
     except (OSError, ValueError, TypeError):
         return pd.DataFrame()
     return pd.DataFrame(rows) if isinstance(rows, list) else pd.DataFrame()
-
-
-def _atomic_replace(temp_path: Path, target_path: Path, *, retries: int = 5, delay: float = 0.1) -> None:
-    """Atomically replace *target_path* with *temp_path*, retrying on Windows lock errors."""
-    for attempt in range(retries):
-        try:
-            os.replace(temp_path, target_path)
-            return
-        except PermissionError:
-            if attempt == retries - 1:
-                raise
-            time.sleep(delay * (2 ** attempt))
 
 
 def _write_cache(
