@@ -25,7 +25,9 @@ OUTPUT_COLUMNS = [
     "industry_source",
     "concepts_source",
     "supply_chain_source",
+    "source",
     "updated_at",
+    "coverage_status",
 ]
 _SOURCES = ("snapshot", "existing_map", "supply_chain_file", "empty")
 _LABEL_SEPARATOR_RE = re.compile(r"\s*[,，、;；|]\s*")
@@ -91,6 +93,16 @@ def build_classification_map(
             "supply_chain",
             normalize_label=True,
         )
+        # Determine the primary data source
+        primary_source = "eastmoney"
+        if existing_row:
+            primary_source = existing_row.get("source", "eastmoney")
+        elif supply_row:
+            primary_source = "supply_chain_file"
+
+        # Determine coverage status
+        coverage_status = "covered" if (industry or concepts) else "missing"
+
         output_rows.append(
             {
                 "code": code,
@@ -101,10 +113,12 @@ def build_classification_map(
                 "industry_source": industry_source,
                 "concepts_source": concepts_source,
                 "supply_chain_source": supply_chain_source,
+                "source": primary_source,
                 "updated_at": _latest_updated_at(
                     *snapshot_rows.get(code, []),
                     *existing_row.pop("__all_rows", []),
                 ),
+                "coverage_status": coverage_status,
             }
         )
         for field, source in (
@@ -115,6 +129,8 @@ def build_classification_map(
             source_counts[field][source] += 1
 
     result = pd.DataFrame(output_rows, columns=OUTPUT_COLUMNS)
+    covered_count = int(result["coverage_status"].eq("covered").sum()) if not result.empty else 0
+    missing_count = int(result["coverage_status"].eq("missing").sum()) if not result.empty else 0
     audit = {
         "total_snapshot_rows": int(len(snapshot)),
         "output_rows": int(len(result)),
@@ -124,6 +140,8 @@ def build_classification_map(
         "industry_coverage_count": int(result["industry"].ne("").sum()) if not result.empty else 0,
         "concepts_coverage_count": int(result["concepts"].ne("").sum()) if not result.empty else 0,
         "supply_chain_coverage_count": int(result["supply_chain"].ne("").sum()) if not result.empty else 0,
+        "covered_count": covered_count,
+        "missing_count": missing_count,
         "missing_industry_codes": _missing_codes(result, "industry"),
         "missing_concepts_codes": _missing_codes(result, "concepts"),
         "missing_supply_chain_codes": _missing_codes(result, "supply_chain"),

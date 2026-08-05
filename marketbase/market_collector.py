@@ -47,6 +47,11 @@ OUTPUT_FIELDS = (
     "source",
     "industry",
     "concepts",
+    "board",
+    "is_st",
+    "is_suspended",
+    "delist_risk",
+    "listed_days",
 )
 _NUMERIC_FIELDS = (
     "price",
@@ -267,7 +272,15 @@ def _normalize_output(
     )
     output["_market_order"] = output["market"].map(_MARKET_ORDER)
     output = output.sort_values(["_market_order", "code"], kind="stable")
-    return output.loc[:, OUTPUT_FIELDS].reset_index(drop=True)
+    # Ensure all OUTPUT_FIELDS exist before selecting
+    for field in OUTPUT_FIELDS:
+        if field not in output.columns:
+            output[field] = None
+    result = output.loc[:, OUTPUT_FIELDS].reset_index(drop=True)
+    # Preserve raw response attrs for archival
+    if "raw_response" in frame.attrs:
+        result.attrs["raw_response"] = frame.attrs["raw_response"]
+    return result
 
 
 def _codes(frame: pd.DataFrame) -> pd.Series:

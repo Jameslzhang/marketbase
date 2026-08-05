@@ -24,7 +24,7 @@ from marketbase.daily_collector import (
 from marketbase.daily_collector import _MIN_INDICATOR_ROWS  # pyright: ignore[reportPrivateUsage]
 from marketbase.tradability import enrich_tradability
 from marketbase.volume_ratio import compute_volume_ratios_batch
-from marketbase.intraday import append_minute_snapshot, build_intraday_sequence, audit_minute_sequence, compute_minute_facts
+from marketbase.intraday import append_minute_snapshot, build_intraday_sequence, audit_minute_sequence, compute_minute_facts, compute_vwap_from_minute, compute_intraday_structure
 
 from marketbase.pipeline.helpers import (
     _observed_at,
@@ -268,6 +268,17 @@ def _supply_chain_path(root: Path, configured: object) -> str | Path | None:
     return path if path.is_file() else None
 
 
+def _get_uncovered_codes(frame: pd.DataFrame, classification: pd.DataFrame) -> list[str]:
+    """Return snapshot codes that have no industry and no concepts in classification."""
+    if classification.empty or "code" not in classification.columns:
+        return list(dict.fromkeys(frame["code"].astype(str).tolist()))
+
+    class_codes = set(classification["code"].astype(str).tolist())
+    snapshot_codes = set(frame["code"].astype(str).tolist())
+    uncovered = snapshot_codes - class_codes
+    return sorted(uncovered)
+
+
 def _run_audit_and_classification(
     frame: pd.DataFrame,
     observed_at: datetime,
@@ -301,6 +312,17 @@ def _run_audit_and_classification(
         industry_missing = int((~industry_filled).sum())
         classification_audit["industry_coverage"] = industry_coverage
         classification_audit["industry_missing_count"] = industry_missing
+
+    # Log uncovered codes
+    uncovered_codes = _get_uncovered_codes(frame, classification)
+    if uncovered_codes:
+        classification_audit["uncovered_codes"] = uncovered_codes
+        classification_audit["uncovered_code_count"] = len(uncovered_codes)
+        logger.info(
+            "classification: %d codes without industry/concept classification",
+            len(uncovered_codes),
+        )
+
     return market_audit, classification, classification_audit
 
 
@@ -344,6 +366,8 @@ def _run_minute_snapshot(
     emit: Callable[[str], None],
     *,
     all_codes: list[str] | None = None,
+    intraday_minutes_audit: dict[str, object] | None = None,
+    intraday_minutes_path: str | None = None,
 ) -> dict[str, object]:
     """追加分钟快照到 intraday_1m.parquet，计算 VWAP 覆盖，返回审计结果."""
     minute_audit: dict[str, object] = {"status": "pending"}
@@ -355,6 +379,19 @@ def _run_minute_snapshot(
         )
         emit(f"minute append failed: {minute_audit['append_error']}")
         return minute_audit
+
+    # ── 确定分钟数据来源：只使用本次 run 成功生成的文件，绝不回退到共享缓存 ──
+    run_ohlcv_path: Path | None = None
+    if intraday_minutes_path and Path(intraday_minutes_path).exists():
+        run_ohlcv_path = Path(intraday_minutes_path)
+    # 移除：elif 回退到 cache/intraday_1m.parquet（旧缓存混入风险）
+
+    # 若本次分钟采集失败，跳过 VWAP/结构/事实计算，避免混入旧缓存数据
+    intraday_failed = (
+        intraday_minutes_audit is not None
+        and intraday_minutes_audit.get("status") == "failed"
+    )
+
     intraday_path = cache_root / "intraday_1m.parquet"
     try:
         append_minute_snapshot(frame, intraday_path)
@@ -385,73 +422,92 @@ def _run_minute_snapshot(
         emit(f"minute sequence build failed: {minute_audit['sequence_error']}")
 
     # ── VWAP 计算并写入 frame ──
-    try:
-        # 优先使用行情源提供的均价（若可用），否则由累计成交额/成交量计算
-        if "avg_price" in frame.columns:
-            vwap = pd.to_numeric(frame["avg_price"], errors="coerce")
-            vol = pd.to_numeric(frame["volume"], errors="coerce") if "volume" in frame.columns else pd.Series(float("nan"), index=frame.index)
-            amt = pd.to_numeric(frame["amount"], errors="coerce") if "amount" in frame.columns else pd.Series(float("nan"), index=frame.index)
-            frame["vwap_source"] = "market_provided"
-        elif "average" in frame.columns:
-            vwap = pd.to_numeric(frame["average"], errors="coerce")
-            vol = pd.to_numeric(frame["volume"], errors="coerce") if "volume" in frame.columns else pd.Series(float("nan"), index=frame.index)
-            amt = pd.to_numeric(frame["amount"], errors="coerce") if "amount" in frame.columns else pd.Series(float("nan"), index=frame.index)
-            frame["vwap_source"] = "market_provided"
-        elif "amount" in frame.columns and "volume" in frame.columns:
-            vol = pd.to_numeric(frame["volume"], errors="coerce")
-            amt = pd.to_numeric(frame["amount"], errors="coerce")
-            vwap = amt / vol.replace(0, float("nan"))
-            frame["vwap_source"] = "computed_from_cumulative"
-        else:
-            minute_audit["vwap_error"] = "no amount/volume or avg_price columns for VWAP"
-            emit(f"VWAP skipped: {minute_audit['vwap_error']}")
-            return minute_audit  # 跳过后续 VWAP 写入，但不影响分钟事实
-        frame["vwap"] = vwap
-        frame["vwap_distance_pct"] = ((pd.to_numeric(frame["price"], errors="coerce") - vwap) / vwap.replace(0, float("nan"))) * 100
-        frame["cumulative_volume"] = vol
-        frame["cumulative_amount"] = amt
-        # 记录单位换算依据：amount 单位为 CNY(元)，volume 单位为 shares(股)
-        frame["vwap_unit_note"] = "amount_CNY / volume_shares"
-        minute_audit["vwap_coverage"] = int(vwap.notna().sum())
-        minute_audit["vwap_total"] = len(frame)
-        emit(f"VWAP written to snapshot: {minute_audit['vwap_coverage']}/{len(frame)} computable (source={frame['vwap_source'].iloc[0] if len(frame) > 0 else 'unknown'})")
-    except Exception as exc:
-        minute_audit["vwap_error"] = _neutral_text(str(exc) or type(exc).__name__)
-        emit(f"VWAP write failed: {minute_audit['vwap_error']}")
+    if intraday_failed:
+        minute_audit["vwap_error"] = "intraday collection failed, VWAP skipped to avoid stale cache data"
+        emit(f"VWAP skipped: {minute_audit['vwap_error']}")
+    elif run_ohlcv_path and run_ohlcv_path.exists():
+        try:
+            ohlcv_df = pd.read_parquet(run_ohlcv_path)
+            ohlcv_df = ohlcv_df.rename(columns={"timestamp": "time", "close": "price"})
+            frame = compute_vwap_from_minute(
+                cast(pd.DataFrame, ohlcv_df), frame,
+                vwap_source_label="tencent_intraday",
+            )
+            vwap_coverage = int(frame["vwap"].notna().sum())
+            vwap_source_counts = frame["vwap_source"].value_counts().to_dict() if "vwap_source" in frame.columns else {}
+            minute_audit["vwap_coverage"] = vwap_coverage
+            minute_audit["vwap_total"] = len(frame)
+            minute_audit["vwap_source_counts"] = {str(k): int(v) for k, v in vwap_source_counts.items()}
+            emit(f"VWAP from minute data: {vwap_coverage}/{len(frame)} computable (sources={vwap_source_counts})")
+        except Exception as exc:
+            minute_audit["vwap_error"] = _neutral_text(str(exc) or type(exc).__name__)
+            emit(f"VWAP write failed: {minute_audit['vwap_error']}")
+    else:
+        minute_audit["vwap_error"] = "no intraday_1m.parquet for VWAP computation"
+        emit(f"VWAP skipped: {minute_audit['vwap_error']}")
+
+    # ── 盘中价格结构 ──
+    if intraday_failed:
+        minute_audit["intraday_structure_error"] = "intraday collection failed, structure skipped"
+        emit(f"intraday structure skipped: {minute_audit['intraday_structure_error']}")
+    elif run_ohlcv_path and run_ohlcv_path.exists():
+        try:
+            ohlcv_df = pd.read_parquet(run_ohlcv_path)
+            ohlcv_df = ohlcv_df.rename(columns={"timestamp": "time", "close": "price"})
+            frame = compute_intraday_structure(
+                cast(pd.DataFrame, ohlcv_df), frame,
+            )
+            struct_cols = [
+                "distance_from_high_pct", "distance_from_low_pct", "amplitude_pct",
+                "volume_3m", "volume_5m", "amount_3m", "amount_5m",
+                "amount_change_ratio",
+            ]
+            struct_count = sum(1 for col in struct_cols if col in frame.columns)
+            minute_audit["intraday_structure_applied"] = True
+            minute_audit["intraday_structure_columns"] = struct_count
+            emit(f"intraday structure applied: {struct_count} columns")
+        except Exception as exc:
+            minute_audit["intraday_structure_error"] = _neutral_text(str(exc) or type(exc).__name__)
+            emit(f"intraday structure failed: {minute_audit['intraday_structure_error']}")
+    else:
+        minute_audit["intraday_structure_error"] = "no intraday_1m.parquet"
+        emit(f"intraday structure skipped: no intraday_1m.parquet")
 
     if minute_audit.get("status") != "failed":
         minute_audit["status"] = "collected"
 
     # ── 分钟客观事实字段 ──
-    try:
-        # 优先使用 intraday_minutes.parquet（完整 OHLCV，含 high/low）
-        ohlcv_path = cache_root / "intraday_minutes.parquet"
-        if ohlcv_path.exists():
-            ohlcv_df = pd.read_parquet(ohlcv_path)
-            # 列名映射: timestamp→time, close→price
-            ohlcv_df = ohlcv_df.rename(columns={"timestamp": "time", "close": "price"})
-            facts_df = compute_minute_facts(cast(pd.DataFrame, ohlcv_df), frame)
-            minute_audit["fact_source"] = "intraday_minutes.parquet"
-        else:
-            seq = build_intraday_sequence(intraday_path)
-            if not seq.empty:
-                facts_df = compute_minute_facts(cast(pd.DataFrame, seq), frame)
+    if intraday_failed:
+        minute_audit["minute_facts_error"] = "intraday collection failed, facts skipped"
+        emit(f"minute facts skipped: {minute_audit['minute_facts_error']}")
+    else:
+        try:
+            # 优先使用 run 专属 intraday_1m.parquet（完整 OHLCV，含 high/low）
+            if run_ohlcv_path and run_ohlcv_path.exists():
+                ohlcv_df = pd.read_parquet(run_ohlcv_path)
+                ohlcv_df = ohlcv_df.rename(columns={"timestamp": "time", "close": "price"})
+                facts_df = compute_minute_facts(cast(pd.DataFrame, ohlcv_df), frame)
                 minute_audit["fact_source"] = "intraday_1m.parquet"
             else:
-                facts_df = frame
-        fact_cols = [
-            "afternoon_pivot", "distance_to_day_high_pct",
-            "vol_last_3m", "vol_last_5m", "vol_change_3m_pct",
-            "is_limit_touched", "last_tradable_time",
-        ]
-        for col in fact_cols:
-            if col in facts_df.columns:
-                frame[col] = facts_df[col].values
-        minute_audit["minute_facts_applied"] = True
-        fact_count = sum(1 for col in fact_cols if col in facts_df.columns)
-        emit(f"minute facts applied: {fact_count} columns (source={minute_audit.get('fact_source', 'unknown')})")
-    except Exception as exc:
-        minute_audit["minute_facts_error"] = _neutral_text(str(exc) or type(exc).__name__)
-        emit(f"minute facts failed: {minute_audit['minute_facts_error']}")
+                seq = build_intraday_sequence(intraday_path)
+                if not seq.empty:
+                    facts_df = compute_minute_facts(cast(pd.DataFrame, seq), frame)
+                    minute_audit["fact_source"] = "intraday_1m.parquet"
+                else:
+                    facts_df = frame
+            fact_cols = [
+                "afternoon_pivot", "distance_to_day_high_pct",
+                "vol_last_3m", "vol_last_5m", "vol_change_3m_pct",
+                "is_limit_touched", "last_tradable_time",
+            ]
+            for col in fact_cols:
+                if col in facts_df.columns:
+                    frame[col] = facts_df[col].values
+            minute_audit["minute_facts_applied"] = True
+            fact_count = sum(1 for col in fact_cols if col in facts_df.columns)
+            emit(f"minute facts applied: {fact_count} columns (source={minute_audit.get('fact_source', 'unknown')})")
+        except Exception as exc:
+            minute_audit["minute_facts_error"] = _neutral_text(str(exc) or type(exc).__name__)
+            emit(f"minute facts failed: {minute_audit['minute_facts_error']}")
 
     return minute_audit

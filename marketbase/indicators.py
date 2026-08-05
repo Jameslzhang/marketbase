@@ -42,6 +42,10 @@ _OUTPUT_KEYS = (
     "momentum_delta_1",
     "momentum_delta_3",
     "momentum_improving",
+    "high_20d",
+    "low_20d",
+    "last_trade_date",
+    "includes_intraday_today",
     "input_rows",
     "first_date",
     "last_date",
@@ -71,6 +75,14 @@ def compute_daily_indicators(
     df = frame.copy()
     if "date" in df.columns:
         dates = pd.to_datetime(df["date"], errors="coerce")
+        # 捕获原始最后交易日（截断前）
+        raw_valid = dates.dropna()
+        if not raw_valid.empty:
+            result["last_trade_date"] = raw_valid.max().date().isoformat()
+        # 判断是否包含当日盘中数据
+        result["includes_intraday_today"] = _detect_intraday_today(
+            result.get("last_trade_date"), calculated_at
+        )
         # 截断到已完成交易日（排除当日未完成数据）
         if trading_date:
             cutoff = pd.Timestamp(trading_date)
@@ -131,6 +143,10 @@ def compute_daily_indicators(
     open_ = _numeric_series(df, "open")
     result["upper_shadow_ratio"] = _shadow_ratio(high, low, open_, close, "upper")
     result["lower_shadow_ratio"] = _shadow_ratio(high, low, open_, close, "lower")
+
+    # ── 20日最高/最低价 ──────────────────────────────────────────────
+    result["high_20d"] = _rolling_high(high, 20)
+    result["low_20d"] = _rolling_low(low, 20)
 
     # ── 标签 ────────────────────────────────────────────────────────
     result["repeated_upper_shadow"] = _repeated_upper_shadow(high, low, open_, close)
@@ -349,6 +365,40 @@ def _check_overheated(rsi: float | None, boll_position: float | None) -> bool | 
     if rsi is None or boll_position is None:
         return None
     return rsi > 70 and boll_position > 0.8
+
+
+# ── 20日最高/最低价 ─────────────────────────────────────────────────
+
+
+def _rolling_high(series: pd.Series, period: int) -> float | None:
+    if len(series) < period:
+        return None
+    return float(series.rolling(period, min_periods=period).max().iloc[-1])
+
+
+def _rolling_low(series: pd.Series, period: int) -> float | None:
+    if len(series) < period:
+        return None
+    return float(series.rolling(period, min_periods=period).min().iloc[-1])
+
+
+# ── 盘中数据检测 ────────────────────────────────────────────────────
+
+
+def _detect_intraday_today(
+    last_trade_date: object, calculated_at: datetime | None
+) -> bool:
+    """检测是否包含当日盘中（未完成）数据."""
+    if last_trade_date is None or calculated_at is None:
+        return False
+    if not isinstance(last_trade_date, str):
+        return False
+    from datetime import timezone, timedelta
+
+    beijing_tz = timezone(timedelta(hours=8))
+    beijing_time = calculated_at.astimezone(beijing_tz)
+    today_str = beijing_time.date().isoformat()
+    return last_trade_date == today_str and beijing_time.hour < 15
 
 
 # ── RPS20 全市场排序 ────────────────────────────────────────────────

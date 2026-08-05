@@ -14,7 +14,9 @@ OUTPUT_COLUMNS = [
     "industry_source",
     "concepts_source",
     "supply_chain_source",
+    "source",
     "updated_at",
+    "coverage_status",
 ]
 
 
@@ -57,7 +59,9 @@ def test_snapshot_values_have_priority_and_existing_map_only_fills_empty_values(
             "industry_source": "snapshot",
             "concepts_source": "snapshot",
             "supply_chain_source": "existing_map",
+            "source": "eastmoney",
             "updated_at": "2026-07-21T10:00:00",
+            "coverage_status": "covered",
         }
     ]
     assert audit["industry_coverage_count"] == 1

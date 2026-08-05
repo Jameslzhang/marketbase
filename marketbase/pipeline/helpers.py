@@ -10,6 +10,8 @@ import hashlib
 import json
 import math
 import os
+import socket
+import sys
 from pathlib import Path
 import tempfile
 import time
@@ -57,6 +59,8 @@ _INDICATOR_VALUE_FIELDS = (
     "momentum_delta_1",
     "momentum_delta_3",
     "momentum_improving",
+    "high_20d",
+    "low_20d",
 )
 _INDICATOR_FIELDS = (
     *_INDICATOR_VALUE_FIELDS,
@@ -66,6 +70,8 @@ _INDICATOR_FIELDS = (
     "input_rows",
     "first_date",
     "last_date",
+    "last_trade_date",
+    "includes_intraday_today",
     "calculated_at",
 )
 
@@ -108,6 +114,74 @@ def _unlock_file(handle: IO[bytes]) -> None:
         fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
         return
     raise RuntimeError("no supported file-locking mechanism is available")
+
+
+# ── JSON 工作流锁（替代二进制锁）────────────────────────────────────
+
+def _write_workflow_lock(lock_path: Path) -> dict[str, object]:
+    """Write a JSON lock file with process metadata.
+
+    Uses atomic temp-file + os.replace() to prevent two processes from
+    both passing the stale-lock check and then both writing their PID.
+    """
+    payload: dict[str, object] = {
+        "pid": os.getpid(),
+        "started_at": datetime.now().astimezone().isoformat(),
+        "command": sys.argv,
+        "hostname": socket.gethostname(),
+    }
+    tmp_path = lock_path.with_suffix(lock_path.suffix + ".tmp")
+    try:
+        tmp_path.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        os.replace(tmp_path, lock_path)
+    except Exception:
+        tmp_path.unlink(missing_ok=True)
+        raise
+    return payload
+
+
+def _remove_workflow_lock(lock_path: Path) -> None:
+    """Remove the JSON lock file if it exists."""
+    lock_path.unlink(missing_ok=True)
+
+
+def _check_and_clean_stale_lock(lock_path: Path, threshold_minutes: int = 30) -> bool:
+    """Check if a JSON lock file is stale and clean it up.
+
+    Returns:
+        True if the lock was removed or doesn't exist (no valid lock held).
+        False if the lock is valid and held by an active process.
+    """
+    if not lock_path.exists():
+        return True
+
+    try:
+        lock_data = json.loads(lock_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        lock_path.unlink(missing_ok=True)
+        return True
+
+    if not isinstance(lock_data, dict):
+        lock_path.unlink(missing_ok=True)
+        return True
+
+    pid = lock_data.get("pid")
+    if pid is not None and isinstance(pid, int):
+        try:
+            os.kill(pid, 0)
+            # PID exists — lock is valid
+            return False
+        except OSError:
+            # PID doesn't exist — lock is stale, clean immediately
+            lock_path.unlink(missing_ok=True)
+            return True
+    else:
+        lock_path.unlink(missing_ok=True)
+        return True
+
+    return False
 
 
 # ── 原子文件操作 ─────────────────────────────────────────────────────
@@ -305,31 +379,49 @@ def _create_run_directory(root: Path, observed_at: datetime, phase: str = "post_
 
 def _detect_session_slug(observed_at: datetime, phase: str | None = None) -> str:
     """Auto-detect session phase slug from observed time.
-    
-    Returns the provided phase if not None, otherwise auto-detects from time.
+
+    When phase is explicitly provided, validates it against actual time.
+    If inconsistent (e.g. intraday_1300 at 21:41), auto-corrects to the
+    real phase and emits a warning. The explicit phase is treated as a hint,
+    not as authoritative override.
+
+    Only returns: intraday_1300, intraday_1400, intraday_1430, lunch_break,
+    post_close.
     """
-    if phase is not None:
-        return phase
     t = observed_at.time()
-    morning_start = datetime.strptime("09:30", "%H:%M").time()
     morning_end = datetime.strptime("11:30", "%H:%M").time()
     afternoon_start = datetime.strptime("13:00", "%H:%M").time()
     close_1400 = datetime.strptime("14:00", "%H:%M").time()
     close_1430 = datetime.strptime("14:30", "%H:%M").time()
     close_1500 = datetime.strptime("15:00", "%H:%M").time()
 
-    if morning_start <= t <= morning_end:
-        return "intraday_morning"
-    if afternoon_start <= t < close_1400:
-        return "intraday_1300"
-    if close_1400 <= t < close_1430:
-        return "intraday_1400"
-    if close_1430 <= t < close_1500:
-        return "intraday_1430"
-    return "postclose"
+    if t <= morning_end:
+        actual_phase = "intraday_1300"
+    elif t < afternoon_start:
+        actual_phase = "lunch_break"
+    elif afternoon_start <= t < close_1400:
+        actual_phase = "intraday_1300"
+    elif close_1400 <= t < close_1430:
+        actual_phase = "intraday_1400"
+    elif close_1430 <= t < close_1500:
+        actual_phase = "intraday_1430"
+    else:
+        actual_phase = "post_close"
+
+    if phase is not None and phase != actual_phase:
+        import sys
+        print(
+            f"Warning: explicit phase '{phase}' inconsistent with actual time "
+            f"({observed_at.strftime('%H:%M')}), auto-correcting to '{actual_phase}'",
+            flush=True,
+        )
+        return actual_phase
+
+    return phase if phase is not None else actual_phase
 
 
 def _file_records(run_dir: Path, rows: Mapping[str, int]) -> dict[str, dict[str, object]]:
+    now_iso = datetime.now().astimezone().isoformat()
     result: dict[str, dict[str, object]] = {}
     for key, count in rows.items():
         name = {
@@ -343,12 +435,16 @@ def _file_records(run_dir: Path, rows: Mapping[str, int]) -> dict[str, dict[str,
             "data_audit": "data_audit.json",
             "workflow_log": "workflow.log",
             "intraday_minutes_parquet": "intraday_minutes.parquet",
+            "raw_snapshot_response": "raw_snapshot_response.json",
+            "fields_md": "FIELDS.md",
         }[key]
         path = run_dir / name
         result[key] = {
             "name": name,
             "rows": _line_count(path) if key == "workflow_log" else count,
             "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            "generated_at": now_iso,
+            "relative_path": name,
         }
     return result
 

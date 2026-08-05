@@ -18,6 +18,16 @@ from marketbase.snapshot import (
 )
 
 
+def _fake_session(fake_get):
+    """Create a mock session whose get() delegates to fake_get."""
+
+    class FakeSession:
+        def get(self, url, **kwargs):
+            return fake_get(url, **kwargs)
+
+    return FakeSession()
+
+
 @pytest.fixture(autouse=True)
 def clear_snapshot_source_health():
     _source_health.reset()
@@ -119,7 +129,7 @@ def test_fetch_sina_paginates_and_normalizes_market_cap_units(monkeypatch):
             ])
         return FakeResponse([])
 
-    monkeypatch.setattr("marketbase.snapshot.requests.get", fake_get)
+    monkeypatch.setattr("marketbase.snapshot._get_http_session", lambda: _fake_session(fake_get))
 
     normalized = _fetch_sina()
 
@@ -155,7 +165,7 @@ def test_fetch_sina_does_not_treat_a_short_page_as_end_of_market(monkeypatch):
             return FakeResponse([])
         return FakeResponse(pages.get(kwargs["params"]["page"], []))
 
-    monkeypatch.setattr("marketbase.snapshot.requests.get", fake_get)
+    monkeypatch.setattr("marketbase.snapshot._get_http_session", lambda: _fake_session(fake_get))
 
     normalized = _fetch_sina()
 
@@ -194,7 +204,7 @@ def test_fetch_sina_retries_failed_page_inside_nonempty_range(monkeypatch):
             raise ConnectionError("temporary 502")
         return FakeResponse({1: [row("600001")], 2: [row("600002")], 3: [row("600003")]}.get(page, []))
 
-    monkeypatch.setattr("marketbase.snapshot.requests.get", fake_get)
+    monkeypatch.setattr("marketbase.snapshot._get_http_session", lambda: _fake_session(fake_get))
 
     normalized = _fetch_sina()
 

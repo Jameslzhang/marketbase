@@ -11,6 +11,16 @@ import marketbase.live_workflow as live
 NOW = datetime.fromisoformat("2026-07-22T10:00:00+08:00")
 
 
+def _mock_live_session(responder):
+    """Create a mock session whose get() returns a mock response via responder."""
+
+    class _Session:
+        def get(self, *args, **kwargs):
+            return responder(*args, **kwargs) if callable(responder) else responder
+
+    return _Session()
+
+
 def _quotes() -> pd.DataFrame:
     return pd.DataFrame(
         {
@@ -109,7 +119,7 @@ def test_fetch_tencent_minute_rows_returns_uninterpreted_rows(monkeypatch):
         def json(self):
             return {"data": {"sh600000": {"data": {"data": ["0930 10.0 1 10"]}}}}
 
-    monkeypatch.setattr(live.requests, "get", lambda *a, **k: Response())
+    monkeypatch.setattr(live, "_get_live_session", lambda: _mock_live_session(Response()))
     assert live.fetch_tencent_minute_rows("600000") == ["0930 10.0 1 10"]
 
 
@@ -138,7 +148,7 @@ def test_fetch_tencent_minute_rows_uses_market_specific_symbol(monkeypatch, code
         received.append(kwargs["params"]["code"])
         return Response()
 
-    monkeypatch.setattr(live.requests, "get", get)
+    monkeypatch.setattr(live, "_get_live_session", lambda: _mock_live_session(get))
 
     assert live.fetch_tencent_minute_rows(code) == ["0930 10.0 1 10"]
     assert received == [symbol]

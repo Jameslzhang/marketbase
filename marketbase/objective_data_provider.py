@@ -113,7 +113,7 @@ class MarketContext:
     broad_market_veto: bool = False
     growth_market_veto: bool = False
     industry_advance_ratio: float = 0.0
-    industry_equal_weight_return: float = 0.0
+    industry_avg_change_pct: float = 0.0
     industry_sync_pass: bool = False
     valid_industry_count: int = 0
     data_quality: str = "unknown"
@@ -452,19 +452,19 @@ class ObjectiveDataProvider:
     @staticmethod
     def compute_industry_crowding(
         industry_advance_ratio: float,
-        industry_equal_weight_return: float,
+        industry_avg_change_pct: float,
         industry_amount: float,
         industry_amount_median_20d: float,
     ) -> dict:
         """附录 A.5 行业拥挤"""
         crowding = (
             industry_advance_ratio >= 0.85
-            and industry_equal_weight_return >= 0.04
+            and industry_avg_change_pct >= 0.04
             and industry_amount / max(industry_amount_median_20d, 1) >= 1.50
         )
         return {
             "industry_crowding": crowding,
             "advance_ratio": industry_advance_ratio,
-            "equal_weight_return": industry_equal_weight_return,
+            "avg_change_pct": industry_avg_change_pct,
             "amount_ratio": industry_amount / max(industry_amount_median_20d, 1),
         }

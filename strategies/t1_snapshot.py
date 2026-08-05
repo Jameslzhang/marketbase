@@ -262,7 +262,7 @@ def _compute_t1_indicators_v2(
     minute_data: 来自 intraday.py 的分钟级 VWAP 数据
         {code: {full_day_vwap: float, afternoon_avwap: float, ...}}
     industry_data: 来自 market_breadth.py 的行业数据
-        {code: {advance_ratio: float, equal_weight_return: float, rank: int, ...}}
+        {code: {advance_ratio: float, avg_change_pct: float, component_count: int, ...}}
     pivots_data: 来自 intraday.py 的摆动点数据
         {code: {afternoon_swing_low: float, named_pivot: float, ...}}
     """
@@ -349,20 +349,17 @@ def _compute_t1_indicators_v2(
 
     if stock_industry_data:
         industry_advance_ratio = stock_industry_data.get("advance_ratio", 0.0)
-        industry_eq_return = stock_industry_data.get("equal_weight_return", 0.0)
-        valid_count = stock_industry_data.get("valid_count", 0)
-        industry_rank = stock_industry_data.get("rank", 999)
-        total_industries = stock_industry_data.get("total_industries", 1)
+        industry_avg_change = stock_industry_data.get("avg_change_pct", 0.0)
+        valid_count = stock_industry_data.get("component_count", 0)
 
         if valid_count >= 20:
             industry_sync_pass = (
-                (industry_advance_ratio >= 0.50 and industry_eq_return > 0)
-                or industry_rank <= math.ceil(total_industries * 0.30)
+                (industry_advance_ratio >= 0.50 and industry_avg_change > 0)
             )
             industry_sync_detail = (
-                f"行业同步(广度{industry_advance_ratio:.1%}, 等权{industry_eq_return:+.2%})"
+                f"行业同步(广度{industry_advance_ratio:.1%}, 均涨幅{industry_avg_change:+.2%})"
                 if industry_sync_pass
-                else f"行业未同步(广度{industry_advance_ratio:.1%}, 排名{industry_rank}/{total_industries})"
+                else f"行业未同步(广度{industry_advance_ratio:.1%}, 均涨幅{industry_avg_change:+.2%})"
             )
         else:
             industry_sync_detail = f"行业数据不足(有效成分{valid_count}<20)"

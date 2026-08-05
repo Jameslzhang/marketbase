@@ -29,8 +29,11 @@ def _clear_progress_line() -> None:
     """Erase the last progress line from the terminal."""
     last_len = int(_PROGRESS_STATE.get("last_bar_len", 0))
     if last_len > 0 and sys.stdout.isatty():
-        _ = sys.stdout.write("\r" + " " * last_len + "\r")
-        _ = sys.stdout.flush()
+        try:
+            _ = sys.stdout.write("\r" + " " * last_len + "\r")
+            _ = sys.stdout.flush()
+        except OSError:
+            pass
     _PROGRESS_STATE["last_bar_len"] = 0
 
 
@@ -38,8 +41,22 @@ def _write_progress_line(line: str) -> None:
     """Write or overwrite a progress line (no newline, uses \\r)."""
     _clear_progress_line()
     if sys.stdout.isatty():
-        _ = sys.stdout.write(line)
-        _ = sys.stdout.flush()
-        _PROGRESS_STATE["last_bar_len"] = len(line)
+        try:
+            _ = sys.stdout.write(line)
+            _ = sys.stdout.flush()
+            _PROGRESS_STATE["last_bar_len"] = len(line)
+        except OSError:
+            # Windows 终端可能不支持某些 Unicode 字符，降级为 ASCII
+            safe = line.encode("ascii", errors="replace").decode("ascii")
+            try:
+                _ = sys.stdout.write(safe)
+                _ = sys.stdout.flush()
+                _PROGRESS_STATE["last_bar_len"] = len(safe)
+            except OSError:
+                pass
     else:
-        print(line, flush=True)
+        try:
+            print(line, flush=True)
+        except OSError:
+            safe = line.encode("ascii", errors="replace").decode("ascii")
+            print(safe, flush=True)

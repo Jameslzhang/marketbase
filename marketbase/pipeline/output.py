@@ -8,13 +8,15 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from dataclasses import asdict
 from datetime import datetime
+import hashlib
+import json
 import math
 from pathlib import Path
 from typing import Any, cast
 
 import pandas as pd
 
-from marketbase.market_collector import MarketCollectionResult
+from marketbase.market_collector import MarketCollectionResult, OUTPUT_FIELDS
 from marketbase.daily_collector import DailyCollectionReport
 from marketbase.daily_collector import _MIN_INDICATOR_ROWS  # pyright: ignore[reportPrivateUsage]
 from marketbase.indicators import compute_rps20
@@ -24,6 +26,7 @@ from marketbase.pipeline.helpers import (
     _json_value,
     _write_csv_atomic,
     _write_json_atomic,
+    _write_text_atomic,
     _publish_latest,
     _file_records,
     _cache_paths,
@@ -37,6 +40,7 @@ from marketbase.pipeline.quality import (
     _stale_daily_summary,
     _provider_errors,
     _apply_degradation_flags,
+    _effective_daily_date,
 )
 from marketbase.pipeline.index_module import _run_index_collection
 from marketbase.pipeline.industry import _run_industry_aggregation
@@ -81,6 +85,13 @@ def _write_outputs_and_manifest(
     # 先计算 stale_daily 摘要并应用降级标记，再写出快照
     stale_summary = _stale_daily_summary(daily_report, observed_at, frame=frame)
     _apply_degradation_flags(frame, stale_summary, daily_report)
+
+    # 调整 daily_success：排除 stale 代码（failed 已不在 success/cache_hit 中）
+    adjusted_daily_success = (
+        daily_report.success_count
+        + daily_report.cache_hit_count
+        - stale_summary.get("stale_codes_count", 0)
+    )
 
     _write_csv_atomic(run_dir / "market_snapshot.csv", frame)
     _write_json_atomic(
@@ -141,12 +152,74 @@ def _write_outputs_and_manifest(
     from marketbase.pipeline.helpers import _detect_session_slug
     session_phase = _detect_session_slug(observed_at, phase)
 
+    quality_status, quality_reason_codes = _quality_status(market_audit, daily_report, bse_codes_set, minute_audit=minute_audit, classification=classification, phase=session_phase)
+
+    # ── 分钟连续性 ──
+    minute_continuity: dict[str, object] = {}
+    if isinstance(minute_audit, dict):
+        seq_audit = minute_audit.get("sequence_audit")
+        if isinstance(seq_audit, dict):
+            minute_continuity = {
+                "actual_minutes": int(seq_audit.get("actual_minutes", 0)),
+                "missing_minute_count": int(seq_audit.get("missing_minute_count", 0)),
+                "continuity_break_count": int(seq_audit.get("continuity_break_count", 0)),
+                "total_expected_minutes": int(seq_audit.get("total_expected_minutes", 240)),
+            }
+        minute_status = minute_audit.get("status", "not_requested")
+        minute_continuity["status"] = str(minute_status) if minute_status else "not_requested"
+        minute_reason = minute_audit.get("reason")
+        if minute_reason:
+            minute_continuity["reason"] = str(minute_reason)
+    else:
+        minute_continuity = {"status": "not_requested", "actual_minutes": 0, "missing_minute_count": 0, "continuity_break_count": 0, "total_expected_minutes": 0}
+
+    # ── 分类覆盖率 ──
+    classification_coverage: dict[str, object] = {}
+    if isinstance(classification_audit, dict):
+        classification_coverage = {
+            "total": classification_audit.get("unique_code_count", 0),
+            "covered": classification_audit.get("covered_count", 0),
+            "missing": classification_audit.get("missing_count", 0),
+            "industry_coverage_count": classification_audit.get("industry_coverage_count", 0),
+            "concepts_coverage_count": classification_audit.get("concepts_coverage_count", 0),
+            "supply_chain_coverage_count": classification_audit.get("supply_chain_coverage_count", 0),
+            "industry_coverage": (
+                classification_audit["industry_coverage_count"] / max(classification_audit.get("unique_code_count", 1), 1)
+                if classification_audit.get("unique_code_count")
+                else 0
+            ),
+            "supply_chain_coverage": (
+                classification_audit["supply_chain_coverage_count"] / max(classification_audit.get("unique_code_count", 1), 1)
+                if classification_audit.get("unique_code_count")
+                else 0
+            ),
+            "source_counts": classification_audit.get("source_counts", {}),
+        }
+    elif classification is not None and not classification.empty:
+        total = len(classification)
+        if "industry" in classification.columns:
+            filled = classification["industry"].notna() & (classification["industry"].astype(str).str.strip() != "")
+            classification_coverage["industry_coverage"] = float(filled.sum()) / max(total, 1)
+        if "supply_chain" in classification.columns:
+            filled_sc = classification["supply_chain"].notna() & (classification["supply_chain"].astype(str).str.strip() != "")
+            classification_coverage["supply_chain_coverage"] = float(filled_sc.sum()) / max(total, 1)
+        classification_coverage["total"] = total
+
+    trade_date = _effective_daily_date(observed_at)
     audit = {
         "schema_version": 1,
-        "generated_at": observed_at.isoformat(),
-        "collection_started_at": collection_started_at,
-        "collection_completed_at": collection_completed_at,
-        "quality_status": _quality_status(market_audit, daily_report, bse_codes_set, minute_audit=minute_audit, classification=classification, phase=session_phase),
+        "quality_status": quality_status,
+        "quality_reason_codes": quality_reason_codes,
+        "trade_date": trade_date,
+        "session_phase": session_phase,
+        "observed_at": observed_at.isoformat(),
+        "coverage_gaps": _json_value(market_audit.get("coverage_gaps", [])),
+        "duplicate_count": int(market_audit.get("duplicate_code_count", 0)),
+        "provider_errors": _provider_errors(result, daily_report),
+        "field_coverage": _json_value(market_audit.get("field_coverage", {})),
+        "minute_continuity": minute_continuity,
+        "daily_staleness": stale_summary,
+        "classification_coverage": classification_coverage,
         "market": _json_value(market_audit),
         "daily": daily_audit,
         "indicators": {
@@ -163,15 +236,29 @@ def _write_outputs_and_manifest(
             "history_unavailable_count": len(bse_history_unavailable),
         },
         "classification": _json_value(classification_audit),
-        "provider_errors": _provider_errors(result, daily_report),
-        "minute_request": minute_audit or {"request_status": "not_requested"},
-        "minute_quality": _compute_minute_quality(minute_audit),
-        "session_phase": session_phase,
-        "stale_daily": stale_summary,
-        "index_intraday_not_ready": not index_intraday_ready,
         "intraday_minutes": intraday_minutes_audit or {"status": "not_requested"},
+        "stale_daily": stale_summary,
+        "generated_at": observed_at.isoformat(),
+        "collection_started_at": collection_started_at,
+        "collection_completed_at": collection_completed_at,
     }
     _write_json_atomic(run_dir / "data_audit.json", audit)
+
+    # ── 原始响应归档 ──
+    raw_response = frame.attrs.get("raw_response")
+    if raw_response is not None:
+        _write_json_atomic(
+            run_dir / "raw_snapshot_response.json",
+            {
+                "schema_version": 1,
+                "generated_at": observed_at.isoformat(),
+                "row_count": len(raw_response) if isinstance(raw_response, list) else 0,
+                "data": _json_value(raw_response),
+            },
+        )
+
+    # ── FIELDS.md 字段文档 ──
+    _write_fields_md(run_dir / "FIELDS.md", observed_at)
 
     rows: dict[str, int] = {
         "market_snapshot_csv": len(frame),
@@ -184,6 +271,10 @@ def _write_outputs_and_manifest(
         "data_audit": 1,
         "workflow_log": 0,
     }
+    if (run_dir / "raw_snapshot_response.json").exists():
+        rows["raw_snapshot_response"] = 1
+    if (run_dir / "FIELDS.md").exists():
+        rows["fields_md"] = 1
     if intraday_minutes_path:
         rows["intraday_minutes_parquet"] = 1
     files = _file_records(run_dir, rows)
@@ -227,11 +318,69 @@ def _write_outputs_and_manifest(
             "indicator_all_empty": indicator_all_empty,
             "bse_total": len(bse_codes_set),
             "bse_history_unavailable": len(bse_history_unavailable),
-            "daily_success": daily_report.success_count + daily_report.cache_hit_count,
+            "daily_success": adjusted_daily_success,
             "daily_failure": daily_report.failure_count,
+            "daily_stale": stale_summary.get("stale_codes_count", 0),
+            "daily_short_history": stale_summary.get("short_history_count", 0),
             "cache_hits": daily_report.cache_hit_count,
         },
     )
+
+    # ── latest handoff: 按质量状态分别写入，永远不指向失败或半成品目录 ──
+    if quality_status == "data_ready":
+        _ = _publish_latest(
+            root / "latest_full_ready.json",
+            {
+                "schema_version": 1,
+                "run_dir": str(run_dir),
+                "quality_status": quality_status,
+                "generated_at": observed_at.isoformat(),
+                "trade_date": trade_date,
+            },
+        )
+        _ = _publish_latest(
+            root / "latest_static_ready.json",
+            {
+                "schema_version": 1,
+                "run_dir": str(run_dir),
+                "quality_status": quality_status,
+                "generated_at": observed_at.isoformat(),
+                "trade_date": trade_date,
+            },
+        )
+        # 兼容旧路径
+        _ = _publish_latest(
+            root / "latest_complete.json",
+            {
+                "schema_version": 1,
+                "run_dir": str(run_dir),
+                "quality_status": quality_status,
+                "generated_at": observed_at.isoformat(),
+                "trade_date": trade_date,
+            },
+        )
+    elif quality_status == "data_ready_static_only":
+        _ = _publish_latest(
+            root / "latest_static_ready.json",
+            {
+                "schema_version": 1,
+                "run_dir": str(run_dir),
+                "quality_status": quality_status,
+                "generated_at": observed_at.isoformat(),
+                "trade_date": trade_date,
+            },
+        )
+        # 兼容旧路径
+        _ = _publish_latest(
+            root / "latest_complete.json",
+            {
+                "schema_version": 1,
+                "run_dir": str(run_dir),
+                "quality_status": quality_status,
+                "generated_at": observed_at.isoformat(),
+                "trade_date": trade_date,
+            },
+        )
 
     return {
         "run_dir": str(run_dir),
@@ -239,7 +388,7 @@ def _write_outputs_and_manifest(
         "collection_started_at": collection_started_at,
         "collection_completed_at": collection_completed_at,
         "market_rows": len(frame),
-        "daily_success": daily_report.success_count + daily_report.cache_hit_count,
+        "daily_success": adjusted_daily_success,
         "daily_failure": daily_report.failure_count,
         "indicator_rows": len(indicators_df),
         "classification_rows": len(classification),
@@ -255,3 +404,54 @@ def _indicator_has_value(entry: dict[str, object], fields: tuple[str, ...]) -> b
         if val is not None and not (isinstance(val, float) and math.isnan(val)):
             return True
     return False
+
+
+# ── FIELDS.md 字段文档 ─────────────────────────────────────────────────
+
+_FIELD_DESCRIPTIONS: dict[str, str] = {
+    "code": "股票代码，6位数字字符串",
+    "name": "股票名称",
+    "market": "市场标识: sh(上海), sz(深圳), bj(北交所)",
+    "price": "最新价(元)",
+    "pre_close": "前收盘价(元)",
+    "open": "开盘价(元)",
+    "high": "最高价(元)",
+    "low": "最低价(元)",
+    "change_pct": "涨跌幅(%)",
+    "volume": "成交量(股)",
+    "amount": "成交额(元)",
+    "turnover_rate": "换手率(%)",
+    "volume_ratio": "量比",
+    "total_mv": "总市值(元)",
+    "circ_mv": "流通市值(元)",
+    "pe_ratio": "市盈率",
+    "pb_ratio": "市净率",
+    "quote_time": "行情时间",
+    "observed_at": "观测时间(ISO 8601)",
+    "source": "数据来源",
+    "industry": "所属行业",
+    "concepts": "概念题材",
+    "board": "板块: 主板/创业板/科创板/北交所/中小板",
+    "is_st": "是否ST或*ST股票",
+    "is_suspended": "是否停牌",
+    "delist_risk": "退市风险: 名称含*ST/退市/PT",
+    "listed_days": "上市天数(自上市至今)",
+    "trade_date": "交易日期",
+}
+
+
+def _write_fields_md(path: Path, observed_at: datetime) -> None:
+    """Generate FIELDS.md documenting all fields in market_snapshot.csv."""
+    lines = [
+        "# Market Snapshot 字段文档",
+        "",
+        f"生成时间: {observed_at.isoformat()}",
+        "",
+        "| 字段名 | 描述 |",
+        "|--------|------|",
+    ]
+    for field in OUTPUT_FIELDS:
+        desc = _FIELD_DESCRIPTIONS.get(field, "")
+        lines.append(f"| {field} | {desc} |")
+    lines.append("")
+    _write_text_atomic(path, "\n".join(lines) + "\n")

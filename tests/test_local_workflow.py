@@ -11,6 +11,8 @@ import pandas as pd
 import pytest
 
 import local_workflow
+from marketbase.pipeline.helpers import _detect_session_slug
+from marketbase.pipeline.quality import _apply_degradation_flags, _quality_status
 
 
 NOW = datetime(2026, 7, 22, 9, 43, 30, tzinfo=timezone(timedelta(hours=8)))
@@ -143,26 +145,29 @@ def test_run_collection_collects_every_market_code_and_writes_only_protocol_file
         now=NOW,
         progress=lambda message: None,
         providers=_providers(tmp_path, calls),
+        phase="post_close",
     )
 
     run_dir = Path(summary["run_dir"])
     assert sorted(calls) == ["000002", "430003", "600001"]
-    assert run_dir.name == "094330_postclose_objective_data"
+    assert run_dir.name == "094330_intraday_1300_objective_data"
     assert {path.name for path in run_dir.iterdir()} == {
-        "market_snapshot.csv",
-        "market_snapshot.json",
-        "daily_indicators.csv",
-        "classification_map.csv",
-        "market_breadth.json",
-        "industry_ma_distribution.json",
-        "index_data.csv",
-        "industry_agg.csv",
-        "data_audit.json",
-        "manifest.json",
-        "workflow.log",
-    }
+            "market_snapshot.csv",
+            "market_snapshot.json",
+            "daily_indicators.csv",
+            "classification_map.csv",
+            "market_breadth.json",
+            "industry_ma_distribution.json",
+            "index_data.csv",
+            "industry_agg.csv",
+            "data_audit.json",
+            "manifest.json",
+            "workflow.log",
+            "FIELDS.md",
+            "intraday_minutes.parquet",
+        }
     assert summary["market_rows"] == 3
-    assert summary["daily_success"] == 2
+    assert summary["daily_success"] == 0  # 2 stale（latest_date 2026-03-17 ≠ trade_date 2026-07-21）
     assert summary["daily_failure"] == 1
     assert summary["indicator_rows"] == 2
     assert summary["classification_rows"] == 3
@@ -184,6 +189,7 @@ def test_run_collection_keeps_cache_and_latest_handoff_outside_run_directory(tmp
     assert latest_path == tmp_path / "latest_codex_input.json"
     assert latest["run_dir"] == str(run_dir.resolve())
     assert latest["data_audit_path"] == str((run_dir / "data_audit.json").resolve())
+    assert latest["intraday_minutes_path"] == str((run_dir / "intraday_minutes.parquet").resolve())
     assert latest["cache_paths"]["market_snapshot"] == str((tmp_path / "cache" / "market_snapshot.json").resolve())
     assert (tmp_path / "cache" / "market_snapshot.json").is_file()
     assert (tmp_path / "cache" / "daily" / "600001.json").is_file()
@@ -284,9 +290,11 @@ def test_daily_audit_scans_requested_code_caches_and_handoff_includes_coverage(t
     assert daily["invalid_or_missing_cache"] == [{"code": "000002", "reason": "fetch_error"}]
     assert daily["latest_date_distribution"]
     assert daily["source_counts"] == {"fixture": 2}
-    assert handoff["quality_status"] == "data_not_ready"
-    assert handoff["daily_success"] == 2
+    assert handoff["quality_status"] == "partial"  # minute failed + daily 2/3 < 95% → partial
+    assert handoff["daily_success"] == 0  # 2 cache hits are stale (latest_date != expected)
     assert handoff["daily_failure"] == 1
+    assert handoff["daily_stale"] == 2
+    assert handoff["daily_short_history"] == 1
 
 
 def test_manifest_records_final_workflow_log_rows_and_hash(tmp_path):
@@ -375,8 +383,9 @@ def test_publish_latest_uses_posix_file_lock_when_msvcrt_is_unavailable(tmp_path
     calls: list[tuple[int, int]] = []
     fcntl = SimpleNamespace(LOCK_EX=1, LOCK_UN=2)
     fcntl.flock = lambda descriptor, mode: calls.append((descriptor, mode))
-    monkeypatch.setattr(local_workflow, "msvcrt", None)
-    monkeypatch.setattr(local_workflow, "fcntl", fcntl)
+    from marketbase.pipeline import helpers
+    monkeypatch.setattr(helpers, "msvcrt", None)
+    monkeypatch.setattr(helpers, "fcntl", fcntl)
 
     path = tmp_path / "latest_codex_input.json"
     assert local_workflow._publish_latest(path, {"generated_at": NOW.isoformat()})
@@ -392,7 +401,7 @@ def test_create_run_directory_retries_after_atomic_name_collision(tmp_path, monk
     def mkdir(path, *args, **kwargs):
         nonlocal collided
         calls.append((path, kwargs.get("exist_ok", False)))
-        if path.name == "094330_postclose_objective_data" and not collided:
+        if path.name == "094330_intraday_1300_objective_data" and not collided:
             collided = True
             raise FileExistsError
         return original_mkdir(path, *args, **kwargs)
@@ -401,9 +410,9 @@ def test_create_run_directory_retries_after_atomic_name_collision(tmp_path, monk
 
     run_dir = local_workflow._create_run_directory(tmp_path, NOW)
 
-    assert run_dir.name == "094330_postclose_objective_data_2"
-    assert any(path.name == "094330_postclose_objective_data" and not exist_ok for path, exist_ok in calls)
-    assert any(path.name == "094330_postclose_objective_data_2" and not exist_ok for path, exist_ok in calls)
+    assert run_dir.name == "094330_intraday_1300_objective_data_2"
+    assert any(path.name == "094330_intraday_1300_objective_data" and not exist_ok for path, exist_ok in calls)
+    assert any(path.name == "094330_intraday_1300_objective_data_2" and not exist_ok for path, exist_ok in calls)
 
 
 def test_older_run_does_not_replace_newer_latest_handoff(tmp_path):
@@ -432,16 +441,18 @@ def test_run_collection_resolves_same_second_without_overwriting(tmp_path):
         now=NOW,
         progress=lambda message: None,
         providers=_providers(tmp_path),
+        phase="post_close",
     )
     second = local_workflow.run_collection(
         data_root=tmp_path,
         now=NOW,
         progress=lambda message: None,
         providers=_providers(tmp_path),
+        phase="post_close",
     )
 
-    assert Path(first["run_dir"]).name == "094330_postclose_objective_data"
-    assert Path(second["run_dir"]).name == "094330_postclose_objective_data_2"
+    assert Path(first["run_dir"]).name == "094330_intraday_1300_objective_data"
+    assert Path(second["run_dir"]).name == "094330_intraday_1300_objective_data_2"
 
 
 def test_fulfill_request_reads_only_requested_codes_and_writes_response(tmp_path):
@@ -566,7 +577,7 @@ def test_cli_accepts_data_root_as_a_global_option(tmp_path, monkeypatch):
     )
 
     assert local_workflow.main(["--data-root", str(tmp_path), "collect"]) == 0
-    assert calls == [{"data_root": tmp_path, "phase": "post_close", "force_refresh": False}]
+    assert calls == [{"data_root": tmp_path, "phase": None, "force_refresh": False}]
 
 
 def test_vscode_launch_configuration_uses_objective_collection_without_args():
@@ -584,3 +595,89 @@ def test_vscode_launch_configuration_uses_objective_collection_without_args():
             "env": {"PYTHONUTF8": "1"},
         }
     ]
+
+
+def test_lunch_break_is_not_labeled_post_close_or_data_ready():
+    observed_at = datetime(2026, 8, 5, 11, 33, tzinfo=timezone(timedelta(hours=8)))
+
+    phase = _detect_session_slug(observed_at, phase="post_close")
+    quality, reasons = _quality_status(
+        {"status": "complete", "field_coverage": {"price": 1.0}},
+        SimpleNamespace(
+            success_count=1,
+            cache_hit_count=0,
+            total_count=1,
+            short_history=[],
+        ),
+        set(),
+        classification=pd.DataFrame([{"code": "600001", "coverage_status": "mapped"}]),
+        phase=phase,
+    )
+
+    assert phase == "lunch_break"
+    assert quality == "data_not_ready"
+    assert reasons == ["session_not_tradable"]
+
+
+def test_stale_or_unknown_quote_is_marked_untradable_in_legacy_field():
+    frame = pd.DataFrame(
+        [
+            {"code": "600001", "tradable": True},
+            {"code": "600002", "tradable": True},
+            {"code": "600003", "tradable": False},
+        ]
+    )
+    _apply_degradation_flags(
+        frame,
+        {"stale_codes": ["600001"], "unknown_quote_time_codes": ["600002"]},
+        SimpleNamespace(errors={}, indicator_insufficient=[]),
+    )
+
+    assert frame["is_untradable"].tolist() == [True, True, False]
+    assert frame["is_incomparable"].tolist() == [True, True, False]
+    assert frame["tradable"].tolist() == [False, False, False]
+
+
+def test_lunch_break_does_not_append_a_synthetic_minute_snapshot(tmp_path, monkeypatch):
+    calls: list[object] = []
+    monkeypatch.setattr(
+        local_workflow,
+        "_run_minute_snapshot",
+        lambda *args, **kwargs: calls.append((args, kwargs)) or {"status": "collected"},
+    )
+
+    summary = local_workflow.run_collection(
+        data_root=tmp_path,
+        now=datetime(2026, 8, 5, 11, 33, tzinfo=timezone(timedelta(hours=8))),
+        progress=lambda message: None,
+        providers=_providers(tmp_path),
+        phase="post_close",
+    )
+
+    audit = json.loads((Path(summary["run_dir"]) / "data_audit.json").read_text(encoding="utf-8"))
+    assert calls == []
+    assert audit["session_phase"] == "lunch_break"
+    assert audit["minute_continuity"]["status"] == "not_requested"
+    assert audit["minute_continuity"]["reason"] == "session_not_tradable"
+
+
+def test_interrupted_lunch_run_never_publishes_a_ready_static_audit(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        local_workflow,
+        "_run_daily_collection",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("stop after initial audit")),
+    )
+
+    with pytest.raises(RuntimeError, match="stop after initial audit"):
+        local_workflow._run_collection_locked(
+            tmp_path,
+            datetime(2026, 8, 5, 11, 33, tzinfo=timezone(timedelta(hours=8))),
+            _providers(tmp_path),
+            lambda message: None,
+            phase="post_close",
+        )
+
+    audit_path = next(tmp_path.glob("*/*_lunch_break_objective_data/data_audit.json"))
+    audit = json.loads(audit_path.read_text(encoding="utf-8"))
+    assert audit["quality_status"] == "data_not_ready"
+    assert audit["quality_reason_codes"] == ["session_not_tradable"]

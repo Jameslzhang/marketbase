@@ -97,7 +97,7 @@ __all__ = [
     "_existing_map", "_supply_chain_path",
     # quality
     "_compute_minute_quality", "_quality_status", "_stale_daily_summary",
-    "_provider_errors",
+    "_provider_errors", "_effective_daily_date",
     # output
     "_write_outputs_and_manifest",
     # index_module

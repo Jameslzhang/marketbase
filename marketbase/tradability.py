@@ -77,7 +77,8 @@ def enrich_tradability(
       - is_limit_up: 是否涨停
       - is_limit_down: 是否跌停
       - board: 板块（主板/创业板/科创板/北交所/中小板）
-      - listing_days: 上市天数
+      - listed_days: 上市天数
+      - delist_risk: 退市风险
     """
     out = frame.copy()
 
@@ -89,14 +90,22 @@ def enrich_tradability(
         else False
     )
 
+    # 退市风险：ST 或 *ST 股票
+    out["delist_risk"] = False
+    if "name" in out.columns:
+        _ST_RISK_PATTERN = re.compile(r"(?:\*ST|退市|PT)", re.IGNORECASE)
+        out["delist_risk"] = out["name"].map(
+            lambda n: bool(_ST_RISK_PATTERN.search(str(n)))
+        )
+
     sm = security_master_df if security_master_df is not None else pd.DataFrame()
     if not sm.empty and "code" in sm.columns:
         sm_indexed = sm.set_index("code")
-        out["listing_days"] = out["code"].map(
+        out["listed_days"] = out["code"].map(
             lambda c: _listing_days_from_index(sm_indexed, c)
         )
     else:
-        out["listing_days"] = None
+        out["listed_days"] = None
 
     # 涨跌停判断
     has_price = "price" in out.columns

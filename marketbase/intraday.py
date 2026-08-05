@@ -41,7 +41,7 @@ def _trading_minutes_between(
         t = current.time()
         if not (lunch_start <= t < lunch_end):
             minutes.append(current)
-        current += pd.Timedelta(minutes=1)
+        current += pd.Timedelta(1, "min")
     return minutes
 
 
@@ -137,14 +137,15 @@ def audit_minute_sequence(
     valid_times = times.dropna().sort_values()
 
     # 动态预期分钟数：基于观测时间确定当前交易时段
+    # 注意：采集始终从 09:30 开始，因此预期分钟数应覆盖全天
     if observed_at is not None:
         obs_cn = observed_at.astimezone(timezone(timedelta(hours=8)))
         obs_time = obs_cn.time()
         lunch_start = pd.Timestamp("11:30").time()
         lunch_end = pd.Timestamp("13:00").time()
         if obs_time >= lunch_end:
-            # 下午时段：13:00 到观测时间
-            dynamic_start = "13:00"
+            # 下午时段：预期分钟数从 09:30 开始（采集实际起始时间），覆盖上午+下午
+            dynamic_start = "09:30"
             dynamic_end = obs_cn.strftime("%H:%M")
         elif obs_time >= lunch_start:
             # 午休期间：仅上午时段
@@ -595,5 +596,221 @@ def compute_minute_facts(
     if "code" in minute_df.columns and time_col in minute_df.columns:
         last_time_map = minute_df.groupby("code")[time_col].max()
         result["last_tradable_time"] = result["code"].map(last_time_map)
+
+    return result
+
+
+# ── VWAP 与盘中客观结构 ──────────────────────────────────────────────
+
+
+def compute_vwap_from_minute(
+    minute_df: pd.DataFrame,
+    snapshot_df: pd.DataFrame,
+    *,
+    time_col: str = "time",
+    price_col: str = "price",
+    amount_col: str = "amount",
+    volume_col: str = "volume",
+    max_gap_minutes: int = 5,
+    error_threshold: int = 10,
+    vwap_source_label: str = "tencent_intraday",
+) -> pd.DataFrame:
+    """从分钟数据计算 VWAP 并写入快照 DataFrame.
+
+    为每只股票计算:
+      - vwap: 成交量加权平均价格（基于分钟累计量额）
+      - vwap_source: 来源标记 ("tencent_intraday" 或 "unavailable")
+      - vwap_distance_pct: (price - vwap) / vwap * 100
+      - cum_volume: 累计成交量
+      - cum_amount: 累计成交额
+      - minute_sample_count: 用于 VWAP 计算的分钟柱数量
+
+    质量检查:
+      - 分钟数据存在时间断点 (>max_gap_minutes 分钟) 视为不可靠
+      - 缺失分钟数超过 error_threshold 视为不可靠
+      - 不可靠时 vwap = NaN, vwap_source = "unavailable"
+    """
+    result = snapshot_df.copy()
+
+    vwap_cols = ["vwap", "vwap_source", "vwap_distance_pct",
+                 "cum_volume", "cum_amount", "minute_sample_count"]
+    for col in vwap_cols:
+        if col not in result.columns:
+            result[col] = float("nan") if col != "vwap_source" else "unavailable"
+
+    if minute_df.empty:
+        return result
+
+    required_cols = {"code", time_col, price_col, amount_col, volume_col}
+    if not required_cols.issubset(minute_df.columns):
+        return result
+
+    df = minute_df.copy()
+    for col in (time_col, price_col, amount_col, volume_col):
+        if col in df.columns:
+            df[col] = pd.to_datetime(df[time_col], errors="coerce") if col == time_col else pd.to_numeric(df[col], errors="coerce")
+
+    df = df.sort_values([time_col]).reset_index(drop=True)
+
+    for code, group in df.groupby("code"):
+        group = group.sort_values(time_col).reset_index(drop=True)
+        mask = result["code"] == code
+
+        # 质量检查: 时间断点
+        times = group[time_col].dropna()
+        unreliable = False
+        if len(times) > 1:
+            gaps = times.diff().dropna()
+            # 排除午休边界 (11:30→13:00 = 90 分钟)
+            max_gap = pd.Timedelta(max_gap_minutes, "min")
+            lunch_gap = pd.Timedelta(90, "min")
+            suspicious = gaps[(gaps > max_gap) & (gaps != lunch_gap)]
+            if len(suspicious) > 0:
+                unreliable = True
+
+        # 缺失分钟数检查
+        if not unreliable and len(times) > 0:
+            day_start = times.iloc[0].floor("D").replace(hour=9, minute=30)
+            day_end = times.iloc[0].floor("D").replace(hour=15, minute=0)
+            expected = _trading_minutes_between(day_start, min(times.iloc[-1], day_end))
+            present = set(t.floor("min") for t in times)
+            missing = len(set(expected) - present)
+            if missing > error_threshold:
+                unreliable = True
+
+        if unreliable:
+            result.loc[mask, "vwap_source"] = "unavailable"
+            result.loc[mask, "vwap"] = float("nan")
+            result.loc[mask, "vwap_distance_pct"] = float("nan")
+            result.loc[mask, "cum_volume"] = float("nan")
+            result.loc[mask, "cum_amount"] = float("nan")
+            result.loc[mask, "minute_sample_count"] = 0
+            continue
+
+        # 累计量额
+        cum_vol = float(group[volume_col].sum())
+        cum_amt = float(group[amount_col].sum())
+
+        # VWAP
+        if cum_vol > 0:
+            vwap_val = cum_amt / cum_vol
+        else:
+            vwap_val = float("nan")
+
+        # 价格偏离
+        price_val = pd.to_numeric(result.loc[mask, price_col], errors="coerce")
+        if price_val.notna().any() and not (isinstance(vwap_val, float) and math.isnan(vwap_val)):
+            distance_pct = (float(price_val.iloc[0]) - vwap_val) / vwap_val * 100
+        else:
+            distance_pct = float("nan")
+
+        result.loc[mask, "vwap"] = vwap_val
+        result.loc[mask, "vwap_source"] = vwap_source_label
+        result.loc[mask, "vwap_distance_pct"] = distance_pct
+        result.loc[mask, "cum_volume"] = cum_vol
+        result.loc[mask, "cum_amount"] = cum_amt
+        result.loc[mask, "minute_sample_count"] = len(group)
+
+    return result
+
+
+def compute_intraday_structure(
+    minute_df: pd.DataFrame,
+    snapshot_df: pd.DataFrame,
+    *,
+    time_col: str = "time",
+    price_col: str = "price",
+    amount_col: str = "amount",
+    volume_col: str = "volume",
+) -> pd.DataFrame:
+    """从分钟数据计算盘中价格结构字段并写入快照 DataFrame.
+
+    计算:
+      - distance_from_high_pct: (price - high) / high * 100
+      - distance_from_low_pct: (price - low) / low * 100
+      - amplitude_pct: (high - low) / pre_close * 100
+      - volume_3m: 最近 3 分钟成交量
+      - volume_5m: 最近 5 分钟成交量
+      - amount_3m: 最近 3 分钟成交额
+      - amount_5m: 最近 5 分钟成交额
+      - amount_change_ratio: (amount_3m - amount_prev_3m) / amount_prev_3m
+    """
+    result = snapshot_df.copy()
+
+    struct_cols = [
+        "distance_from_high_pct", "distance_from_low_pct", "amplitude_pct",
+        "volume_3m", "volume_5m", "amount_3m", "amount_5m",
+        "amount_change_ratio",
+    ]
+    for col in struct_cols:
+        if col not in result.columns:
+            result[col] = float("nan")
+
+    if minute_df.empty:
+        return result
+
+    required_cols = {"code", time_col, price_col}
+    if not required_cols.issubset(minute_df.columns):
+        return result
+
+    df = minute_df.copy()
+    for col in (time_col, price_col, amount_col, volume_col):
+        if col in df.columns:
+            df[col] = pd.to_datetime(df[time_col], errors="coerce") if col == time_col else pd.to_numeric(df[col], errors="coerce")
+
+    df = df.sort_values([time_col]).reset_index(drop=True)
+
+    # 数值列标准化
+    for col in (price_col, "high", "low", "pre_close"):
+        if col in result.columns:
+            result[col] = pd.to_numeric(result[col], errors="coerce")
+
+    # 1. distance_from_high_pct, distance_from_low_pct
+    if "high" in result.columns and price_col in result.columns:
+        day_high = result["high"]
+        price_series = result[price_col]
+        result["distance_from_high_pct"] = (
+            (price_series - day_high) / day_high.replace(0, float("nan")) * 100
+        ).round(4)
+
+    if "low" in result.columns and price_col in result.columns:
+        day_low = result["low"]
+        price_series = result[price_col]
+        result["distance_from_low_pct"] = (
+            (price_series - day_low) / day_low.replace(0, float("nan")) * 100
+        ).round(4)
+
+    # 2. amplitude_pct: (high - low) / pre_close * 100
+    if "high" in result.columns and "low" in result.columns and "pre_close" in result.columns:
+        result["amplitude_pct"] = (
+            (result["high"] - result["low"]) / result["pre_close"].replace(0, float("nan")) * 100
+        ).round(4)
+
+    # 3. 近 N 分钟量/额
+    if amount_col in df.columns and volume_col in df.columns and "code" in df.columns:
+        for code, group in df.groupby("code"):
+            group = group.sort_values(time_col).reset_index(drop=True)
+            mask = result["code"] == code
+
+            vol = pd.to_numeric(group[volume_col], errors="coerce").fillna(0.0)
+            amt = pd.to_numeric(group[amount_col], errors="coerce").fillna(0.0)
+
+            if len(vol) >= 3:
+                result.loc[mask, "volume_3m"] = float(vol.iloc[-3:].sum())
+            if len(vol) >= 5:
+                result.loc[mask, "volume_5m"] = float(vol.iloc[-5:].sum())
+            if len(amt) >= 3:
+                result.loc[mask, "amount_3m"] = float(amt.iloc[-3:].sum())
+            if len(amt) >= 5:
+                result.loc[mask, "amount_5m"] = float(amt.iloc[-5:].sum())
+
+            # amount_change_ratio
+            if len(amt) >= 6:
+                prev_3m = float(amt.iloc[-6:-3].sum())
+                curr_3m = float(amt.iloc[-3:].sum())
+                if prev_3m > 0:
+                    result.loc[mask, "amount_change_ratio"] = round(
+                        (curr_3m - prev_3m) / prev_3m, 4
+                    )
 
     return result

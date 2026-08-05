@@ -9,7 +9,7 @@
 <br>
 
 [![Python](https://img.shields.io/badge/Python-3.12+-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://python.org)
-[![Tests](https://img.shields.io/badge/Tests-211%20passed-34D058?style=for-the-badge&logo=pytest&logoColor=white)](https://github.com/Jameslzhang/marketbase)
+[![Tests](https://img.shields.io/badge/Tests-312%20passed-34D058?style=for-the-badge&logo=pytest&logoColor=white)](https://github.com/Jameslzhang/marketbase)
 [![License](https://img.shields.io/badge/License-MIT-586069?style=for-the-badge&logo=github&logoColor=white)](LICENSE)
 [![Akshare](https://img.shields.io/badge/akshare-1.18-F7A81B?style=for-the-badge&logo=python&logoColor=white)](https://github.com/akshare/akshare)
 
@@ -213,9 +213,14 @@ Every successful run produces a timestamped directory with these artifacts:
 ├── 📊 market_snapshot.csv
 ├── 📊 market_snapshot.json
 ├── 📈 daily_indicators.csv
-├── 🗂️ classification_map.csv
+├── � index_data.csv
+├── 📈 industry_agg.csv
+├── 📈 market_breadth.json
+├── �️ classification_map.csv
+├── ⏱️ intraday_minutes.parquet
 ├── 🔍 data_audit.json
 ├── 📋 manifest.json
+├── 📋 run_status.json
 └── 📝 workflow.log
 ```
 
@@ -223,8 +228,16 @@ Every successful run produces a timestamped directory with these artifacts:
 <td width="40%">
 
 > 🔗 `latest_codex_input.json`
-> always points to the newest
-> completed handoff.
+> points to the newest completed handoff.
+>
+> 🔗 `latest_full_ready.json`
+> points to the latest run with full data quality.
+>
+> 🔗 `latest_static_ready.json`
+> points to the latest run with at least static data completeness.
+>
+> 🔗 `latest_complete.json`
+> legacy compatibility — always points to the latest usable run.
 
 </td>
 </tr>
@@ -272,7 +285,7 @@ Every successful run produces a timestamped directory with these artifacts:
 ```bash
 python -m pytest -q
 ```
-<sub>**211** tests</sub>
+<sub>**312** tests</sub>
 
 </td>
 <td bgcolor="#f0fff0" align="center">

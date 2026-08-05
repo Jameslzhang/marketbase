@@ -36,6 +36,36 @@ _EM_LAST_REQUEST_AT = 0.0
 _EM_LOCK = threading.Lock()
 _source_health = SourceHealth(failure_threshold=3, cooldown_seconds=300)
 
+# Shared retry session for non-Eastmoney HTTP requests
+_HTTP_SESSION: requests.Session | None = None
+_HTTP_LOCK = threading.Lock()
+
+
+def _build_http_session() -> requests.Session:
+    """Build a shared requests.Session with retry and timeout strategy."""
+    session = requests.Session()
+    retry = Retry(
+        total=3,
+        backoff_factor=1.0,
+        status_forcelist=(429, 500, 502, 503, 504),
+        allowed_methods=frozenset({"GET"}),
+        raise_on_status=False,
+    )
+    adapter = HTTPAdapter(max_retries=retry)
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
+    return session
+
+
+def _get_http_session() -> requests.Session:
+    """Get or create the shared HTTP session with retry."""
+    global _HTTP_SESSION
+    if _HTTP_SESSION is None:
+        with _HTTP_LOCK:
+            if _HTTP_SESSION is None:
+                _HTTP_SESSION = _build_http_session()
+    return _HTTP_SESSION
+
 
 def fetch_cn_snapshot(source: str = "efinance") -> pd.DataFrame:
     """Fetch A-share full-market snapshot.
@@ -300,7 +330,8 @@ def _fetch_sina() -> pd.DataFrame:
     }
 
     def fetch_page(node: str, page: int) -> tuple[str, int, list[object]]:
-        resp = requests.get(
+        session = _get_http_session()
+        resp = session.get(
             url,
             params={
                 "page": page,
@@ -312,7 +343,7 @@ def _fetch_sina() -> pd.DataFrame:
                 "_s_r_a": "page",
             },
             headers=headers,
-            timeout=15,
+            timeout=(10, 30),
         )
         resp.raise_for_status()
         items = resp.json()
@@ -598,6 +629,9 @@ def _normalize(df: pd.DataFrame, source: str) -> pd.DataFrame:
     """
     df = df.copy()
 
+    # Save raw response data for archival
+    _raw = df.to_dict(orient="records") if len(df) <= 10000 else None
+
     if source == "efinance":
         standard_cols = {
             "code": ["股票代码", "代码"],
@@ -698,12 +732,10 @@ def _normalize(df: pd.DataFrame, source: str) -> pd.DataFrame:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
 
-    # Drop rows without a valid price
-    if "price" in df.columns:
-        df = df.dropna(subset=["price"])
-        df = df[df["price"] > 0]
-
+    # Keep rows with zero or NaN price — objective flags are added later by enrich_tradability()
     df.attrs["snapshot_source"] = source
+    if _raw is not None:
+        df.attrs["raw_response"] = _raw
     return df
 
 

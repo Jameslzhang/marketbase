@@ -28,6 +28,17 @@ AUDITED_FIELDS = (
     "pb_ratio",
     "quote_time",
     "source",
+    "trade_date",
+    "market",
+    "name",
+    "code",
+    "board",
+    "is_st",
+    "is_suspended",
+    "delist_risk",
+    "listed_days",
+    "industry",
+    "concepts",
 )
 _CODE_PATTERN = re.compile(r"\d{6}\Z")
 _STALE_AFTER = timedelta(minutes=15)
@@ -200,6 +211,26 @@ def audit_market_snapshot(
         market: int(((markets == market) & row_valid_codes).sum())
         for market in expected_markets
     }
+    # Per-market detailed stats: declared, actual, unique, duplicate, missing
+    market_detail: dict[str, dict[str, int]] = {}
+    for market in expected_markets:
+        market_codes = codes.loc[(markets == market) & row_valid_codes]
+        market_audit_codes = audit_codes.loc[
+            (audit_codes.str.fullmatch(_CODE_PATTERN.pattern, na=False))
+            & (markets == market)
+        ]
+        declared = int((markets == market).sum())
+        actual = int(market_codes.count())
+        unique = int(market_codes.nunique())
+        duplicate = declared - actual
+        missing = max(0, declared - actual)
+        market_detail[market] = {
+            "declared_count": declared,
+            "actual_count": actual,
+            "unique_count": unique,
+            "duplicate_count": duplicate,
+            "missing_count": missing,
+        }
     field_non_null_counts = {
         field: int(_present(rows[field]).sum()) if field in rows else 0
         for field in AUDITED_FIELDS
@@ -243,6 +274,7 @@ def audit_market_snapshot(
         "duplicate_code_count": duplicate_code_count,
         "invalid_code_count": invalid_code_count,
         "market_counts": market_counts,
+        "market_detail": market_detail,
         "field_non_null_counts": field_non_null_counts,
         "field_coverage": field_coverage,
         "latest_quote_time": quote_times.max() if not quote_times.empty else None,

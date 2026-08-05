@@ -6,12 +6,15 @@ from __future__ import annotations
 from datetime import datetime, time as clock_time, timezone, timedelta
 import json
 import re
+import threading
 import time
 from pathlib import Path
 from typing import Callable, Iterable
 
 import pandas as pd
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 
 REFERENCE_FIELDS = (
@@ -29,6 +32,36 @@ REFERENCE_FIELDS = (
     "industry",
     "concepts",
 )
+
+# Shared retry session for HTTP requests
+_LIVE_SESSION: requests.Session | None = None
+_LIVE_SESSION_LOCK = threading.Lock()
+
+
+def _build_live_session() -> requests.Session:
+    """Build a shared requests.Session with retry and timeout strategy."""
+    session = requests.Session()
+    retry = Retry(
+        total=3,
+        backoff_factor=1.0,
+        status_forcelist=(429, 500, 502, 503, 504),
+        allowed_methods=frozenset({"GET"}),
+        raise_on_status=False,
+    )
+    adapter = HTTPAdapter(max_retries=retry)
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
+    return session
+
+
+def _get_live_session() -> requests.Session:
+    """Get or create the shared HTTP session with retry."""
+    global _LIVE_SESSION
+    if _LIVE_SESSION is None:
+        with _LIVE_SESSION_LOCK:
+            if _LIVE_SESSION is None:
+                _LIVE_SESSION = _build_live_session()
+    return _LIVE_SESSION
 
 
 def acquire_live_snapshot(
@@ -200,7 +233,7 @@ def fetch_tencent_bse_snapshot(
     *,
     batch_size: int = 60,
     attempts: int = 3,
-    timeout: float = 15.0,
+    timeout: float = 30.0,
 ) -> pd.DataFrame:
     """Refresh a known BSE universe from Tencent without reusing stale prices."""
     if cached_bse.empty or "code" not in cached_bse.columns:
@@ -224,7 +257,9 @@ def fetch_tencent_bse_snapshot(
     base = base.drop_duplicates("code", keep="last").set_index("code")
     codes = list(base.index)
     refreshed: list[dict[str, object]] = []
+    failed_codes: list[str] = []
     batch_width = max(1, batch_size)
+    session = _get_live_session()
 
     for offset in range(0, len(codes), batch_width):
         batch = codes[offset : offset + batch_width]
@@ -233,13 +268,13 @@ def fetch_tencent_bse_snapshot(
         text = ""
         for attempt in range(1, max(1, attempts) + 1):
             try:
-                response = requests.get(
+                response = session.get(
                     "https://qt.gtimg.cn/q=" + symbols,
                     headers={
                         "User-Agent": "Mozilla/5.0",
                         "Referer": "https://gu.qq.com/",
                     },
-                    timeout=timeout,
+                    timeout=(10, timeout),
                 )
                 response.raise_for_status()
                 text = response.content.decode("gb18030", errors="ignore")
@@ -249,7 +284,9 @@ def fetch_tencent_bse_snapshot(
                 if attempt < max(1, attempts):
                     time.sleep(0.2 * attempt)
         if not text:
-            raise RuntimeError(f"Tencent BSE quote batch failed: {last_error}")
+            failed_codes.extend(batch)
+            if last_error:
+                raise RuntimeError(f"Tencent BSE quote batch failed: {last_error}")
 
         for match in re.finditer(r'v_bj(\d{6})="([^"]*)";', text):
             code, body = match.groups()
@@ -417,13 +454,14 @@ def validate_live_snapshot_freshness(
 
 
 
-def fetch_tencent_minute_rows(code: str, *, timeout: float = 15.0) -> list[str]:
+def fetch_tencent_minute_rows(code: str, *, timeout: float = 30.0) -> list[str]:
     symbol = _tencent_minute_symbol(code)
-    response = requests.get(
+    session = _get_live_session()
+    response = session.get(
         "https://web.ifzq.gtimg.cn/appstock/app/minute/query",
         params={"code": symbol},
         headers={"User-Agent": "Mozilla/5.0"},
-        timeout=timeout,
+        timeout=(10, timeout),
     )
     response.raise_for_status()
     payload = response.json()
@@ -609,10 +647,12 @@ def _fetch_tencent_bse(
     *,
     batch_size: int = 60,
     attempts: int = 3,
-    timeout: float = 15.0,
+    timeout: float = 30.0,
 ) -> tuple[pd.DataFrame, list[str]]:
     errors: list[str] = []
     refreshed: list[dict[str, object]] = []
+    failed_codes: list[str] = []
+    session = _get_live_session()
 
     for offset in range(0, len(codes), batch_size):
         batch = codes[offset : offset + batch_size]
@@ -621,10 +661,10 @@ def _fetch_tencent_bse(
         last_error = ""
         for attempt in range(1, max(1, attempts) + 1):
             try:
-                response = requests.get(
+                response = session.get(
                     "https://qt.gtimg.cn/q=" + symbols,
                     headers={"User-Agent": "Mozilla/5.0", "Referer": "https://gu.qq.com/"},
-                    timeout=timeout,
+                    timeout=(10, timeout),
                 )
                 response.raise_for_status()
                 text = response.content.decode("gb18030", errors="ignore")
@@ -634,6 +674,7 @@ def _fetch_tencent_bse(
                 if attempt < max(1, attempts):
                     time.sleep(0.2 * attempt)
         if not text:
+            failed_codes.extend(batch)
             errors.append(f"batch {offset}: {last_error}")
             continue
 
@@ -675,27 +716,30 @@ def _fetch_tencent_bse(
 def _fetch_sina_bse(
     codes: list[str],
     *,
-    timeout: float = 15.0,
+    timeout: float = 30.0,
 ) -> tuple[pd.DataFrame, list[str]]:
     errors: list[str] = []
     refreshed: list[dict[str, object]] = []
+    failed_codes: list[str] = []
     batch_size = 50
+    session = _get_live_session()
 
     for offset in range(0, len(codes), batch_size):
         batch = codes[offset : offset + batch_size]
         symbols = ",".join(f"bj{code}" for code in batch)
         try:
-            response = requests.get(
+            response = session.get(
                 "https://hq.sinajs.cn/list=" + symbols,
                 headers={
                     "User-Agent": "Mozilla/5.0",
                     "Referer": "https://finance.sina.com.cn/",
                 },
-                timeout=timeout,
+                timeout=(10, timeout),
             )
             response.raise_for_status()
             text = response.content.decode("gb18030", errors="ignore")
         except Exception as exc:
+            failed_codes.extend(batch)
             errors.append(f"sina batch {offset}: {exc}")
             continue
 
