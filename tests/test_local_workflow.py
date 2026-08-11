@@ -162,6 +162,7 @@ def test_run_collection_collects_every_market_code_and_writes_only_protocol_file
             "industry_agg.csv",
             "data_audit.json",
             "manifest.json",
+            "run_status.json",
             "workflow.log",
             "FIELDS.md",
             "intraday_minutes.parquet",

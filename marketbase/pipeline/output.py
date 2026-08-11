@@ -387,6 +387,8 @@ def _write_outputs_and_manifest(
         "generated_at": observed_at.isoformat(),
         "collection_started_at": collection_started_at,
         "collection_completed_at": collection_completed_at,
+        "quality_status": quality_status,
+        "trade_date": trade_date,
         "market_rows": len(frame),
         "daily_success": adjusted_daily_success,
         "daily_failure": daily_report.failure_count,

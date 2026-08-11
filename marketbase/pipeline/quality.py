@@ -121,6 +121,12 @@ def _quality_status(
             class_coverage = covered / max(total, 1)
             if class_coverage < 0.95:
                 reason_codes.append("classification_coverage_insufficient")
+        # 产业链覆盖率独立检查：产业链映射不足时无法支持主题比较
+        if "supply_chain" in classification.columns:
+            sc_filled = (classification["supply_chain"].notna() & (classification["supply_chain"].astype(str).str.strip() != "")).sum()
+            sc_coverage = sc_filled / max(len(classification), 1)
+            if sc_coverage < 0.5:
+                reason_codes.append("supply_chain_coverage_insufficient")
     if class_coverage < 0.8:
         return "partial", ["classification_coverage_insufficient"]
 

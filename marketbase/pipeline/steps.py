@@ -236,6 +236,8 @@ def _run_tradability(
     try:
         sm_path = root / "cache" / "security_master.csv"
         sm_df = pd.read_csv(sm_path, dtype=str, keep_default_na=False) if sm_path.is_file() else None
+        if sm_df is None:
+            emit("listed_days: security_master.csv not found, run `python local_workflow.py refresh-master` to generate")
         frame = enrich_tradability(frame, security_master_df=sm_df)
         st_count = int(cast(pd.Series, frame["is_st"]).sum()) if "is_st" in frame.columns else 0
         suspended_count = int(cast(pd.Series, frame["is_suspended"]).sum()) if "is_suspended" in frame.columns else 0
@@ -385,6 +387,13 @@ def _run_minute_snapshot(
     if intraday_minutes_path and Path(intraday_minutes_path).exists():
         run_ohlcv_path = Path(intraday_minutes_path)
     # 移除：elif 回退到 cache/intraday_1m.parquet（旧缓存混入风险）
+
+    # post_close: 不采集盘中分钟，不追加快照，不构建序列审计
+    # 避免共享缓存中旧数据被误判为本次运行的分钟证据
+    if intraday_minutes_audit is None and intraday_minutes_path is None:
+        minute_audit["status"] = "not_requested"
+        minute_audit["reason"] = "post_close_no_intraday_collection"
+        return minute_audit
 
     # 若本次分钟采集失败，跳过 VWAP/结构/事实计算，避免混入旧缓存数据
     intraday_failed = (
