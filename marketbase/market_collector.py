@@ -90,6 +90,7 @@ def collect_market_snapshot(
     progress: Callable[[str], None] | None = None,
     primary_fetcher: Callable[[], pd.DataFrame] | None = None,
     reference_fetcher: Callable[[], pd.DataFrame] | None = None,
+    bse_codes: list[str] | None = None,
     min_rows: int = 1000,
 ) -> MarketCollectionResult:
     """先采集沪深市场，再独立采集北交所。北交所失败不阻断沪深输出."""
@@ -136,14 +137,14 @@ def collect_market_snapshot(
     bse_frame = pd.DataFrame()
     bse_audit: dict[str, object] = {}
     # Extract BSE codes from the SH/SZ reference snapshot to seed the collector
-    bse_codes = _extract_bse_codes(captured.get("reference", pd.DataFrame()))
-    if not bse_codes:
-        bse_codes = _extract_bse_codes(shsz_result)
+    resolved_bse_codes = bse_codes or _extract_bse_codes(captured.get("reference", pd.DataFrame()))
+    if not resolved_bse_codes:
+        resolved_bse_codes = _extract_bse_codes(shsz_result)
     try:
         bse_frame, bse_audit = collect_bse_snapshot(
             cache_dir=destination.parent,
             observed_at=observed_at,
-            bse_codes=bse_codes if bse_codes else None,
+            bse_codes=resolved_bse_codes if resolved_bse_codes else None,
         )
         _emit(progress, observed_at,
               f"北交所覆盖 {bse_audit['bj_actual']}/{bse_audit['bj_expected']} "

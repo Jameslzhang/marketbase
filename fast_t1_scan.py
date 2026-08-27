@@ -3,24 +3,29 @@ r"""
 fast_t1_scan.py — 全盘 T+1 策略快速扫描（一键）
 
 设计目标：绕开官方管道的审计/分类/分钟数据等重步骤，
-只做扫描真正需要的四件事：快照 → 量比 → 指标 → 评分出报告。
+只做扫描真正需要的三件事：快照 → 指标（同遍量比） → 评分出报告。
 
-提速要点：
-  1. 快照新鲜度复用：同日快照若 < --fresh 分钟直接复用，否则实时采集（约 30 秒）
-  2. 5日均量日级缓存：量比计算首次约 1 分钟（并行），同日重复扫描 <1 秒
-  3. 指标并行计算：只对流动性过滤后的候选并行读取日线缓存并现算指标，
-     且用快照最新价补丁当日 bar（收盘后运行即为收盘口径）
-  4. 全程无网络依赖的审计/分类步骤，不会被挂起阻塞
+提速要点（v3，2026-08-12）：
+  1. 快照单源快速模式：sina 主源一次采集，跳过参考源分页抓取
+     （扫描所需的量/额/换手/市值字段 sina 已齐备，行业字段由
+     ensure_industry 从最近官方 run 回补），实测约省 30 秒
+  2. 快照新鲜度复用：同日快照若 < --fresh 分钟直接复用，否则实时采集
+  3. 量比并入指标单遍：5 日均量在指标计算读取同一份日线 JSON 时顺带
+     算出（口径与 marketbase.volume_ratio._avg_5d_volume 完全一致），
+     不再有独立的量比阶段，省去数千次重复 JSON 读取
+  4. 指标并行计算：只对流动性过滤后的候选并行读取日线缓存并现算指标，
+     线程池 48、chunksize 16；且用快照最新价补丁当日 bar
+     （收盘后运行即为收盘口径）
+  5. 全程无网络依赖的审计/分类步骤，不会被挂起阻塞
 
 用法：
     python fast_t1_scan.py                     # 默认：快照 15 分钟内复用，否则新采
     python fast_t1_scan.py --fresh 0           # 强制重新采集快照
-    python fast_t1_scan.py --workers 32        # 并行线程数（默认 24）
+    python fast_t1_scan.py --workers 32        # 并行线程数（默认 24，指标池提升至 48）
     python fast_t1_scan.py --html D:\x\y.html  # 指定报告输出路径
 
 输出：
     {项目根}\data\cache\fast\scan_result_{日期}_{时分}.csv   候选明细
-    {项目根}\data\cache\avg5d_volume_{日期}.csv              5日均量缓存（同日共享）
     HTML 报告（默认写入 {项目根}\reports\，可用 --html 覆盖）
 
 依赖：本脚本须放在 marketbase 项目根目录（与 local_workflow.py 同级），
@@ -34,7 +39,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 import time
 import warnings
@@ -53,7 +57,9 @@ if str(MB_ROOT) not in sys.path:
 
 from marketbase.market_collector import collect_market_snapshot  # noqa: E402
 from marketbase.indicators import compute_daily_indicators  # noqa: E402
-from marketbase.volume_ratio import _avg_5d_volume, elapsed_trade_minutes  # noqa: E402
+from marketbase.volume_ratio import elapsed_trade_minutes  # noqa: E402
+from marketbase.snapshot import fetch_cn_snapshot  # noqa: E402
+from marketbase.realtime_window import fetch_tencent_quotes  # noqa: E402
 
 REPORT_DIR = MB_ROOT / "reports"  # HTML 报告默认输出目录（可用 --html 覆盖）
 
@@ -67,6 +73,128 @@ CN_TZ = timezone(timedelta(hours=8))
 
 def log(msg: str) -> None:
     print(f"[{datetime.now(CN_TZ).strftime('%H:%M:%S')}] {msg}", flush=True)
+
+
+def parse_realtime_codes(value: str) -> list[str]:
+    """解析实时查询代码，兼容逗号、分号和空格，去重并保持用户输入顺序。"""
+    import re
+
+    codes: list[str] = []
+    seen: set[str] = set()
+    for item in re.split(r"[,;\s]+", value.strip()):
+        if item.isdigit() and len(item) <= 6:
+            code = item.zfill(6)
+            if code not in seen:
+                seen.add(code)
+                codes.append(code)
+    return codes
+
+
+def filter_realtime_quotes(codes: list[str], quotes: pd.DataFrame) -> pd.DataFrame:
+    """按请求顺序返回实时行情；缺失代码明确标记，避免静默漏股。"""
+    frame = quotes.copy()
+    if "code" not in frame.columns:
+        frame["code"] = ""
+    frame["code"] = frame["code"].astype(str).str.strip().str.zfill(6)
+    frame = frame.drop_duplicates("code", keep="last").set_index("code")
+    rows: list[dict[str, object]] = []
+    for code in codes:
+        if code in frame.index:
+            row = frame.loc[code].to_dict()
+            row["code"] = code
+            row["realtime_status"] = "已获取"
+        else:
+            row = {"code": code, "realtime_status": "未找到"}
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
+def load_bse_codes(data_root: Path) -> list[str]:
+    """从本地最近的完整快照读取北交所证券主表，不依赖慢参考源。"""
+    paths = [
+        data_root / "daily_runs" / "cache" / "market_snapshot.json",
+        data_root / "cache" / "market_snapshot.json",
+    ]
+    for path in paths:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            rows = payload.get("rows", [])
+            codes = {
+                str(row.get("code", "")).strip().zfill(6)
+                for row in rows
+                if isinstance(row, dict)
+            }
+            result = sorted(code for code in codes if code[:1] in {"4", "8", "9"})
+            if result:
+                return result
+        except (OSError, ValueError, TypeError):
+            continue
+    return []
+
+
+def _market_of(code: str) -> str:
+    if code.startswith("6"):
+        return "sh"
+    if code.startswith(("0", "3")):
+        return "sz"
+    if code.startswith(("4", "8", "9")):
+        return "bj"
+    return ""
+
+
+def query_realtime_quotes(codes: list[str], *, shsz_fetcher=None, bj_fetcher=None) -> pd.DataFrame:
+    """重新采集一次实时行情并返回指定股票的行情（按输入顺序）。
+
+    沪深走 sina 快照链路；北交所使用独立的腾讯行情链路采集，
+    北交所单只/整批失败只标记失败，不影响沪深结果（需求 7.4）。
+    """
+    if not codes:
+        return pd.DataFrame(columns=["code", "realtime_status"])
+    bj_codes = [code for code in codes if code[:1] in {"4", "8", "9"}]
+    shsz_codes = [code for code in codes if code[:1] not in {"4", "8", "9"}]
+    frames: list[pd.DataFrame] = []
+    if shsz_codes:
+        fetch_shsz = shsz_fetcher or (lambda: fetch_cn_snapshot("sina"))
+        frames.append(filter_realtime_quotes(shsz_codes, fetch_shsz()))
+    if bj_codes:
+        fetch_bj = bj_fetcher or fetch_tencent_quotes
+        try:
+            bj_frame, _errors = fetch_bj(bj_codes)
+            frames.append(filter_realtime_quotes(bj_codes, bj_frame))
+        except Exception as exc:  # noqa: BLE001 - 北交所失败不得隐藏沪深成功结果。
+            log(f"北交所实时采集失败：{exc}")
+            frames.append(pd.DataFrame([{"code": code, "realtime_status": "获取失败"} for code in bj_codes]))
+    merged = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=["code", "realtime_status"])
+    order = {code: idx for idx, code in enumerate(codes)}
+    merged["_order"] = merged["code"].map(order)
+    merged = merged.sort_values("_order").drop(columns=["_order"]).reset_index(drop=True)
+    merged["market"] = merged["code"].map(_market_of)
+
+    # 统一补齐采集时间与行情时间（需求 7.1）
+    observed_at = datetime.now(CN_TZ).strftime("%Y-%m-%d %H:%M:%S")
+    if "observed_at" not in merged.columns:
+        merged["observed_at"] = ""
+    merged["observed_at"] = merged["observed_at"].fillna("").astype(str)
+    merged.loc[merged["observed_at"].str.strip().eq(""), "observed_at"] = observed_at
+    if "quote_time" not in merged.columns:
+        merged["quote_time"] = ""
+    merged["quote_time"] = merged["quote_time"].fillna("").astype(str)
+    blank_qt = merged["quote_time"].str.strip().eq("")
+    if blank_qt.any() and "ticktime" in merged.columns:
+        today = observed_at[:10]
+        tick = merged["ticktime"].fillna("").astype(str).str.strip()
+        merged.loc[blank_qt, "quote_time"] = tick.map(lambda t: f"{today} {t}" if t else "")[blank_qt]
+    blank_qt = merged["quote_time"].str.strip().eq("")
+    merged.loc[blank_qt, "quote_time"] = observed_at
+    return merged
+
+
+def print_realtime_quotes(frame: pd.DataFrame) -> None:
+    columns = ["code", "market", "name", "price", "change_pct", "volume", "amount",
+               "quote_time", "observed_at", "realtime_status"]
+    available = [column for column in columns if column in frame.columns]
+    print("\n实时行情查询结果")
+    print(frame[available].to_string(index=False))
 
 
 def official_daily_cache_root(data_root: Path) -> Path:
@@ -87,8 +215,22 @@ def official_daily_cache_root(data_root: Path) -> Path:
 
 # ────────────────────────── 快照 ──────────────────────────
 
-def get_snapshot(data_root: Path, observed_at: datetime, fresh_minutes: int) -> tuple[pd.DataFrame, str, float]:
-    """返回 (快照 DataFrame, 来源说明, 耗时秒)。"""
+def _read_cached_bse_audit(data_root: Path) -> dict:
+    """从官方快照缓存读取北交所覆盖审计（复用缓存快照时仍可追溯）。"""
+    try:
+        payload = json.loads((data_root / "cache" / "market_snapshot.json").read_text(encoding="utf-8"))
+        return dict((payload.get("audit") or {}).get("bse_audit") or {})
+    except (OSError, ValueError, TypeError):
+        return {}
+
+
+def get_snapshot(data_root: Path, observed_at: datetime, fresh_minutes: int) -> tuple[pd.DataFrame, str, float, dict]:
+    """返回 (快照 DataFrame, 来源说明, 耗时秒, 北交所覆盖审计)。
+
+    新采时使用"单源快速模式"：仅用 sina 主源，跳过参考源分页抓取。
+    快扫需要的 volume/amount/换手率/市值字段 sina 均提供；
+    pe/pb/行业等参考源字段中，行业由 ensure_industry 回补，pe/pb 扫描不使用。
+    """
     fast_dir = data_root / "cache" / "fast"
     fast_dir.mkdir(parents=True, exist_ok=True)
     snap_csv = fast_dir / "snapshot_latest.csv"
@@ -102,7 +244,7 @@ def get_snapshot(data_root: Path, observed_at: datetime, fresh_minutes: int) -> 
                 obs = obs.tz_localize(CN_TZ)
             age_min = (observed_at - obs).total_seconds() / 60.0
             if obs.date() == observed_at.date() and 0 <= age_min <= fresh_minutes:
-                return cached, f"复用缓存快照（{age_min:.0f} 分钟前）", 0.0
+                return cached, f"复用缓存快照（{age_min:.0f} 分钟前）", 0.0, _read_cached_bse_audit(data_root)
         except Exception:
             pass  # 缓存损坏则重新采集
 
@@ -115,11 +257,14 @@ def get_snapshot(data_root: Path, observed_at: datetime, fresh_minutes: int) -> 
         cache_path=data_root / "cache" / "market_snapshot.json",
         now=observed_at,
         progress=progress,
+        reference_fetcher=lambda: pd.DataFrame(),  # 单源快速模式：跳过参考源（build_live_snapshot 对空参考源直接跳过补全）
+        bse_codes=load_bse_codes(data_root),
     )
     df = result.frame.copy()
     df["code"] = df["code"].astype(str).str.strip().str.zfill(6)
     df.to_csv(snap_csv, index=False, encoding="utf-8-sig")
-    return df, "实时采集", time.perf_counter() - t0
+    bse_audit = dict(result.audit.get("bse_audit") or {})
+    return df, "实时采集（单源快速模式）", time.perf_counter() - t0, bse_audit
 
 
 # ────────────────────────── 行业字段回补 ──────────────────────────
@@ -154,55 +299,48 @@ def ensure_industry(df: pd.DataFrame, data_root: Path) -> tuple[pd.DataFrame, st
     return df, "缺失（无回补源）"
 
 
-# ────────────────────────── 量比（5日均量缓存） ──────────────────────────
+# ────────────────────────── 量比（5日均量，与指标同遍计算） ──────────────────────────
 
-def _compute_avg5d(codes: list[str], daily_root: Path, observed_at: datetime,
-                   workers: int) -> pd.Series:
-    def one(code: str) -> tuple[str, float | None]:
+def _avg5d_from_payload(payload: dict, cutoff_iso: str) -> float | None:
+    """从日线 JSON payload 直接计算最近 5 个完整交易日均量。
+
+    口径与 marketbase.volume_ratio._avg_5d_volume 完全一致：
+      - 排除观察日当日及之后的 bar（cutoff）
+      - volume <= 0 的行跳过
+      - 缓存为"手"单位（volume_unit == "shou" 或 source == "tencent"
+        且 volume_unit != "shares"）时 ×100 换算为股
+      - 不足 5 个有效交易日返回 None
+    """
+    rows = payload.get("rows", [])
+    if not isinstance(rows, list) or not rows:
+        return None
+    volume_unit = payload.get("volume_unit", "")
+    source = payload.get("source", "")
+    needs_shou_conversion = (
+        volume_unit != "shares"
+        and (volume_unit == "shou" or source == "tencent")
+    )
+    volumes: list[float] = []
+    for row in reversed(rows):
+        if not isinstance(row, dict):
+            continue
+        row_date = row.get("date")
+        if isinstance(row_date, str) and row_date >= cutoff_iso:
+            continue
+        raw = row.get("volume")
         try:
-            return code, _avg_5d_volume(code, daily_root, observed_at=observed_at)
-        except Exception:
-            return code, None
-
-    results: list[tuple[str, float | None]] = []
-    with ThreadPoolExecutor(max_workers=workers) as pool:
-        for i, item in enumerate(pool.map(one, codes, chunksize=64), 1):
-            results.append(item)
-            if i % 1000 == 0:
-                log(f"  5日均量计算进度 {i}/{len(codes)}")
-    return pd.Series([v for _, v in results], index=[c for c, _ in results], name="avg5d")
-
-
-def get_avg5d_volume(data_root: Path, codes: list[str], observed_at: datetime,
-                     workers: int) -> tuple[pd.Series, str, float]:
-    """返回 (code→5日均量 Series, 来源说明, 耗时秒)。缓存按自然日隔离，缺失代码增量补算。"""
-    cache_path = data_root / "cache" / f"avg5d_volume_v2_{observed_at.strftime('%Y%m%d')}.csv"
-    daily_root = official_daily_cache_root(data_root)
-
-    def _save(series: pd.Series) -> None:
-        out = series.dropna().reset_index()
-        out.columns = ["code", "avg5d"]
-        out["code"] = out["code"].astype(str).str.zfill(6)
-        out.to_csv(cache_path, index=False, encoding="utf-8-sig")
-
-    if cache_path.is_file():
-        t0 = time.perf_counter()
-        cached = pd.read_csv(cache_path, dtype={"code": str})
-        cached["code"] = cached["code"].astype(str).str.zfill(6)
-        series = cached.set_index("code")["avg5d"]
-        missing = [c for c in codes if c not in series.index]
-        if missing:
-            added = _compute_avg5d(missing, daily_root, observed_at, workers).dropna()
-            if not added.empty:
-                series = pd.concat([series, added])
-                _save(series)
-            return series, f"缓存命中（补算 {len(missing)} 只）", time.perf_counter() - t0
-        return series, "缓存命中", time.perf_counter() - t0
-
-    t0 = time.perf_counter()
-    series = _compute_avg5d(codes, daily_root, observed_at, workers)
-    _save(series)
-    return series, f"并行计算（{workers} 线程）", time.perf_counter() - t0
+            vol = float(raw) if raw is not None else None
+        except (TypeError, ValueError):
+            vol = None
+        if vol is not None and vol == vol and vol > 0:
+            if needs_shou_conversion:
+                vol = vol * 100.0  # 手 → 股
+            volumes.append(vol)
+        if len(volumes) >= 5:
+            break
+    if len(volumes) < 5:
+        return None
+    return sum(volumes) / len(volumes)
 
 
 def apply_volume_ratio(df: pd.DataFrame, avg5d: pd.Series, observed_at: datetime) -> pd.DataFrame:
@@ -237,6 +375,8 @@ def _indicator_record(code: str, daily_root: Path, today_str: str) -> dict | Non
         ind = compute_daily_indicators(frame, trading_date=today_str)
         record = {"code": code}
         record.update({k: ind.get(k) for k in IND_FIELDS})
+        # 量比同遍计算：复用已加载的 payload，零额外 IO
+        record["avg5d"] = _avg5d_from_payload(payload, today_str)
         return record
     except Exception:
         return None
@@ -247,10 +387,10 @@ def compute_indicators_parallel(df: pd.DataFrame, daily_root: Path,
     codes = df["code"].tolist()
     records: list[dict] = []
     t0 = time.perf_counter()
-    with ThreadPoolExecutor(max_workers=max(workers, 32)) as pool:
+    with ThreadPoolExecutor(max_workers=max(workers, 48)) as pool:
         for i, item in enumerate(pool.map(
                 lambda c: _indicator_record(c, daily_root, today_str),
-                codes, chunksize=32), 1):
+                codes, chunksize=16), 1):
             if item is not None:
                 records.append(item)
             if i % 1000 == 0:
@@ -382,6 +522,13 @@ def render_html(ctx: dict) -> str:
     ind_top = "".join(f"<li>{name} <b>{v:+.2f}%</b></li>" for name, v in ctx["ind_top"])
     ind_bottom = "".join(f"<li>{name} <b>{v:+.2f}%</b></li>" for name, v in ctx["ind_bottom"])
     byd_cls = "bad" if ctx["byd"]["triggered"] else "ok"
+    bse = ctx.get("bse") or {}
+    bse_text = (
+        f" ｜ 北交所覆盖 {bse.get('bj_actual', 0)}/{bse.get('bj_expected', 0)}"
+        f"（缺失 {bse.get('bj_missing', 0)}，来源 {bse.get('source', '未知')}）"
+        if bse
+        else " ｜ 北交所覆盖：无本次采集审计"
+    )
     return f"""<!DOCTYPE html>
 <html lang="zh-CN"><head><meta charset="utf-8">
 <title>全盘T1策略扫描报告 {ctx['date']} {ctx['phase']}</title>
@@ -407,8 +554,8 @@ ul{{margin:6px 0;padding-left:18px;font-size:13px}}
 footer{{color:#999;font-size:12px;margin-top:28px}}
 </style></head><body><div class="wrap">
 <h1>全盘 T+1 策略扫描报告 · {ctx['date']} · {ctx['phase']}</h1>
-<div class="meta">生成时间 {ctx['generated_at']} ｜ 快照 {ctx['snap_source']}（{ctx['snap_obs']}）｜ 全流程耗时 <b>{ctx['total_sec']:.0f} 秒</b>
-（快照 {ctx['t_snap']:.0f}s / 量比 {ctx['t_vr']:.0f}s / 指标 {ctx['t_ind']:.0f}s）｜ 快速扫描模式（无审计网络步骤）</div>
+<div class="meta">生成时间 {ctx['generated_at']} ｜ 快照 {ctx['snap_source']}（{ctx['snap_obs']}）{bse_text} ｜ 全流程耗时 <b>{ctx['total_sec']:.0f} 秒</b>
+（快照 {ctx['t_snap']:.0f}s / 指标+量比 {ctx['t_ind']:.0f}s）｜ 快速扫描模式 v3（单源快照 + 指标量比同遍，无审计网络步骤）</div>
 
 <h2>市场环境</h2>
 <div class="cards">
@@ -461,7 +608,20 @@ def main() -> int:
     parser.add_argument("--fresh", type=int, default=15, help="快照复用新鲜度（分钟），0=强制新采")
     parser.add_argument("--workers", type=int, default=24, help="并行线程数")
     parser.add_argument("--html", type=Path, default=None, help="HTML 报告输出路径")
+    parser.add_argument("--realtime", type=str, default=None, help="仅查询指定股票实时行情，代码用逗号或空格分隔")
     args = parser.parse_args()
+
+    if args.realtime is not None:
+        codes = parse_realtime_codes(args.realtime)
+        if not codes:
+            parser.error("--realtime 未解析出有效的 6 位股票代码")
+        try:
+            realtime = query_realtime_quotes(codes)
+        except Exception as exc:  # noqa: BLE001 - expose source failure to the operator.
+            print(f"实时行情采集失败：{exc}", file=sys.stderr)
+            return 1
+        print_realtime_quotes(realtime)
+        return 0
 
     t_start = time.perf_counter()
     observed_at = datetime.now(CN_TZ)
@@ -474,10 +634,16 @@ def main() -> int:
         phase = "盘中"
     log(f"快速扫描启动 | {today_str} | {phase} | 数据根 {args.data_root}")
 
-    # ① 快照
-    df, snap_source, t_snap = get_snapshot(args.data_root, observed_at, args.fresh)
+    # ① 快照（单源快速模式）
+    df, snap_source, t_snap, bse_audit = get_snapshot(args.data_root, observed_at, args.fresh)
     snap_obs = str(df["observed_at"].iloc[0])[:19]
-    log(f"① 快照就绪：{len(df)} 只 | {snap_source} | {t_snap:.1f}s")
+    bj_info = (
+        f" | 北交所覆盖 {bse_audit.get('bj_actual', 0)}/{bse_audit.get('bj_expected', 0)}"
+        f"（缺失 {bse_audit.get('bj_missing', 0)}）"
+        if bse_audit
+        else ""
+    )
+    log(f"① 快照就绪：{len(df)} 只 | {snap_source}{bj_info} | {t_snap:.1f}s")
     df, ind_source = ensure_industry(df, args.data_root)
     log(f"   行业字段：{ind_source}")
 
@@ -519,14 +685,6 @@ def main() -> int:
     after_hard = len(df)
     log(f"② 硬过滤：{initial} -> {after_hard}")
 
-    # ②.5 量比（5日均量缓存 + 向量化；在流动性过滤前对全集计算，同日缓存覆盖更广）
-    t0 = time.perf_counter()
-    avg5d, vr_source, _ = get_avg5d_volume(args.data_root, df["code"].tolist(), observed_at, args.workers)
-    df = apply_volume_ratio(df, avg5d, observed_at)
-    t_vr = time.perf_counter() - t0
-    vr_cov = int(df["volume_ratio"].notna().sum())
-    log(f"②.5 量比完成：覆盖 {vr_cov}/{len(df)} | {vr_source} | {t_vr:.1f}s")
-
     # ③ 市场环境（实时）
     valid_chg = pd.to_numeric(df["change_pct"], errors="coerce").dropna()
     market_advance_ratio = float((valid_chg > 0).mean())
@@ -548,15 +706,18 @@ def main() -> int:
     df = df[(tor >= 0.5) & (tor <= 15.0)]
     log(f"④ 流动性过滤：剩余 {len(df)} 只")
 
-    # ⑤ 指标并行计算（官方日线缓存 + 排除当日 bar，与官方管道口径一致）
+    # ⑤ 指标并行计算（官方日线缓存 + 排除当日 bar，与官方管道口径一致；
+    #    量比的 5 日均量在同一次 JSON 读取中顺带算出，不再有独立量比阶段）
     t0 = time.perf_counter()
     ind_df = compute_indicators_parallel(df, official_daily_cache_root(args.data_root),
                                          today_str, args.workers)
-    t_ind = time.perf_counter() - t0
-    log(f"⑥ 指标计算：{len(ind_df)} 只完成 | {t_ind:.1f}s")
+    avg5d = ind_df.set_index("code")["avg5d"]
     df = df.merge(ind_df, on="code", how="left")
     df = df.dropna(subset=["ma5", "ma10", "ma20", "ma60", "rsi14", "atr14_pct", "boll_position"])
-    log(f"   指标齐全：{len(df)} 只")
+    df = apply_volume_ratio(df, avg5d, observed_at)
+    t_ind = time.perf_counter() - t0
+    vr_cov = int(df["volume_ratio"].notna().sum())
+    log(f"⑤ 指标+量比：{len(ind_df)} 只完成 | 量比覆盖 {vr_cov}/{len(df)} | {t_ind:.1f}s")
 
     # ⑦ 趋势过滤
     df["trend_aligned"] = (df["ma5"] > df["ma10"]) & (df["ma10"] > df["ma20"]) & (df["ma20"] > df["ma60"])
@@ -607,8 +768,8 @@ def main() -> int:
     ctx = {
         "date": today_str, "phase": phase,
         "generated_at": observed_at.strftime("%Y-%m-%d %H:%M:%S"),
-        "snap_source": snap_source, "snap_obs": snap_obs,
-        "total_sec": total_sec, "t_snap": t_snap, "t_vr": t_vr, "t_ind": t_ind,
+        "snap_source": snap_source, "snap_obs": snap_obs, "bse": bse_audit,
+        "total_sec": total_sec, "t_snap": t_snap, "t_ind": t_ind,
         "advance_ratio": market_advance_ratio, "median": market_median, "mode": market_mode,
         "funnel": f"{initial} → 硬{after_hard} → 候选{len(candidates)} → 正式{len(official)}",
         "ind_top": list(ind_chg_full.head(5).items()),
