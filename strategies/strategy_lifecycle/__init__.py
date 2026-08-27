@@ -31,6 +31,7 @@ from .version_compat import (
 )
 from .candidate_slot import CandidateSlotManager, SlotRecord, SlotStatus
 from .account_risk import AccountRiskGate, LossOffsetAddGate, AccountSnapshot, AccountRiskResult, LossOffsetResult
+from .portfolio_state import LocalAccountState, PortfolioState, load_portfolio_state
 from .executability import (
     ExecutabilityChecker, ExitEventPriority, ExitEventType,
     MarketExecutability, ExecutabilityResult,
@@ -48,6 +49,7 @@ __all__ = [
     "VersionManager", "VersionRecord", "SchemaValidator", "MigrationRecord", "ActivationGateStatus",
     "CandidateSlotManager", "SlotRecord", "SlotStatus",
     "AccountRiskGate", "LossOffsetAddGate", "AccountSnapshot", "AccountRiskResult", "LossOffsetResult",
+    "LocalAccountState", "PortfolioState", "load_portfolio_state",
     "ExecutabilityChecker", "ExitEventPriority", "ExitEventType",
     "MarketExecutability", "ExecutabilityResult",
     "DecisionLogger", "DebugLogManager",
