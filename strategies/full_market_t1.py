@@ -5,7 +5,7 @@ from datetime import datetime
 import json
 import os
 from pathlib import Path
-from typing import Mapping
+from typing import Mapping, Sequence
 
 import pandas as pd
 
@@ -336,3 +336,298 @@ def write_candidate_union(payload: dict[str, object], path: Path) -> Path:
     )
     os.replace(tmp_path, path)
     return path
+
+
+def _native_mapping(value) -> dict[str, object]:
+    native = _to_native(value)
+    if isinstance(native, Mapping):
+        return {str(key): item for key, item in native.items()}
+    return {}
+
+
+def _coerce_float(value) -> float | None:
+    if value is None or pd.isna(value):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _coerce_objective(value) -> CandidateObjectiveData:
+    if isinstance(value, CandidateObjectiveData):
+        return value
+    mapping = _native_mapping(value)
+    return CandidateObjectiveData(
+        snapshot=_native_mapping(mapping.get("snapshot")),
+        daily=_native_mapping(mapping.get("daily")),
+        industry=_native_mapping(mapping.get("industry")) or None,
+        minute=_native_mapping(mapping.get("minute")) or None,
+        minute_evidence=_native_mapping(mapping.get("minute_evidence")),
+        executability=_native_mapping(mapping.get("executability")),
+    )
+
+
+def _build_execution_evidence(objective: CandidateObjectiveData) -> tuple[dict[str, float] | None, list[str]]:
+    evidence: dict[str, float] = {}
+    missing: list[str] = []
+    sources = (
+        _native_mapping(objective.executability),
+        _native_mapping(objective.snapshot),
+        _native_mapping(objective.daily),
+        _native_mapping(objective.minute),
+        _native_mapping(objective.minute_evidence),
+    )
+
+    for field in REQUIRED_EXECUTION_FIELDS:
+        value = None
+        for source in sources:
+            if field in source and source[field] is not None:
+                value = _coerce_float(source[field])
+                break
+        if value is None:
+            missing.append(field)
+        else:
+            evidence[field] = value
+
+    if missing:
+        return None, ["execution_score_data_missing"]
+    return evidence, []
+
+
+def _industry_sync(industry: Mapping | None) -> bool:
+    industry_mapping = _native_mapping(industry)
+    if "industry_sync" in industry_mapping:
+        return bool(industry_mapping.get("industry_sync"))
+    return _coerce_float(industry_mapping.get("advance_ratio")) is not None and float(industry_mapping.get("advance_ratio", 0.0)) >= 0.5
+
+
+def _watch_reason(reason: str) -> bool:
+    return reason in {
+        "opportunity_score_below_threshold",
+        "execution_score_below_threshold",
+        "minute_confirmation_pending",
+        "buy_zone_not_ready",
+        "above_no_chase_price",
+        "industry_sync_pending",
+        "market_breadth_below_threshold",
+        "protection_not_constructible",
+        "fee_adjusted_rr_below_threshold",
+    }
+
+
+def _sort_key(row: Mapping) -> tuple[float, float, float, float]:
+    return (
+        float(row.get("execution_score") or 0.0),
+        float(row.get("opportunity_score") or 0.0),
+        float(row.get("fee_adjusted_rr") or 0.0),
+        float(row.get("amount") or 0.0),
+    )
+
+
+def evaluate_candidate(candidate: Mapping, objective: CandidateObjectiveData, market: Mapping) -> dict[str, object]:
+    candidate_row = _native_mapping(candidate)
+    objective_row = _coerce_objective(objective)
+    market_row = _native_mapping(market)
+    minute_evidence = _native_mapping(objective_row.minute_evidence)
+    industry = _native_mapping(objective_row.industry)
+    executability = _native_mapping(objective_row.executability)
+
+    code = _normalize_code(candidate_row.get("code", ""))
+    price_band = str(candidate_row.get("price_band", "") or "")
+    price = _coerce_float(candidate_row.get("price")) or 0.0
+    opportunity_score = _coerce_float(candidate_row.get("opportunity_score")) or 0.0
+    candidate_status, reason_codes = candidate_data_status(
+        objective_row.snapshot,
+        objective_row.daily,
+        objective_row.industry,
+        objective_row.minute,
+    )
+    if (
+        objective_row.minute is None
+        and minute_evidence.get("vwap") is None
+        and "vwap_missing" not in reason_codes
+    ):
+        reason_codes.append("vwap_missing")
+
+    execution_evidence, execution_missing_reasons = _build_execution_evidence(objective_row)
+    execution_score = None
+    if execution_evidence is None:
+        candidate_status = "data_insufficient"
+        for reason in execution_missing_reasons:
+            _append_unique(reason_codes, reason)
+    else:
+        execution_score = compute_execution_score(execution_evidence)
+
+    buy_low = _coerce_float(executability.get("buy_low"))
+    buy_high = _coerce_float(executability.get("buy_high"))
+    no_chase_price = _coerce_float(executability.get("no_chase_price"))
+    if no_chase_price is None:
+        no_chase_price = _coerce_float(executability.get("chase_line"))
+    protection_constructible = executability.get("protection_constructible") is True
+    is_untradable = executability.get("is_untradable") is True
+    fee_adjusted_rr = _coerce_float(executability.get("fee_adjusted_rr"))
+    market_advance_ratio = _coerce_float(market_row.get("advance_ratio")) or 0.0
+
+    row = {
+        **candidate_row,
+        "code": code,
+        "price_band": price_band,
+        "price": price,
+        "opportunity_score": round(opportunity_score, 2),
+        "execution_score": execution_score,
+        "candidate_data_status": candidate_status,
+        "market_advance_ratio": market_advance_ratio,
+        "minute_evidence": minute_evidence,
+        "industry_evidence": industry,
+        "executability": {
+            **executability,
+            "buy_low": buy_low,
+            "buy_high": buy_high,
+            "no_chase_price": no_chase_price,
+            "fee_adjusted_rr": fee_adjusted_rr,
+            "protection_constructible": protection_constructible,
+            "is_untradable": is_untradable,
+        },
+        "fee_adjusted_rr": fee_adjusted_rr,
+        "production_buyable": False,
+        "buyable": False,
+        "only_choose_one_eligible": False,
+        "reason_codes": [],
+        "decision": "reject",
+    }
+
+    if candidate_status != "ready":
+        row["decision"] = "data_insufficient"
+        row["reason_codes"] = reason_codes
+        return row
+
+    if price_band == "excluded":
+        row["reason_codes"] = ["price_band_excluded"]
+        return row
+
+    gate_failures: list[str] = []
+    if opportunity_score < 65.0:
+        gate_failures.append("opportunity_score_below_threshold")
+    if execution_score is None or execution_score < 68.0:
+        gate_failures.append("execution_score_below_threshold")
+    if minute_evidence.get("confirmed") is not True:
+        gate_failures.append("minute_confirmation_pending")
+    if buy_low is None or buy_high is None or not (buy_low <= price <= buy_high):
+        gate_failures.append("buy_zone_not_ready")
+    if no_chase_price is None or price > no_chase_price:
+        gate_failures.append("above_no_chase_price")
+    if not _industry_sync(industry):
+        gate_failures.append("industry_sync_pending")
+    if market_advance_ratio < 0.35:
+        gate_failures.append("market_breadth_below_threshold")
+    if not protection_constructible:
+        gate_failures.append("protection_not_constructible")
+    if is_untradable:
+        gate_failures.append("candidate_untradable")
+    if fee_adjusted_rr is None or fee_adjusted_rr < 1.5:
+        gate_failures.append("fee_adjusted_rr_below_threshold")
+
+    if price_band == "shadow_40_50":
+        row["reason_codes"] = ["shadow_price_band", *gate_failures]
+        row["decision"] = "shadow_watch" if opportunity_score >= 55.0 else "shadow_reject"
+        return row
+
+    row["reason_codes"] = gate_failures
+    if not gate_failures:
+        row["production_buyable"] = True
+        row["buyable"] = True
+        row["only_choose_one_eligible"] = True
+        row["decision"] = "executable_candidate"
+        return row
+
+    if opportunity_score >= 55.0 and all(_watch_reason(reason) for reason in gate_failures):
+        row["decision"] = "conditional_watch"
+        return row
+
+    row["decision"] = "reject"
+    return row
+
+
+def choose_one(rows: Sequence[Mapping]) -> str | None:
+    eligible = [
+        row
+        for row in rows
+        if row.get("price_band") == "production"
+        and row.get("buyable") is True
+        and row.get("only_choose_one_eligible") is True
+    ]
+    if not eligible:
+        return None
+    ranked = sorted(eligible, key=_sort_key, reverse=True)
+    return _normalize_code(ranked[0].get("code", ""))
+
+
+def build_full_market_decision(candidate_union: Mapping, handoff: Mapping, *, decision_at: datetime) -> dict[str, object]:
+    candidate_union_row = _native_mapping(candidate_union)
+    handoff_row = _native_mapping(handoff)
+    market = _native_mapping(handoff_row.get("market")) or _native_mapping(candidate_union_row.get("market"))
+    objective_by_code_source = (
+        _native_mapping(handoff_row.get("objective_by_code"))
+        or _native_mapping(candidate_union_row.get("objective_by_code"))
+    )
+
+    evaluated: list[dict[str, object]] = []
+    for raw_candidate in _to_native(candidate_union_row.get("candidates", [])) or []:
+        candidate_row = _native_mapping(raw_candidate)
+        code = _normalize_code(candidate_row.get("code", ""))
+        objective = objective_by_code_source.get(code)
+        if objective is None:
+            objective = CandidateObjectiveData(
+                snapshot={},
+                daily={},
+                industry=None,
+                minute=None,
+                minute_evidence={},
+                executability={},
+            )
+        row = evaluate_candidate(candidate_row, objective, market)
+        evaluated.append(row)
+
+    executable = sorted(
+        [row for row in evaluated if row.get("decision") == "executable_candidate"],
+        key=_sort_key,
+        reverse=True,
+    )
+    watch = [row for row in evaluated if row.get("decision") == "conditional_watch"]
+    shadow = [row for row in evaluated if str(row.get("decision", "")).startswith("shadow_")]
+    rejected = [row for row in evaluated if row.get("decision") in {"reject", "data_insufficient"}]
+
+    only_choose_one_code = choose_one(evaluated)
+    if len(executable) > 3:
+        for overflow in executable[3:]:
+            overflow_row = {**overflow}
+            overflow_row["decision"] = "reject"
+            overflow_row["production_buyable"] = False
+            overflow_row["buyable"] = False
+            overflow_row["only_choose_one_eligible"] = False
+            overflow_row["reason_codes"] = [*overflow.get("reason_codes", []), "execution_group_capped"]
+            rejected.append(overflow_row)
+        executable = executable[:3]
+
+    global_status = "data_not_ready" if handoff_row.get("critical_ready") is False or market.get("critical_ready") is False else "decision_ready"
+    return {
+        "schema_version": candidate_union_row.get("schema_version", SCHEMA_VERSION),
+        "decision_at": decision_at.isoformat(),
+        "trade_date": candidate_union_row.get("trade_date") or handoff_row.get("trade_date"),
+        "observed_at": candidate_union_row.get("observed_at") or handoff_row.get("observed_at"),
+        "market": market,
+        "global_status": global_status,
+        "only_choose_one": only_choose_one_code,
+        "summary": {
+            "executable": len(executable),
+            "watch": len(watch),
+            "rejected": len(rejected),
+            "shadow_count": len(shadow),
+            "evaluated": len(evaluated),
+        },
+        "executable": executable,
+        "watch": watch,
+        "rejected": rejected,
+        "shadow": shadow,
+    }
