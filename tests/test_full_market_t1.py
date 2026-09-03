@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import FrozenInstanceError
+from datetime import datetime, timedelta, timezone
 import json
 import os
 from pathlib import Path
@@ -8,10 +10,69 @@ import pandas as pd
 import pytest
 
 from strategies.full_market_t1 import (
+    CandidateObjectiveData,
     build_candidate_union,
+    build_minute_evidence,
+    candidate_data_status,
     classify_price_band,
+    compute_execution_score,
     write_candidate_union,
 )
+
+
+TZ_SHANGHAI = timezone(timedelta(hours=8))
+
+
+def _base_snapshot(**overrides):
+    payload = {
+        "code": "1234",
+        "price": 10.0,
+        "change_pct": 3.2,
+        "turnover_rate": 4.8,
+        "low": 9.7,
+        "high": 10.8,
+    }
+    payload.update(overrides)
+    return payload
+
+
+def _base_daily(**overrides):
+    payload = {
+        "ma5": 9.9,
+        "ma10": 9.8,
+    }
+    payload.update(overrides)
+    return payload
+
+
+def _base_industry(**overrides):
+    payload = {"industry": "bank", "advance_ratio": 0.62}
+    payload.update(overrides)
+    return payload
+
+
+def _base_minute(**overrides):
+    payload = {
+        "vwap": 10.05,
+        "afternoon_vwap": 10.08,
+        "named_pivot": 10.02,
+    }
+    payload.update(overrides)
+    return payload
+
+
+def _minute_rows():
+    return pd.DataFrame(
+        [
+            {"time": "13:39", "close": 10.00, "volume": 100.0, "amount": 1000.0, "named_pivot": 10.02},
+            {"time": "13:40", "close": 10.01, "volume": 100.0, "amount": 1001.0, "named_pivot": 10.02},
+            {"time": "13:41", "close": 10.02, "volume": 100.0, "amount": 1002.0, "named_pivot": 10.02},
+            {"time": "13:42", "close": 10.11, "volume": 90.0, "amount": 909.9, "named_pivot": 10.02},
+            {"time": "13:43", "close": 10.13, "volume": 85.0, "amount": 861.05, "named_pivot": 10.02},
+            {"time": "13:44", "close": 10.15, "volume": 85.0, "amount": 862.75, "named_pivot": 10.02},
+            {"time": "13:45", "close": 9.80, "volume": 500.0, "amount": 4900.0, "named_pivot": 10.50},
+        ]
+    )
 
 
 @pytest.mark.parametrize(
@@ -140,3 +201,128 @@ def test_write_candidate_union_writes_utf8_json_atomically(tmp_path: Path, monke
     assert replace_calls == [(target.with_suffix(".tmp"), target)]
     assert not target.with_suffix(".tmp").exists()
     assert json.loads(target.read_text(encoding="utf-8")) == payload
+
+
+def test_candidate_data_status_is_ready_when_required_evidence_exists():
+    status, reasons = candidate_data_status(
+        _base_snapshot(),
+        _base_daily(),
+        _base_industry(),
+        _base_minute(),
+    )
+
+    assert status == "ready"
+    assert reasons == []
+
+
+@pytest.mark.parametrize(
+    ("snapshot", "daily", "industry", "minute", "expected_reason"),
+    [
+        (None, _base_daily(), _base_industry(), _base_minute(), "snapshot_missing"),
+        (_base_snapshot(), None, _base_industry(), _base_minute(), "daily_missing"),
+        (_base_snapshot(), _base_daily(), None, _base_minute(), "industry_missing"),
+        (_base_snapshot(), _base_daily(), _base_industry(), None, "minute_missing"),
+        (_base_snapshot(), _base_daily(), _base_industry(), {"named_pivot": 10.02}, "vwap_missing"),
+    ],
+)
+def test_candidate_data_status_reports_exact_missing_reason(snapshot, daily, industry, minute, expected_reason):
+    status, reasons = candidate_data_status(snapshot, daily, industry, minute)
+
+    assert status == "data_insufficient"
+    assert reasons == [expected_reason]
+
+
+def test_build_minute_evidence_confirms_with_completed_minutes_only():
+    evidence = build_minute_evidence(
+        _minute_rows(),
+        code="1234",
+        observed_at=datetime(2026, 9, 3, 13, 45, 30, tzinfo=TZ_SHANGHAI),
+    )
+
+    assert evidence["code"] == "001234"
+    assert evidence["confirmed"] is True
+    assert evidence["hold_minutes"] == ["13:42", "13:43", "13:44"]
+    assert evidence["last_completed_minute"] == "13:44"
+    assert evidence["activity_non_contracting"] is True
+    assert evidence["reason_codes"] == []
+    assert evidence["named_pivot"] == pytest.approx(10.02)
+    assert evidence["vwap"] == pytest.approx(round((5636.7 / 560.0), 4))
+    assert evidence["afternoon_vwap"] == pytest.approx(round((5636.7 / 560.0), 4))
+
+
+def test_build_minute_evidence_excludes_current_unfinished_minute():
+    evidence = build_minute_evidence(
+        _minute_rows(),
+        code="1234",
+        observed_at=datetime(2026, 9, 3, 13, 45, 30, tzinfo=TZ_SHANGHAI),
+    )
+
+    assert evidence["last_completed_minute"] == "13:44"
+    assert evidence["hold_minutes"][-1] == "13:44"
+    assert "13:45" not in evidence["hold_minutes"]
+    assert evidence["named_pivot"] == pytest.approx(10.02)
+
+
+def test_build_minute_evidence_requires_six_completed_rows_to_confirm():
+    evidence = build_minute_evidence(
+        _minute_rows().iloc[:5],
+        code="1234",
+        observed_at=datetime(2026, 9, 3, 13, 44, 30, tzinfo=TZ_SHANGHAI),
+    )
+
+    assert evidence["confirmed"] is False
+    assert evidence["reason_codes"] == ["insufficient_completed_minutes"]
+    assert evidence["last_completed_minute"] == "13:43"
+
+
+def test_compute_execution_score_uses_versioned_formula_and_penalty():
+    evidence = {
+        "dist_vwap_pct": 3.0,
+        "change_pct": 9.0,
+        "turnover_rate": 12.0,
+        "from_low_pct": 8.0,
+        "dist_high_pct": -4.0,
+        "amplitude_pct": 9.0,
+    }
+
+    assert compute_execution_score(evidence) == 84.0
+
+
+def test_compute_execution_score_clamps_inputs_and_score():
+    evidence = {
+        "dist_vwap_pct": -100.0,
+        "change_pct": -100.0,
+        "turnover_rate": 100.0,
+        "from_low_pct": 100.0,
+        "dist_high_pct": 100.0,
+        "amplitude_pct": 1.0,
+    }
+
+    assert compute_execution_score(evidence) == 36.0
+
+
+def test_compute_execution_score_fails_closed_when_inputs_are_missing():
+    with pytest.raises(ValueError, match="missing execution evidence: dist_high_pct"):
+        compute_execution_score(
+            {
+                "dist_vwap_pct": 1.0,
+                "change_pct": 2.0,
+                "turnover_rate": 3.0,
+                "from_low_pct": 4.0,
+                "amplitude_pct": 5.0,
+            }
+        )
+
+
+def test_candidate_objective_data_is_frozen():
+    candidate = CandidateObjectiveData(
+        snapshot=_base_snapshot(),
+        daily=_base_daily(),
+        industry=_base_industry(),
+        minute=_base_minute(),
+        minute_evidence={"confirmed": True},
+        executability={"execution_rule_version": "1.0.0"},
+    )
+
+    with pytest.raises(FrozenInstanceError):
+        candidate.snapshot = {}
