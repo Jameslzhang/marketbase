@@ -74,6 +74,7 @@ from marketbase.pipeline.steps import (
 )
 from marketbase.pipeline.output import _write_outputs_and_manifest
 from marketbase.intraday_collector import collect_intraday_minutes
+from strategies.full_market_t1 import orchestrate_full_market_t1
 
 
 # ── 模块级 UTF-8 强制 ─────────────────────────────────────────────────
@@ -465,6 +466,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     _ = t1_snap_parser.add_argument("--watchlist", type=Path)
     _ = t1_snap_parser.add_argument("--output", type=Path)
     _ = t1_snap_parser.add_argument("--v2", action="store_true", help="使用 V2 策略全生命周期模块")
+    full_market_t1_parser = subcommands.add_parser("full-market-t1")
+    _ = full_market_t1_parser.add_argument("--candidate-union", type=Path, required=True)
+    _ = full_market_t1_parser.add_argument("--decision-at", type=str, required=True)
+    _ = full_market_t1_parser.add_argument("--output", type=Path, required=True)
     arguments = parser.parse_args(argv)
     default_root = Path(__file__).resolve().parent / "data" / "daily_runs"
 
@@ -531,6 +536,20 @@ def main(argv: Sequence[str] | None = None) -> int:
                     watchlist_path=arguments.watchlist,
                     output_path=arguments.output,
                 )
+        if arguments.command == "full-market-t1":
+            root = arguments.data_root or default_root
+            decision = orchestrate_full_market_t1(
+                data_root=root,
+                candidate_union_path=arguments.candidate_union,
+                decision_at=datetime.fromisoformat(arguments.decision_at),
+                output_path=arguments.output,
+            )
+            print(
+                "全市场T1决策完成: "
+                + f"executable={decision['summary']['executable']} "
+                + f"shadow={decision['summary']['shadow_count']}"
+            )
+            return 0
         summary = run_collection(
             data_root=getattr(arguments, "data_root", None) or default_root,
             phase=getattr(arguments, "phase", None),

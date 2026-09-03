@@ -14,6 +14,7 @@ from strategies.full_market_t1 import (
     CandidateObjectiveData,
     build_candidate_union,
     build_minute_evidence,
+    orchestrate_full_market_t1,
     candidate_data_status,
     classify_price_band,
     compute_execution_score,
@@ -654,3 +655,328 @@ def test_build_full_market_decision_groups_are_mutually_exclusive_and_executable
     assert fourth["buyable"] is True
     assert fourth["production_buyable"] is True
     assert fourth["only_choose_one_eligible"] is True
+
+
+def _minute_rows_for(code: str, *, pivot: float, closes: list[float] | None = None) -> list[dict[str, object]]:
+    completed_closes = closes or [52.05, 52.1, 52.12, 52.3, 52.35, 52.4]
+    labels = ["13:39", "13:40", "13:41", "13:42", "13:43", "13:44"]
+    volumes = [1000.0, 1000.0, 1000.0, 900.0, 900.0, 900.0]
+    rows: list[dict[str, object]] = []
+    for label, close, volume in zip(labels, completed_closes, volumes, strict=True):
+        rows.append(
+            {
+                "code": code,
+                "time": label,
+                "close": close,
+                "volume": volume,
+                "amount": round(close * volume, 2),
+                "named_pivot": pivot,
+            }
+        )
+    rows.append(
+        {
+            "code": code,
+            "time": "13:45",
+            "close": completed_closes[-1] - 1.0,
+            "volume": 1500.0,
+            "amount": round((completed_closes[-1] - 1.0) * 1500.0, 2),
+            "named_pivot": pivot + 1.0,
+        }
+    )
+    return rows
+
+
+def _write_json(path: Path, payload: dict[str, object]) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    return path
+
+
+def _write_full_market_inputs(
+    tmp_path: Path,
+    *,
+    candidates: list[dict[str, object]],
+    manifest_overrides: dict[str, object] | None = None,
+    market_snapshot_rows: list[dict[str, object]] | None = None,
+    daily_rows: list[dict[str, object]] | None = None,
+    classification_rows: list[dict[str, object]] | None = None,
+    industry_rows: list[dict[str, object]] | None = None,
+    minute_rows: list[dict[str, object]] | None = None,
+    market_breadth_payload: dict[str, object] | None = None,
+    data_audit_payload: dict[str, object] | None = None,
+    handoff_generated_at: str = "2026-09-03T13:45:00+08:00",
+    union_trade_date: str = "2026-09-03",
+    union_observed_at: str = "2026-09-03T13:43:00+08:00",
+) -> dict[str, Path]:
+    data_root = tmp_path / "daily_runs"
+    run_dir = data_root / "2026-09-03_134500_full_market"
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    candidate_union_path = _write_json(
+        tmp_path / "candidate_union.json",
+        {
+            "schema_version": "1.0.0",
+            "trade_date": union_trade_date,
+            "observed_at": union_observed_at,
+            "market_rows": 5546,
+            "funnel": {"initial": 5546, "candidates": len(candidates)},
+            "candidates": candidates,
+        },
+    )
+
+    snapshot_rows = market_snapshot_rows or [
+        {
+            "code": row["code"],
+            "name": row.get("name", f"股票{row['code']}"),
+            "market": row.get("market", "sh"),
+            "price": row["price"],
+            "pre_close": row.get("pre_close", 50.0),
+            "open": row.get("open", 51.0),
+            "high": row.get("high", 52.6),
+            "low": row.get("low", 51.0),
+            "change_pct": row.get("change_pct", 4.8),
+            "turnover_rate": row.get("turnover_rate", 3.0),
+            "amount": row.get("amount", 80_000_000),
+            "volume": row.get("volume", 1_000_000),
+            "is_untradable": row.get("is_untradable", False),
+        }
+        for row in candidates
+    ]
+    _write_json(
+        run_dir / "market_snapshot.json",
+        {"schema_version": 1, "generated_at": handoff_generated_at, "rows": snapshot_rows},
+    )
+
+    pd.DataFrame(
+        daily_rows
+        or [
+            {"code": row["code"], "ma5": 51.0, "ma10": 50.8, "ma20": 50.2, "turnover_rate": 3.0}
+            for row in candidates
+        ]
+    ).to_csv(run_dir / "daily_indicators.csv", index=False, encoding="utf-8")
+
+    pd.DataFrame(
+        classification_rows
+        or [
+            {
+                "code": row["code"],
+                "industry": row.get("industry", "银行"),
+                "concepts": row.get("concepts", "国企改革"),
+                "supply_chain": row.get("supply_chain", "金融"),
+            }
+            for row in candidates
+        ]
+    ).to_csv(run_dir / "classification_map.csv", index=False, encoding="utf-8")
+
+    pd.DataFrame(
+        industry_rows
+        or [
+            {
+                "industry": row.get("industry", "银行"),
+                "advance_ratio": 0.62,
+                "avg_change_pct": 0.012,
+                "component_count": 35,
+            }
+            for row in candidates
+        ]
+    ).to_csv(run_dir / "industry_agg.csv", index=False, encoding="utf-8")
+
+    _write_json(
+        run_dir / "market_breadth.json",
+        market_breadth_payload
+        or {
+            "full_market": {
+                "advance_count": 3450,
+                "decline_count": 1800,
+                "unchanged_count": 296,
+                "total": 5546,
+            }
+        },
+    )
+    _write_json(
+        run_dir / "data_audit.json",
+        data_audit_payload
+        or {
+            "schema_version": 1,
+            "trade_date": union_trade_date,
+            "quality_status": "data_ready",
+            "generated_at": handoff_generated_at,
+        },
+    )
+
+    minute_frame = pd.DataFrame(
+        minute_rows
+        or [
+            minute_row
+            for row in candidates
+            for minute_row in _minute_rows_for(row["code"], pivot=row.get("named_pivot", 52.0))
+        ]
+    )
+    minute_frame.to_parquet(run_dir / "intraday_minutes.parquet", index=False)
+
+    latest_payload: dict[str, object] = {
+        "schema_version": 1,
+        "generated_at": handoff_generated_at,
+        "market_snapshot_path": str((run_dir / "market_snapshot.json").resolve()),
+        "daily_indicators_path": str((run_dir / "daily_indicators.csv").resolve()),
+        "classification_map_path": str((run_dir / "classification_map.csv").resolve()),
+        "industry_agg_path": str((run_dir / "industry_agg.csv").resolve()),
+        "market_breadth_path": str((run_dir / "market_breadth.json").resolve()),
+        "intraday_minutes_path": str((run_dir / "intraday_minutes.parquet").resolve()),
+        "data_audit_path": str((run_dir / "data_audit.json").resolve()),
+    }
+    latest_payload.update(manifest_overrides or {})
+    _write_json(data_root / "latest_codex_input.json", latest_payload)
+
+    return {
+        "data_root": data_root,
+        "run_dir": run_dir,
+        "candidate_union_path": candidate_union_path,
+    }
+
+
+def test_orchestrate_full_market_t1_marks_candidate_with_missing_daily_as_data_insufficient(tmp_path: Path):
+    candidates = [
+        {
+            "code": "600000",
+            "name": "浦发银行",
+            "market": "sh",
+            "price": 52.4,
+            "amount": 80_000_000,
+            "opportunity_score": 70.0,
+            "price_band": "production",
+            "candidate_reason": ["trend_full"],
+            "buy_low": 51.8,
+            "buy_high": 52.6,
+            "chase_line": 52.8,
+            "protect": 51.2,
+            "rr_ratio": 1.8,
+            "named_pivot": 52.0,
+        },
+        {
+            "code": "600001",
+            "name": "邯郸钢铁",
+            "market": "sh",
+            "price": 52.1,
+            "amount": 60_000_000,
+            "opportunity_score": 69.0,
+            "price_band": "production",
+            "candidate_reason": ["trend_full"],
+            "buy_low": 51.6,
+            "buy_high": 52.3,
+            "chase_line": 52.5,
+            "protect": 51.0,
+            "rr_ratio": 1.7,
+            "named_pivot": 51.9,
+        },
+    ]
+    fixture = _write_full_market_inputs(
+        tmp_path,
+        candidates=candidates,
+        daily_rows=[{"code": "600000", "ma5": 51.0, "ma10": 50.8, "ma20": 50.2, "turnover_rate": 3.0}],
+    )
+
+    decision = orchestrate_full_market_t1(
+        data_root=fixture["data_root"],
+        candidate_union_path=fixture["candidate_union_path"],
+        decision_at=datetime(2026, 9, 3, 13, 45, tzinfo=TZ_SHANGHAI),
+        output_path=tmp_path / "decision.json",
+    )
+
+    assert decision["global_status"] == "decision_ready"
+    rejected = {row["code"]: row for row in decision["rejected"]}
+    assert rejected["600001"]["decision"] == "data_insufficient"
+    assert "daily_missing" in rejected["600001"]["reason_codes"]
+    assert (tmp_path / "decision.json").is_file()
+
+
+def test_orchestrate_full_market_t1_uses_only_declared_inputs_for_metadata_and_checksums(tmp_path: Path):
+    candidate = {
+        "code": "000001",
+        "name": "平安银行",
+        "market": "sz",
+        "price": 45.0,
+        "amount": 55_000_000,
+        "opportunity_score": 90.0,
+        "price_band": "shadow_40_50",
+        "candidate_reason": ["shadow_watch"],
+        "buy_low": 44.5,
+        "buy_high": 45.2,
+        "chase_line": 45.3,
+        "protect": 43.8,
+        "rr_ratio": 1.8,
+        "named_pivot": 44.8,
+    }
+    fixture = _write_full_market_inputs(tmp_path, candidates=[candidate])
+    fallback_path = fixture["data_root"] / "classification_map.csv"
+    pd.DataFrame([{"code": "999999", "industry": "fallback"}]).to_csv(fallback_path, index=False, encoding="utf-8")
+
+    decision = orchestrate_full_market_t1(
+        data_root=fixture["data_root"],
+        candidate_union_path=fixture["candidate_union_path"],
+        decision_at=datetime(2026, 9, 3, 13, 45, tzinfo=TZ_SHANGHAI),
+        output_path=tmp_path / "decision.json",
+    )
+
+    declared_inputs = decision["input_metadata"]["declared_inputs"]
+    assert set(declared_inputs) == {
+        "market_snapshot_path",
+        "daily_indicators_path",
+        "classification_map_path",
+        "industry_agg_path",
+        "market_breadth_path",
+        "intraday_minutes_path",
+        "data_audit_path",
+    }
+    assert all(record["path"] != str(fallback_path.resolve()) for record in declared_inputs.values())
+    for record in declared_inputs.values():
+        payload = Path(record["path"]).read_bytes()
+        assert record["sha256"] == __import__("hashlib").sha256(payload).hexdigest()
+
+
+@pytest.mark.parametrize("mode", ["invalid_decision", "replace_failure"])
+def test_orchestrate_full_market_t1_never_writes_shadow_ledger_when_output_finalize_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mode: str,
+):
+    candidate = {
+        "code": "000001",
+        "name": "平安银行",
+        "market": "sz",
+        "price": 45.0,
+        "amount": 55_000_000,
+        "opportunity_score": 90.0,
+        "price_band": "shadow_40_50",
+        "candidate_reason": ["shadow_watch"],
+        "buy_low": 44.5,
+        "buy_high": 45.2,
+        "chase_line": 45.3,
+        "protect": 43.8,
+        "rr_ratio": 1.8,
+        "named_pivot": 44.8,
+    }
+    fixture = _write_full_market_inputs(tmp_path, candidates=[candidate])
+    output_path = tmp_path / "decision.json"
+    ledger_path = fixture["data_root"] / "shadow" / "full_market_t1_shadow.jsonl"
+
+    if mode == "invalid_decision":
+        monkeypatch.setattr(
+            full_market_t1,
+            "build_full_market_decision",
+            lambda *args, **kwargs: {"schema_version": "1.0.0", "shadow": [{"code": "000001", "buyable": True}]},
+        )
+    else:
+        monkeypatch.setattr("strategies.full_market_t1.os.replace", lambda *_args: (_ for _ in ()).throw(OSError("replace failed")))
+
+    with pytest.raises((ValueError, OSError)):
+        orchestrate_full_market_t1(
+            data_root=fixture["data_root"],
+            candidate_union_path=fixture["candidate_union_path"],
+            decision_at=datetime(2026, 9, 3, 13, 45, tzinfo=TZ_SHANGHAI),
+            output_path=output_path,
+        )
+
+    assert not output_path.exists()
+    assert not output_path.with_suffix(".tmp").exists()
+    assert not ledger_path.exists()

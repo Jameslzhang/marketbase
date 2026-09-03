@@ -580,7 +580,7 @@ def test_fulfill_request_leaves_unconfigured_minute_fetcher_at_task_six_default(
     assert "minute_fetcher" not in received
 
 
-def test_cli_has_only_collection_and_request_commands(tmp_path, monkeypatch, capsys):
+def test_cli_help_includes_full_market_t1_without_strategy_selection_terms(tmp_path, monkeypatch, capsys):
     calls: list[dict[str, object]] = []
     monkeypatch.setattr(
         local_workflow,
@@ -599,6 +599,7 @@ def test_cli_has_only_collection_and_request_commands(tmp_path, monkeypatch, cap
     help_text = capsys.readouterr().out.lower()
     assert result.value.code == 0
     assert "fulfill-request" in help_text
+    assert "full-market-t1" in help_text
     assert not any(term in help_text for term in ("scan", "prefilter", "afternoon", "rank", "recommend"))
 
 
@@ -814,3 +815,231 @@ def test_interrupted_lunch_run_never_publishes_a_ready_static_audit(tmp_path, mo
     audit = json.loads(audit_path.read_text(encoding="utf-8"))
     assert audit["quality_status"] == "data_not_ready"
     assert audit["quality_reason_codes"] == ["session_not_tradable"]
+
+
+def _write_json(path: Path, payload: dict[str, object]) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    return path
+
+
+def _full_market_candidate(
+    *,
+    code: str = "000001",
+    price: float = 45.0,
+    price_band: str = "shadow_40_50",
+    named_pivot: float = 44.8,
+) -> dict[str, object]:
+    return {
+        "code": code,
+        "name": "平安银行",
+        "market": "sz",
+        "price": price,
+        "amount": 55_000_000,
+        "opportunity_score": 90.0,
+        "price_band": price_band,
+        "candidate_reason": ["shadow_watch"],
+        "buy_low": round(price - 0.5, 2),
+        "buy_high": round(price + 0.2, 2),
+        "chase_line": round(price + 0.3, 2),
+        "protect": round(price - 1.2, 2),
+        "rr_ratio": 1.8,
+        "named_pivot": named_pivot,
+    }
+
+
+def _minute_rows_for(code: str, *, pivot: float, base_price: float) -> list[dict[str, object]]:
+    closes = [base_price - 0.55, base_price - 0.5, base_price - 0.48, base_price - 0.2, base_price - 0.12, base_price]
+    labels = ["13:39", "13:40", "13:41", "13:42", "13:43", "13:44"]
+    volumes = [1000.0, 1000.0, 1000.0, 900.0, 900.0, 900.0]
+    return [
+        {
+            "code": code,
+            "time": label,
+            "close": close,
+            "volume": volume,
+            "amount": round(close * volume, 2),
+            "named_pivot": pivot,
+        }
+        for label, close, volume in zip(labels, closes, volumes, strict=True)
+    ] + [
+        {
+            "code": code,
+            "time": "13:45",
+            "close": base_price - 1.2,
+            "volume": 1500.0,
+            "amount": round((base_price - 1.2) * 1500.0, 2),
+            "named_pivot": pivot + 1.0,
+        }
+    ]
+
+
+def _write_full_market_cli_fixture(
+    tmp_path: Path,
+    *,
+    candidate: dict[str, object] | None = None,
+    manifest_overrides: dict[str, object] | None = None,
+    union_trade_date: str = "2026-09-03",
+    union_observed_at: str = "2026-09-03T13:43:00+08:00",
+    handoff_generated_at: str = "2026-09-03T13:45:00+08:00",
+) -> tuple[Path, Path]:
+    data_root = tmp_path / "daily_runs"
+    run_dir = data_root / "2026-09-03_134500_full_market"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    chosen = candidate or _full_market_candidate()
+    candidate_union_path = _write_json(
+        tmp_path / "candidate_union.json",
+        {
+            "schema_version": "1.0.0",
+            "trade_date": union_trade_date,
+            "observed_at": union_observed_at,
+            "market_rows": 5546,
+            "funnel": {"initial": 5546, "candidates": 1},
+            "candidates": [chosen],
+        },
+    )
+    _write_json(
+        run_dir / "market_snapshot.json",
+        {
+            "schema_version": 1,
+            "generated_at": handoff_generated_at,
+            "rows": [
+                {
+                    "code": chosen["code"],
+                    "name": chosen["name"],
+                    "market": chosen["market"],
+                    "price": chosen["price"],
+                    "pre_close": chosen["price"] - 1.0,
+                    "open": chosen["price"] - 0.8,
+                    "high": chosen["price"] + 0.2,
+                    "low": chosen["price"] - 1.0,
+                    "change_pct": 4.8,
+                    "turnover_rate": 3.0,
+                    "amount": chosen["amount"],
+                    "volume": 1_000_000,
+                    "is_untradable": False,
+                }
+            ],
+        },
+    )
+    pd.DataFrame(
+        [{"code": chosen["code"], "ma5": chosen["price"] - 0.2, "ma10": chosen["price"] - 0.4, "ma20": chosen["price"] - 0.6, "turnover_rate": 3.0}]
+    ).to_csv(run_dir / "daily_indicators.csv", index=False, encoding="utf-8")
+    pd.DataFrame(
+        [{"code": chosen["code"], "industry": "银行", "concepts": "国企改革", "supply_chain": "金融"}]
+    ).to_csv(run_dir / "classification_map.csv", index=False, encoding="utf-8")
+    pd.DataFrame(
+        [{"industry": "银行", "advance_ratio": 0.62, "avg_change_pct": 0.012, "component_count": 35}]
+    ).to_csv(run_dir / "industry_agg.csv", index=False, encoding="utf-8")
+    _write_json(
+        run_dir / "market_breadth.json",
+        {"full_market": {"advance_count": 3450, "decline_count": 1800, "unchanged_count": 296, "total": 5546}},
+    )
+    _write_json(
+        run_dir / "data_audit.json",
+        {"schema_version": 1, "trade_date": union_trade_date, "quality_status": "data_ready", "generated_at": handoff_generated_at},
+    )
+    pd.DataFrame(
+        _minute_rows_for(str(chosen["code"]), pivot=float(chosen["named_pivot"]), base_price=float(chosen["price"]))
+    ).to_parquet(run_dir / "intraday_minutes.parquet", index=False)
+    latest_payload: dict[str, object] = {
+        "schema_version": 1,
+        "generated_at": handoff_generated_at,
+        "market_snapshot_path": str((run_dir / "market_snapshot.json").resolve()),
+        "daily_indicators_path": str((run_dir / "daily_indicators.csv").resolve()),
+        "classification_map_path": str((run_dir / "classification_map.csv").resolve()),
+        "industry_agg_path": str((run_dir / "industry_agg.csv").resolve()),
+        "market_breadth_path": str((run_dir / "market_breadth.json").resolve()),
+        "intraday_minutes_path": str((run_dir / "intraday_minutes.parquet").resolve()),
+        "data_audit_path": str((run_dir / "data_audit.json").resolve()),
+    }
+    latest_payload.update(manifest_overrides or {})
+    _write_json(data_root / "latest_codex_input.json", latest_payload)
+    return data_root, candidate_union_path
+
+
+def test_full_market_t1_cli_writes_atomic_decision_and_shadow_ledger(tmp_path):
+    data_root, candidate_union_path = _write_full_market_cli_fixture(tmp_path)
+    output_path = tmp_path / "decision.json"
+
+    rc = local_workflow.main(
+        [
+            "--data-root", str(data_root),
+            "full-market-t1",
+            "--candidate-union", str(candidate_union_path),
+            "--decision-at", "2026-09-03T13:45:00+08:00",
+            "--output", str(output_path),
+        ]
+    )
+
+    assert rc == 0
+    payload = json.loads(output_path.read_text(encoding="utf-8"))
+    assert payload["only_choose_one"] is None
+    assert not output_path.with_suffix(".tmp").exists()
+    ledger_path = data_root / "shadow" / "full_market_t1_shadow.jsonl"
+    ledger_lines = ledger_path.read_text(encoding="utf-8").splitlines()
+    assert len(ledger_lines) == 1
+    ledger_record = json.loads(ledger_lines[0])
+    assert ledger_record["code"] == "000001"
+    assert ledger_record["decision"] == "shadow_watch"
+    assert ledger_record["production_buyable"] is False
+
+
+@pytest.mark.parametrize(
+    ("union_trade_date", "union_observed_at"),
+    [
+        ("2026-09-02", "2026-09-03T13:43:00+08:00"),
+        ("2026-09-03", "2026-09-03T13:20:00+08:00"),
+    ],
+)
+def test_full_market_t1_cli_contract_time_mismatch_leaves_output_and_ledger_untouched(
+    tmp_path,
+    union_trade_date,
+    union_observed_at,
+):
+    data_root, candidate_union_path = _write_full_market_cli_fixture(
+        tmp_path,
+        union_trade_date=union_trade_date,
+        union_observed_at=union_observed_at,
+    )
+    output_path = tmp_path / "decision.json"
+
+    rc = local_workflow.main(
+        [
+            "--data-root", str(data_root),
+            "full-market-t1",
+            "--candidate-union", str(candidate_union_path),
+            "--decision-at", "2026-09-03T13:45:00+08:00",
+            "--output", str(output_path),
+        ]
+    )
+
+    assert rc == 1
+    assert not output_path.exists()
+    assert not (data_root / "shadow" / "full_market_t1_shadow.jsonl").exists()
+
+
+def test_full_market_t1_cli_never_falls_back_to_undeclared_manifest_paths(tmp_path):
+    data_root, candidate_union_path = _write_full_market_cli_fixture(
+        tmp_path,
+        manifest_overrides={"classification_map_path": None},
+    )
+    pd.DataFrame([{"code": "000001", "industry": "回退行业"}]).to_csv(
+        data_root / "classification_map.csv",
+        index=False,
+        encoding="utf-8",
+    )
+    output_path = tmp_path / "decision.json"
+
+    rc = local_workflow.main(
+        [
+            "--data-root", str(data_root),
+            "full-market-t1",
+            "--candidate-union", str(candidate_union_path),
+            "--decision-at", "2026-09-03T13:45:00+08:00",
+            "--output", str(output_path),
+        ]
+    )
+
+    assert rc == 1
+    assert not output_path.exists()

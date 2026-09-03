@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -14,6 +15,7 @@ SHADOW_MIN_PRICE = 40.0
 RESTRICTED_PREFIXES = ("300", "301", "688")
 SCHEMA_VERSION = "1.0.0"
 EXECUTION_RULE_VERSION = "1.0.0"
+DECISION_RULE_VERSION = "1.0.0"
 REQUIRED_EXECUTION_FIELDS = (
     "dist_vwap_pct",
     "change_pct",
@@ -23,6 +25,15 @@ REQUIRED_EXECUTION_FIELDS = (
     "amplitude_pct",
 )
 READINESS_MINUTE_REASONS = ("minute_missing", "vwap_missing")
+REQUIRED_HANDOFF_INPUT_KEYS = (
+    "market_snapshot_path",
+    "daily_indicators_path",
+    "classification_map_path",
+    "market_breadth_path",
+    "intraday_minutes_path",
+    "data_audit_path",
+)
+INDUSTRY_INPUT_KEYS = ("industry_agg_path", "market_breadth_industry_path", "industry_breadth_path")
 
 
 @dataclass(frozen=True)
@@ -79,6 +90,28 @@ def _normalize_candidate_reason(value) -> list[object]:
 
 def _normalize_code(code: str) -> str:
     return str(code).strip().zfill(6)
+
+
+def _read_json(path: Path) -> dict[str, object]:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError(f"expected JSON object: {path}")
+    return payload
+
+
+def _parse_iso8601(value: object, *, label: str) -> datetime:
+    if not isinstance(value, str):
+        raise ValueError(f"{label} must be an ISO-8601 string")
+    text = value.strip()
+    if not text:
+        raise ValueError(f"{label} must be an ISO-8601 string")
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError as exc:
+        raise ValueError(f"{label} is not parseable as ISO-8601") from exc
+    if parsed.tzinfo is None:
+        raise ValueError(f"{label} must be timezone-aware")
+    return parsed
 
 
 def _clamp(value: float, lower: float, upper: float) -> float:
@@ -338,6 +371,20 @@ def write_candidate_union(payload: dict[str, object], path: Path) -> Path:
     return path
 
 
+def _coerce_bool(value) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    return None
+
+
+def _first_float(*values) -> float | None:
+    for value in values:
+        coerced = _coerce_float(value)
+        if coerced is not None:
+            return coerced
+    return None
+
+
 def _native_mapping(value) -> dict[str, object]:
     native = _to_native(value)
     if isinstance(native, Mapping):
@@ -366,6 +413,387 @@ def _coerce_objective(value) -> CandidateObjectiveData:
         minute_evidence=_native_mapping(mapping.get("minute_evidence")),
         executability=_native_mapping(mapping.get("executability")),
     )
+
+
+def _file_metadata(path: Path) -> dict[str, str]:
+    payload = path.read_bytes()
+    return {
+        "path": str(path.resolve()),
+        "sha256": hashlib.sha256(payload).hexdigest(),
+    }
+
+
+def _load_handoff_manifest(data_root: str | Path) -> tuple[dict[str, object], dict[str, dict[str, str]]]:
+    root = Path(data_root).expanduser().resolve()
+    manifest_path = root / "latest_codex_input.json"
+    manifest = _read_json(manifest_path)
+    metadata: dict[str, dict[str, str]] = {}
+    for key in REQUIRED_HANDOFF_INPUT_KEYS:
+        value = manifest.get(key)
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"handoff manifest missing required path: {key}")
+        declared_path = Path(value).expanduser().resolve()
+        if not declared_path.is_file():
+            raise ValueError(f"handoff manifest declared path missing: {key}")
+        metadata[key] = _file_metadata(declared_path)
+
+    for key in INDUSTRY_INPUT_KEYS:
+        value = manifest.get(key)
+        if isinstance(value, str) and value.strip():
+            declared_path = Path(value).expanduser().resolve()
+            if not declared_path.is_file():
+                raise ValueError(f"handoff manifest declared path missing: {key}")
+            metadata[key] = _file_metadata(declared_path)
+            break
+    else:
+        raise ValueError("handoff manifest missing required industry evidence path")
+
+    return manifest, metadata
+
+
+def _load_snapshot_rows(path: Path) -> list[dict[str, object]]:
+    payload = _read_json(path)
+    rows = payload.get("rows", [])
+    if not isinstance(rows, list):
+        raise ValueError("market snapshot payload must include rows")
+    return [_native_mapping(row) for row in rows]
+
+
+def _resolve_handoff_observed_at(manifest: Mapping) -> datetime:
+    value = manifest.get("observed_at", manifest.get("generated_at"))
+    return _parse_iso8601(value, label="handoff observed_at")
+
+
+def _validate_contract(candidate_union: Mapping, manifest: Mapping) -> tuple[datetime, datetime]:
+    trade_date = candidate_union.get("trade_date")
+    if not isinstance(trade_date, str) or not trade_date:
+        raise ValueError("candidate union missing trade_date")
+    candidate_observed_at = _parse_iso8601(candidate_union.get("observed_at"), label="candidate union observed_at")
+    handoff_observed_at = _resolve_handoff_observed_at(manifest)
+    if handoff_observed_at.date().isoformat() != trade_date:
+        raise ValueError("candidate union trade_date does not match handoff observation date")
+    if abs((candidate_observed_at - handoff_observed_at).total_seconds()) > 20 * 60:
+        raise ValueError("candidate union observed_at differs from handoff observation time by more than 20 minutes")
+    return candidate_observed_at, handoff_observed_at
+
+
+def _normalize_frame_code_column(frame: pd.DataFrame) -> pd.DataFrame:
+    normalized = frame.copy()
+    if "code" in normalized.columns:
+        normalized["code"] = normalized["code"].astype(str).str.strip().str.zfill(6)
+    return normalized
+
+
+def _index_records_by_code(records: list[dict[str, object]]) -> dict[str, dict[str, object]]:
+    indexed: dict[str, dict[str, object]] = {}
+    for row in records:
+        code = row.get("code")
+        if code in (None, ""):
+            continue
+        indexed[_normalize_code(str(code))] = {str(key): _to_native(value) for key, value in row.items()}
+    return indexed
+
+
+def _index_frame_by_code(frame: pd.DataFrame) -> dict[str, dict[str, object]]:
+    if frame.empty or "code" not in frame.columns:
+        return {}
+    normalized = _normalize_frame_code_column(frame)
+    indexed: dict[str, dict[str, object]] = {}
+    for row in normalized.to_dict("records"):
+        indexed[_normalize_code(str(row.get("code", "")))] = {str(key): _to_native(value) for key, value in row.items()}
+    return indexed
+
+
+def _industry_evidence_for_code(
+    code: str,
+    classification_by_code: Mapping[str, Mapping[str, object]],
+    industry_frame: pd.DataFrame,
+) -> dict[str, object] | None:
+    classification = _native_mapping(classification_by_code.get(code))
+    if not classification:
+        return None
+    industry_name = str(classification.get("industry", "") or "").strip()
+    if not industry_name:
+        return None
+    if industry_frame.empty or "industry" not in industry_frame.columns:
+        return {
+            **classification,
+            "industry_sync": None,
+        }
+
+    matches = industry_frame[industry_frame["industry"].astype(str).str.strip() == industry_name]
+    if matches.empty:
+        return {
+            **classification,
+            "industry_sync": None,
+        }
+    row = {str(key): _to_native(value) for key, value in matches.iloc[0].to_dict().items()}
+    advance_ratio = _coerce_float(row.get("advance_ratio"))
+    avg_change_pct = _coerce_float(row.get("avg_change_pct"))
+    component_count = _coerce_float(row.get("component_count"))
+    industry_sync = None
+    if component_count is not None and component_count >= 20 and advance_ratio is not None and avg_change_pct is not None:
+        industry_sync = advance_ratio >= 0.50 and avg_change_pct > 0
+    return {
+        **classification,
+        "industry_sync": industry_sync,
+        "advance_ratio": advance_ratio,
+        "avg_change_pct": avg_change_pct,
+        "component_count": int(component_count) if component_count is not None else None,
+    }
+
+
+def _pick_named_pivot(candidate: Mapping[str, object]) -> tuple[float | None, str | None]:
+    for field in ("named_pivot", "pivot", "technical_anchor", "buy_low", "buy_high"):
+        value = _coerce_float(candidate.get(field))
+        if value is not None:
+            return value, f"candidate.{field}"
+    return None, None
+
+
+def _derive_percentage(delta: float | None, denominator: float | None) -> float | None:
+    if delta is None or denominator is None or denominator == 0:
+        return None
+    return round((delta / denominator) * 100.0, 4)
+
+
+def _build_executability(candidate: Mapping[str, object], snapshot: Mapping[str, object], minute_evidence: Mapping[str, object]) -> dict[str, object]:
+    candidate_row = _native_mapping(candidate)
+    snapshot_row = _native_mapping(snapshot)
+    minute_row = _native_mapping(minute_evidence)
+    price = _coerce_float(candidate_row.get("price"))
+    vwap = _coerce_float(minute_row.get("vwap"))
+    low = _coerce_float(snapshot_row.get("low"))
+    high = _coerce_float(snapshot_row.get("high"))
+    pre_close = _coerce_float(snapshot_row.get("pre_close"))
+    protect = _coerce_float(candidate_row.get("protect"))
+    protection_price = _coerce_float(candidate_row.get("protection_price"))
+    protection_constructible = _coerce_bool(candidate_row.get("protection_constructible"))
+    if protection_constructible is None and (protect is not None or protection_price is not None):
+        protection_constructible = True
+
+    is_untradable = _coerce_bool(snapshot_row.get("is_untradable"))
+    if is_untradable is None and isinstance(snapshot_row.get("tradable"), bool):
+        is_untradable = not bool(snapshot_row.get("tradable"))
+
+    return {
+        "buy_low": _first_float(candidate_row.get("buy_low"), candidate_row.get("buy_zone_lower")),
+        "buy_high": _first_float(candidate_row.get("buy_high"), candidate_row.get("buy_zone_upper")),
+        "no_chase_price": _first_float(candidate_row.get("no_chase_price"), candidate_row.get("chase_line")),
+        "protection_price": protection_price if protection_price is not None else protect,
+        "protection_constructible": protection_constructible,
+        "fee_adjusted_rr": _first_float(candidate_row.get("fee_adjusted_rr"), candidate_row.get("rr_ratio")),
+        "is_untradable": is_untradable,
+        "dist_vwap_pct": _first_float(candidate_row.get("dist_vwap_pct"), _derive_percentage(
+            None if price is None or vwap is None else price - vwap,
+            vwap,
+        )),
+        "change_pct": _first_float(candidate_row.get("change_pct"), snapshot_row.get("change_pct")),
+        "turnover_rate": _first_float(candidate_row.get("turnover_rate"), snapshot_row.get("turnover_rate")),
+        "from_low_pct": _first_float(candidate_row.get("from_low_pct"), _derive_percentage(
+            None if price is None or low is None else price - low,
+            low,
+        )),
+        "dist_high_pct": _first_float(candidate_row.get("dist_high_pct"), _derive_percentage(
+            None if price is None or high is None else price - high,
+            high,
+        )),
+        "amplitude_pct": _first_float(candidate_row.get("amplitude_pct"), _derive_percentage(
+            None if high is None or low is None else high - low,
+            pre_close,
+        )),
+    }
+
+
+def _build_market_context(market_breadth: Mapping[str, object], data_audit: Mapping[str, object], handoff_observed_at: datetime) -> dict[str, object]:
+    payload = _native_mapping(market_breadth)
+    full_market = _native_mapping(payload.get("full_market"))
+    advance_count = _coerce_float(full_market.get("advance_count"))
+    total = _coerce_float(full_market.get("total"))
+    advance_ratio = None if advance_count is None or total in (None, 0) else advance_count / total
+    quality_status = str(data_audit.get("quality_status", "") or "")
+    return {
+        **payload,
+        "full_market": full_market,
+        "advance_ratio": advance_ratio,
+        "critical_ready": quality_status not in {"data_not_ready", ""},
+        "trade_date": data_audit.get("trade_date"),
+        "observed_at": handoff_observed_at.isoformat(),
+    }
+
+
+def _prepare_handoff(
+    *,
+    candidate_union: Mapping[str, object],
+    manifest: Mapping[str, object],
+    input_metadata: Mapping[str, dict[str, str]],
+    decision_at: datetime,
+) -> dict[str, object]:
+    snapshot_rows = _load_snapshot_rows(Path(input_metadata["market_snapshot_path"]["path"]))
+    snapshot_by_code = _index_records_by_code(snapshot_rows)
+    daily_by_code = _index_frame_by_code(pd.read_csv(Path(input_metadata["daily_indicators_path"]["path"])))
+    classification_frame = pd.read_csv(Path(input_metadata["classification_map_path"]["path"]))
+    classification_by_code = _index_frame_by_code(classification_frame)
+    industry_path_key = next(key for key in input_metadata if key in INDUSTRY_INPUT_KEYS)
+    industry_frame = pd.read_csv(Path(input_metadata[industry_path_key]["path"]))
+    minute_frame = pd.read_parquet(Path(input_metadata["intraday_minutes_path"]["path"]))
+    minute_frame = _normalize_frame_code_column(minute_frame)
+    market_breadth = _read_json(Path(input_metadata["market_breadth_path"]["path"]))
+    data_audit = _read_json(Path(input_metadata["data_audit_path"]["path"]))
+    handoff_observed_at = _resolve_handoff_observed_at(manifest)
+    market = _build_market_context(market_breadth, data_audit, handoff_observed_at)
+    objective_by_code: dict[str, CandidateObjectiveData] = {}
+    for raw_candidate in _to_native(candidate_union.get("candidates", [])) or []:
+        candidate = _native_mapping(raw_candidate)
+        code = _normalize_code(candidate.get("code", ""))
+        pivot, pivot_source = _pick_named_pivot(candidate)
+        code_minutes = minute_frame[minute_frame["code"] == code].copy() if "code" in minute_frame.columns else minute_frame.iloc[0:0].copy()
+        if pivot is not None and not code_minutes.empty:
+            code_minutes["named_pivot"] = pivot
+        minute_evidence = build_minute_evidence(code_minutes, code, decision_at)
+        if pivot is not None:
+            minute_evidence["named_pivot"] = pivot
+            minute_evidence["pivot"] = pivot
+            minute_evidence["pivot_source"] = pivot_source
+        last_completed = None
+        last_label = minute_evidence.get("last_completed_minute")
+        if isinstance(last_label, str) and not code_minutes.empty:
+            matches = code_minutes[code_minutes["time"].astype(str).str.slice(0, 5) == last_label]
+            if matches.empty and "timestamp" in code_minutes.columns:
+                matches = code_minutes[
+                    pd.to_datetime(code_minutes["timestamp"], errors="coerce").dt.strftime("%H:%M") == last_label
+                ]
+            if not matches.empty:
+                last_completed = {str(key): _to_native(value) for key, value in matches.iloc[-1].to_dict().items()}
+        if last_completed is not None:
+            last_completed["vwap"] = minute_evidence.get("vwap")
+            last_completed["afternoon_vwap"] = minute_evidence.get("afternoon_vwap")
+            last_completed["named_pivot"] = minute_evidence.get("named_pivot")
+        industry = _industry_evidence_for_code(code, classification_by_code, industry_frame)
+        snapshot = snapshot_by_code.get(code, {})
+        executability = _build_executability(candidate, snapshot, minute_evidence)
+        objective_by_code[code] = CandidateObjectiveData(
+            snapshot=snapshot,
+            daily=daily_by_code.get(code, {}),
+            industry=industry,
+            minute=last_completed,
+            minute_evidence=minute_evidence,
+            executability=executability,
+        )
+
+    return {
+        "trade_date": candidate_union.get("trade_date"),
+        "observed_at": handoff_observed_at.isoformat(),
+        "critical_ready": market["critical_ready"],
+        "market": market,
+        "objective_by_code": objective_by_code,
+        "input_metadata": {
+            "candidate_union": _file_metadata(Path(candidate_union["__path__"])),
+            "declared_inputs": input_metadata,
+        },
+        "score_versions": {
+            "candidate_union_schema_version": str(candidate_union.get("schema_version", SCHEMA_VERSION)),
+            "execution_rule_version": EXECUTION_RULE_VERSION,
+            "decision_rule_version": DECISION_RULE_VERSION,
+        },
+    }
+
+
+def _validate_decision_payload(decision: Mapping[str, object]) -> None:
+    required_keys = (
+        "schema_version",
+        "summary",
+        "audit_rows",
+        "executable",
+        "watch",
+        "rejected",
+        "shadow",
+        "only_choose_one",
+    )
+    for key in required_keys:
+        if key not in decision:
+            raise ValueError(f"decision payload missing required key: {key}")
+    shadow_rows = decision.get("shadow")
+    if not isinstance(shadow_rows, list):
+        raise ValueError("decision shadow group must be a list")
+    for row in shadow_rows:
+        mapping = _native_mapping(row)
+        if mapping.get("production_buyable") is not False:
+            raise ValueError("shadow row must keep production_buyable=false")
+        if mapping.get("buyable") is not False:
+            raise ValueError("shadow row must keep buyable=false")
+        if mapping.get("only_choose_one_eligible") is not False:
+            raise ValueError("shadow row must keep only_choose_one_eligible=false")
+
+
+def _write_json_atomic(path: Path, payload: Mapping[str, object]) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_suffix(".tmp")
+    try:
+        with tmp_path.open("w", encoding="utf-8", newline="\n") as handle:
+            json.dump(payload, handle, ensure_ascii=False, indent=2)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_path, path)
+    except Exception:
+        if tmp_path.exists():
+            tmp_path.unlink()
+        raise
+    return path
+
+
+def _append_shadow_ledger(path: Path, decision: Mapping[str, object]) -> None:
+    shadow_rows = decision.get("shadow", [])
+    if not isinstance(shadow_rows, list) or not shadow_rows:
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    trade_date = decision.get("trade_date")
+    decision_at = decision.get("decision_at")
+    score_versions = _native_mapping(decision.get("score_versions"))
+    with path.open("a", encoding="utf-8", newline="\n") as handle:
+        for row in shadow_rows:
+            record = _native_mapping(row)
+            payload = {
+                "trade_date": trade_date,
+                "decision_at": decision_at,
+                "code": record.get("code"),
+                "decision": record.get("decision"),
+                "production_buyable": False,
+                "score_versions": score_versions,
+                "execution_rule_version": record.get("execution_rule_version", EXECUTION_RULE_VERSION),
+                "audit_row": record,
+            }
+            handle.write(json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n")
+
+
+def orchestrate_full_market_t1(
+    *,
+    data_root: str | Path,
+    candidate_union_path: str | Path,
+    decision_at: datetime,
+    output_path: str | Path,
+) -> dict[str, object]:
+    if decision_at.tzinfo is None:
+        raise ValueError("decision_at must be timezone-aware")
+    candidate_path = Path(candidate_union_path).expanduser().resolve()
+    if not candidate_path.is_file():
+        raise ValueError("candidate union path does not exist")
+    candidate_union = _read_json(candidate_path)
+    candidate_union["__path__"] = str(candidate_path)
+    manifest, input_metadata = _load_handoff_manifest(data_root)
+    _validate_contract(candidate_union, manifest)
+    handoff = _prepare_handoff(
+        candidate_union=candidate_union,
+        manifest=manifest,
+        input_metadata=input_metadata,
+        decision_at=decision_at,
+    )
+    decision = build_full_market_decision(candidate_union, handoff, decision_at=decision_at)
+    _validate_decision_payload(decision)
+    target_path = Path(output_path).expanduser().resolve()
+    _write_json_atomic(target_path, decision)
+    _append_shadow_ledger(Path(data_root).expanduser().resolve() / "shadow" / "full_market_t1_shadow.jsonl", decision)
+    return decision
 
 
 def _build_execution_evidence(objective: CandidateObjectiveData) -> tuple[dict[str, float] | None, list[str]]:
@@ -524,6 +952,7 @@ def evaluate_candidate(candidate: Mapping, objective: CandidateObjectiveData, ma
         "price": price,
         "opportunity_score": round(opportunity_score, 2),
         "execution_score": execution_score,
+        "execution_rule_version": EXECUTION_RULE_VERSION,
         "candidate_data_status": candidate_status,
         "market_advance_ratio": market_advance_ratio,
         "minute_evidence": minute_evidence,
@@ -652,12 +1081,16 @@ def build_full_market_decision(candidate_union: Mapping, handoff: Mapping, *, de
     global_status = "data_not_ready" if handoff_row.get("critical_ready") is False or market.get("critical_ready") is False else "decision_ready"
     return {
         "schema_version": candidate_union_row.get("schema_version", SCHEMA_VERSION),
+        "decision_rule_version": DECISION_RULE_VERSION,
+        "execution_rule_version": EXECUTION_RULE_VERSION,
         "decision_at": decision_at.isoformat(),
         "trade_date": candidate_union_row.get("trade_date") or handoff_row.get("trade_date"),
         "observed_at": candidate_union_row.get("observed_at") or handoff_row.get("observed_at"),
         "market": market,
         "global_status": global_status,
         "only_choose_one": only_choose_one_code,
+        "input_metadata": _native_mapping(handoff_row.get("input_metadata")),
+        "score_versions": _native_mapping(handoff_row.get("score_versions")),
         "summary": {
             "executable": len(executable_all),
             "executable_exposed": len(executable),
