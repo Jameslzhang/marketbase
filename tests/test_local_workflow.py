@@ -12,7 +12,7 @@ import pytest
 
 import local_workflow
 from marketbase.pipeline.helpers import _detect_session_slug
-from marketbase.pipeline.quality import _apply_degradation_flags, _quality_status
+from marketbase.pipeline.quality import _apply_degradation_flags, _compute_minute_quality, _quality_status
 
 
 NOW = datetime(2026, 7, 22, 9, 43, 30, tzinfo=timezone(timedelta(hours=8)))
@@ -660,6 +660,73 @@ def test_lunch_break_does_not_append_a_synthetic_minute_snapshot(tmp_path, monke
     assert audit["session_phase"] == "lunch_break"
     assert audit["minute_continuity"]["status"] == "not_requested"
     assert audit["minute_continuity"]["reason"] == "session_not_tradable"
+
+
+def test_minute_snapshot_audits_run_local_parquet_before_shared_cache(tmp_path):
+    pytest.importorskip("pyarrow")
+    observed_at = datetime(2026, 7, 22, 13, 3, tzinfo=timezone(timedelta(hours=8)))
+    run_minutes_path = tmp_path / "run" / "intraday_minutes.parquet"
+    run_minutes_path.parent.mkdir()
+    run_minutes = pd.DataFrame(
+        [
+            {
+                "code": code,
+                "timestamp": timestamp,
+                "open": 10.0,
+                "high": 10.2,
+                "low": 9.9,
+                "close": 10.1,
+                "volume": 100.0,
+                "amount": 1010.0,
+            }
+            for code in ("600001", "000002")
+            for timestamp in (
+                "2026-07-22T13:00:00+08:00",
+                "2026-07-22T13:01:00+08:00",
+                "2026-07-22T13:02:00+08:00",
+            )
+        ]
+    )
+    run_minutes.to_parquet(run_minutes_path, index=False)
+    collection_audit = {"status": "collected", "source": "fixture"}
+    snapshot = pd.DataFrame(
+        [
+            {"code": "600001", "price": 10.1, "volume": 100.0, "amount": 1010.0, "observed_at": observed_at},
+            {"code": "000002", "price": 10.1, "volume": 100.0, "amount": 1010.0, "observed_at": observed_at},
+        ]
+    )
+
+    minute_audit = local_workflow._run_minute_snapshot(
+        snapshot,
+        tmp_path / "cache",
+        observed_at,
+        lambda message: None,
+        all_codes=["600001", "000002"],
+        intraday_minutes_audit=collection_audit,
+        intraday_minutes_path=str(run_minutes_path),
+    )
+
+    shared_cache = pd.read_parquet(tmp_path / "cache" / "intraday_1m.parquet")
+    assert shared_cache["time"].nunique() == 1
+    assert minute_audit["sequence_audit"]["actual_minutes"] == 3
+    assert minute_audit["total_stocks"] == 2
+    assert minute_audit["collection_audit"] == collection_audit
+    assert minute_audit["collection_audit"] is not collection_audit
+
+
+def test_minute_quality_prefers_dynamic_expected_minutes_for_full_threshold():
+    assert _compute_minute_quality(
+        {
+            "status": "collected",
+            "sequence_audit": {
+                "actual_minutes": 60,
+                "missing_minute_count": 0,
+                "continuity_break_count": 0,
+                "expected_minutes_dynamic": 60,
+                "total_expected_minutes": 240,
+            },
+        }
+    ) == "full"
 
 
 def test_interrupted_lunch_run_never_publishes_a_ready_static_audit(tmp_path, monkeypatch):

@@ -27,12 +27,13 @@ def _compute_minute_quality(minute_audit: dict[str, object] | None) -> str:
     actual = int(seq_audit.get("actual_minutes", 0))
     missing = int(seq_audit.get("missing_minute_count", 0))
     breaks = int(seq_audit.get("continuity_break_count", 0))
-    expected = int(seq_audit.get("total_expected_minutes", 240))
+    expected = int(seq_audit.get("expected_minutes_dynamic") or seq_audit.get("total_expected_minutes", 240))
     if actual == 0:
         return "failed"
     if actual < expected * 0.20:
         return "static_only"
-    if actual >= max(expected * 0.83, 200) and missing <= 40 and breaks <= 3:
+    minimum_full = max(int(expected * 0.83), min(200, expected))
+    if actual >= minimum_full and missing <= 40 and breaks <= 3:
         return "full"
     return "partial"
 

@@ -386,6 +386,8 @@ def _run_minute_snapshot(
     run_ohlcv_path: Path | None = None
     if intraday_minutes_path and Path(intraday_minutes_path).exists():
         run_ohlcv_path = Path(intraday_minutes_path)
+    if intraday_minutes_audit is not None:
+        minute_audit["collection_audit"] = dict(intraday_minutes_audit)
     # 移除：elif 回退到 cache/intraday_1m.parquet（旧缓存混入风险）
 
     # post_close: 不采集盘中分钟，不追加快照，不构建序列审计
@@ -411,7 +413,13 @@ def _run_minute_snapshot(
         emit(f"minute append failed: {minute_audit['append_error']}")
         return minute_audit
     try:
-        seq = build_intraday_sequence(intraday_path)
+        if run_ohlcv_path:
+            seq = pd.read_parquet(run_ohlcv_path).rename(
+                columns={"timestamp": "time", "close": "price"}
+            )
+            seq = seq.sort_values(["code", "time"]).reset_index(drop=True)
+        else:
+            seq = build_intraday_sequence(intraday_path)
         if not seq.empty:
             target_date = observed_at.date()
             if "time" in seq.columns:
