@@ -134,6 +134,45 @@ def _providers(tmp_path: Path, calls: list[str] | None = None) -> dict[str, obje
     }
 
 
+@pytest.fixture(autouse=True)
+def _deterministic_workflow_providers(monkeypatch):
+    def collect_run_local_minutes(codes, _cache_root, run_dir, observed_at, _emit, session_phase):
+        if not session_phase.startswith("intraday"):
+            return None, None
+        minute_at = observed_at.replace(second=0, microsecond=0)
+        run_minutes_path = run_dir / "intraday_minutes.parquet"
+        pd.DataFrame(
+            [
+                {
+                    "code": code,
+                    "timestamp": minute_at.isoformat(),
+                    "open": 10.0,
+                    "high": 10.2,
+                    "low": 9.9,
+                    "close": 10.1,
+                    "volume": 100.0,
+                    "amount": 1010.0,
+                }
+                for code in codes
+            ]
+        ).to_parquet(run_minutes_path, index=False)
+        return (
+            {"status": "collected", "actual_minutes": 1, "codes_with_data": len(codes)},
+            str(run_minutes_path),
+        )
+
+    def collect_fixture_indices(_frame, _cache_root, observed_at, _emit):
+        return (
+            pd.DataFrame(
+                [{"code": "000001", "name": "上证指数", "date": observed_at.date().isoformat(), "close": 3000.0}]
+            ),
+            True,
+        )
+
+    monkeypatch.setattr(local_workflow, "_run_intraday_minutes_collection", collect_run_local_minutes)
+    monkeypatch.setattr("marketbase.pipeline.output._run_index_collection", collect_fixture_indices)
+
+
 def _serialized_paths(run_dir: Path) -> list[Path]:
     return [path for path in run_dir.iterdir() if path.suffix in {".json", ".csv", ".log"}]
 
