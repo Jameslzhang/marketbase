@@ -1809,6 +1809,36 @@ def test_validator_rejects_repeated_group_field_drift(
         full_market_t1._validate_decision_payload(payload)
 
 
+@pytest.mark.parametrize(
+    ("group_name", "field", "drifted_value"),
+    [
+        ("executable", "reason_codes", ["forged_reason"]),
+        ("watch", "execution_score", 999.0),
+        ("rejected", "price", 99.99),
+        ("shadow", "executability", {"status": "forged"}),
+    ],
+)
+def test_validator_rejects_any_repeated_group_payload_drift(
+    group_name: str, field: str, drifted_value: object
+):
+    payload = _valid_grouped_decision_payload_for_validation()
+    payload[group_name] = [{**payload[group_name][0], field: drifted_value}]
+
+    with pytest.raises(ValueError, match=rf"{group_name}.*audit_rows.*{field}"):
+        full_market_t1._validate_decision_payload(payload)
+
+
+@pytest.mark.parametrize("unsupported_decision", ["shadow_execute", "shadow_foo"])
+def test_validator_rejects_unknown_shadow_decisions(unsupported_decision: str):
+    payload = _valid_grouped_decision_payload_for_validation()
+    payload["audit_rows"][3]["decision"] = unsupported_decision
+    payload["audit_rows"][3]["dual_axis"]["decision"] = unsupported_decision
+    payload["shadow"] = [payload["audit_rows"][3]]
+
+    with pytest.raises(ValueError, match="unsupported decision classification"):
+        full_market_t1._validate_decision_payload(payload)
+
+
 def test_validator_rejects_group_membership_that_disagrees_with_audit_decisions():
     payload = _valid_grouped_decision_payload_for_validation()
     payload["watch"] = [payload["audit_rows"][2]]

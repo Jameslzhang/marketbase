@@ -920,25 +920,24 @@ def _validate_decision_payload(decision: Mapping[str, object]) -> None:
             row for row in audit_by_code.values() if row.get("decision") in {"reject", "data_insufficient"}
         ],
         "shadow": [
-            row for row in audit_by_code.values() if str(row.get("decision", "") or "").startswith("shadow_")
+            row
+            for row in audit_by_code.values()
+            if row.get("decision") in {"shadow_watch", "shadow_reject"}
         ],
     }
-    supported_decisions = {"executable_candidate", "conditional_watch", "reject", "data_insufficient"}
+    supported_decisions = {
+        "executable_candidate",
+        "conditional_watch",
+        "reject",
+        "data_insufficient",
+        "shadow_watch",
+        "shadow_reject",
+    }
     for row in audit_by_code.values():
         row_decision = str(row.get("decision", "") or "")
-        if row_decision not in supported_decisions and not row_decision.startswith("shadow_"):
+        if row_decision not in supported_decisions:
             raise ValueError(f"decision audit_rows has unsupported decision classification: {row_decision}")
 
-    consistency_fields = (
-        "decision",
-        "price_band",
-        "production_buyable",
-        "buyable",
-        "only_choose_one_eligible",
-        "entry_state",
-        "strategy_channel",
-        "dual_axis",
-    )
     for group_name, expected_rows in expected_group_rows.items():
         group_rows = [_native_mapping(row) for row in decision[group_name]]
         expected_codes = {str(row.get("code", "") or "") for row in expected_rows}
@@ -950,11 +949,16 @@ def _validate_decision_payload(decision: Mapping[str, object]) -> None:
         for group_row in group_rows:
             code = str(group_row.get("code", "") or "")
             audit_row = audit_by_code[code]
-            for field in consistency_fields:
-                if _to_native(group_row.get(field)) != _to_native(audit_row.get(field)):
-                    raise ValueError(
-                        f"decision {group_name} row must match audit_rows field {field} for code {code}"
-                    )
+            if group_row != audit_row:
+                differing_fields = sorted(
+                    field
+                    for field in group_row.keys() | audit_row.keys()
+                    if group_row.get(field) != audit_row.get(field)
+                )
+                raise ValueError(
+                    f"decision {group_name} row must match audit_rows field "
+                    f"{differing_fields[0]} for code {code}"
+                )
 
     executable_count = 0
     watch_count = 0
@@ -969,7 +973,7 @@ def _validate_decision_payload(decision: Mapping[str, object]) -> None:
             watch_count += 1
         elif row_decision in {"reject", "data_insufficient"}:
             rejected_count += 1
-        elif row_decision.startswith("shadow_"):
+        elif row_decision in {"shadow_watch", "shadow_reject"}:
             shadow_count += 1
     if _coerce_non_negative_int(summary.get("executable")) != executable_count:
         raise ValueError("decision summary.executable must match audit_rows")
