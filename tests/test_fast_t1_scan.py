@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 import pandas as pd
@@ -103,3 +104,133 @@ def test_query_realtime_quotes_bj_failure_does_not_hide_shsz():
     assert result["code"].tolist() == ["603986", "920001"]
     assert result.loc[result["code"] == "603986", "realtime_status"].iat[0] == "已获取"
     assert result.loc[result["code"] == "920001", "realtime_status"].iat[0] == "获取失败"
+
+
+def test_main_writes_candidate_union_with_scan_metadata(tmp_path: Path, monkeypatch):
+    fixed_now = fast_t1_scan.datetime(2026, 9, 3, 13, 45, 0, tzinfo=fast_t1_scan.CN_TZ)
+    html_path = tmp_path / "report.html"
+    observed_label = fixed_now.strftime("%Y-%m-%d %H:%M:%S")
+    captured: dict[str, object] = {}
+
+    class FixedDateTime(fast_t1_scan.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            if tz is None:
+                return fixed_now.replace(tzinfo=None)
+            return fixed_now.astimezone(tz)
+
+    def fake_snapshot(data_root: Path, observed_at, fresh_minutes: int):
+        return (
+            pd.DataFrame(
+                [
+                    {
+                        "code": "600000",
+                        "name": "浦发银行",
+                        "market": "sh",
+                        "price": 52.0,
+                        "change_pct": 2.0,
+                        "volume": 1_000_000,
+                        "amount": 80_000_000,
+                        "circ_mv": 4_000_000_000,
+                        "turnover_rate": 1.2,
+                        "industry": "银行",
+                        "concepts": "金融",
+                        "observed_at": observed_label,
+                        "is_st": False,
+                        "is_suspended": False,
+                        "delist_risk": False,
+                        "listed_days": 300,
+                    }
+                ]
+            ),
+            "fixture-snapshot",
+            0.1,
+            {},
+        )
+
+    def fake_indicators(df, daily_root: Path, today_str: str, workers: int, fast_dir: Path):
+        return pd.DataFrame(
+            [
+                {
+                    "code": "600000",
+                    "avg5d": 400_000.0,
+                    "ma5": 50.0,
+                    "ma10": 49.0,
+                    "ma20": 48.0,
+                    "ma60": 47.0,
+                    "rsi14": 55.0,
+                    "atr14": 1.0,
+                    "atr14_pct": 2.0,
+                    "boll_upper": 55.0,
+                    "boll_middle": 52.0,
+                    "boll_lower": 50.0,
+                    "boll_position": 0.5,
+                    "return_5d": 0.03,
+                    "return_10d": 0.04,
+                    "return_20d": 0.05,
+                    "upper_shadow_ratio": 0.1,
+                    "lower_shadow_ratio": 0.1,
+                    "input_rows": 250,
+                }
+            ]
+        )
+
+    def fake_apply_volume_ratio(df, avg5d, observed_at):
+        result = df.copy()
+        result["volume_ratio"] = 2.0
+        result["elapsed_trade_minutes"] = 135
+        return result
+
+    def fake_build_candidate_union(frame, *, trade_date, observed_at, market_rows, funnel):
+        captured["frame"] = frame.copy()
+        captured["trade_date"] = trade_date
+        captured["observed_at"] = observed_at
+        captured["market_rows"] = market_rows
+        captured["funnel"] = dict(funnel)
+        return {"trade_date": trade_date, "observed_at": observed_at, "candidates": frame.to_dict("records")}
+
+    def fake_write_candidate_union(payload, path: Path):
+        captured["payload"] = payload
+        captured["path"] = path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        return path
+
+    monkeypatch.setattr(fast_t1_scan, "datetime", FixedDateTime)
+    monkeypatch.setattr(fast_t1_scan, "get_snapshot", fake_snapshot)
+    monkeypatch.setattr(fast_t1_scan, "ensure_industry", lambda df, data_root: (df, "fixture-industry"))
+    monkeypatch.setattr(fast_t1_scan, "load_or_compute_indicators", fake_indicators)
+    monkeypatch.setattr(fast_t1_scan, "apply_volume_ratio", fake_apply_volume_ratio)
+    monkeypatch.setattr(fast_t1_scan, "official_daily_cache_root", lambda data_root: tmp_path / "daily")
+    monkeypatch.setattr(fast_t1_scan, "render_html", lambda ctx: "<html></html>")
+    monkeypatch.setattr(fast_t1_scan, "build_candidate_union", fake_build_candidate_union, raising=False)
+    monkeypatch.setattr(fast_t1_scan, "write_candidate_union", fake_write_candidate_union, raising=False)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "fast_t1_scan.py",
+            "--data-root",
+            str(tmp_path),
+            "--fresh",
+            "0",
+            "--html",
+            str(html_path),
+        ],
+    )
+
+    rc = fast_t1_scan.main()
+
+    assert rc == 0
+    assert captured["trade_date"] == "2026-09-03"
+    assert captured["observed_at"] == "2026-09-03T13:45:00+08:00"
+    assert captured["market_rows"] == 1
+    assert captured["funnel"] == {
+        "initial": 1,
+        "after_hard": 1,
+        "candidates": 1,
+        "official": 1,
+        "watch": 0,
+    }
+    assert captured["path"] == tmp_path / "cache" / "fast" / "candidate_union_20260903_1345.json"
+    assert len(captured["frame"]) == 1

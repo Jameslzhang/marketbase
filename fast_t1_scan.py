@@ -60,6 +60,7 @@ from marketbase.indicators import compute_daily_indicators  # noqa: E402
 from marketbase.volume_ratio import elapsed_trade_minutes  # noqa: E402
 from marketbase.snapshot import fetch_cn_snapshot  # noqa: E402
 from marketbase.realtime_window import fetch_tencent_quotes  # noqa: E402
+from strategies.full_market_t1 import build_candidate_union, write_candidate_union  # noqa: E402
 
 REPORT_DIR = MB_ROOT / "reports"  # HTML 报告默认输出目录（可用 --html 覆盖）
 
@@ -600,6 +601,13 @@ footer{{color:#999;font-size:12px;margin-top:28px}}
 </div></body></html>"""
 
 
+def _snapshot_observed_iso8601(value: object) -> str:
+    observed = pd.to_datetime(value)
+    if observed.tzinfo is None:
+        observed = observed.tz_localize(CN_TZ)
+    return observed.isoformat()
+
+
 # ────────────────────────── 主流程 ──────────────────────────
 
 def main() -> int:
@@ -762,6 +770,27 @@ def main() -> int:
     out_df["opportunity_tags"] = candidates["opportunity_tags"].apply(lambda x: "|".join(x))
     out_df["tail_risk_tags"] = candidates["tail_risk_tags"].apply(lambda x: "|".join(x))
     out_df.to_csv(csv_path, index=False, encoding="utf-8-sig")
+    funnel_counts = {
+        "initial": initial,
+        "after_hard": after_hard,
+        "candidates": len(candidates),
+        "official": len(official),
+        "watch": len(watch),
+    }
+    candidate_observed_at = _snapshot_observed_iso8601(snap_obs or observed_at)
+    candidate_dt = pd.to_datetime(candidate_observed_at)
+    candidate_union_path = fast_dir / (
+        f"candidate_union_{candidate_dt.strftime('%Y%m%d')}_{candidate_dt.strftime('%H%M')}.json"
+    )
+    candidate_union = build_candidate_union(
+        out_df,
+        trade_date=today_str,
+        observed_at=candidate_observed_at,
+        market_rows=initial,
+        funnel=funnel_counts,
+    )
+    write_candidate_union(candidate_union, candidate_union_path)
+    log(f"候选并集: {candidate_union_path}")
 
     total_sec = time.perf_counter() - t_start
     html_path = args.html or (REPORT_DIR / f"全盘T1策略扫描报告_{observed_at.strftime('%Y%m%d')}_{phase}.html")
@@ -798,6 +827,7 @@ def main() -> int:
               f"买区{row['buy_low']:.2f}-{row['buy_high']:.2f} | 保护{row['protect']:.2f} | "
               f"禁追{row['chase_line']:.2f} | {row.get('industry', '')}({row['industry_chg']:+.1f}%)")
     print(f"\n结果 CSV: {csv_path}")
+    print(f"候选并集: {candidate_union_path}")
     print(f"HTML 报告: {html_path}")
     return 0
 
