@@ -275,6 +275,47 @@ def test_build_minute_evidence_requires_six_completed_rows_to_confirm():
     assert evidence["last_completed_minute"] == "13:43"
 
 
+def test_candidate_data_status_preserves_missing_minute_reasons_from_minute_evidence():
+    minute = build_minute_evidence(
+        pd.DataFrame(),
+        code="1234",
+        observed_at=datetime(2026, 9, 3, 13, 45, 30, tzinfo=TZ_SHANGHAI),
+    )
+
+    status, reasons = candidate_data_status(
+        _base_snapshot(),
+        _base_daily(),
+        _base_industry(),
+        minute,
+    )
+
+    assert status == "data_insufficient"
+    assert reasons[:2] == ["minute_missing", "vwap_missing"]
+    assert reasons.count("minute_missing") == 1
+    assert reasons.count("vwap_missing") == 1
+
+
+def test_candidate_data_status_only_merges_data_readiness_reasons_from_minute_payload():
+    status, reasons = candidate_data_status(
+        _base_snapshot(),
+        _base_daily(),
+        _base_industry(),
+        {
+            "vwap": None,
+            "reason_codes": [
+                "activity_contracting",
+                "minute_missing",
+                "vwap_missing",
+                "vwap_missing",
+                "hold_below_vwap",
+            ],
+        },
+    )
+
+    assert status == "data_insufficient"
+    assert reasons == ["minute_missing", "vwap_missing"]
+
+
 def test_compute_execution_score_uses_versioned_formula_and_penalty():
     evidence = {
         "dist_vwap_pct": 3.0,

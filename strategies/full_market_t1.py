@@ -22,6 +22,7 @@ REQUIRED_EXECUTION_FIELDS = (
     "dist_high_pct",
     "amplitude_pct",
 )
+READINESS_MINUTE_REASONS = ("minute_missing", "vwap_missing")
 
 
 @dataclass(frozen=True)
@@ -82,6 +83,11 @@ def _normalize_code(code: str) -> str:
 
 def _clamp(value: float, lower: float, upper: float) -> float:
     return max(lower, min(upper, value))
+
+
+def _append_unique(reasons: list[str], reason: str) -> None:
+    if reason not in reasons:
+        reasons.append(reason)
 
 
 def _normalize_time_label(value) -> str | None:
@@ -238,17 +244,21 @@ def candidate_data_status(
 ) -> tuple[str, list[str]]:
     reasons: list[str] = []
     if not snapshot:
-        reasons.append("snapshot_missing")
+        _append_unique(reasons, "snapshot_missing")
     if not daily:
-        reasons.append("daily_missing")
+        _append_unique(reasons, "daily_missing")
     if not industry:
-        reasons.append("industry_missing")
+        _append_unique(reasons, "industry_missing")
     if not minute:
-        reasons.append("minute_missing")
+        _append_unique(reasons, "minute_missing")
     else:
+        minute_reason_codes = minute.get("reason_codes", [])
+        for reason in READINESS_MINUTE_REASONS:
+            if reason in minute_reason_codes:
+                _append_unique(reasons, reason)
         vwap = minute.get("vwap")
         if vwap is None and minute.get("full_day_vwap") is None:
-            reasons.append("vwap_missing")
+            _append_unique(reasons, "vwap_missing")
     if reasons:
         return "data_insufficient", reasons
     return "ready", []
