@@ -234,3 +234,4 @@ def test_main_writes_candidate_union_with_scan_metadata(tmp_path: Path, monkeypa
     }
     assert captured["path"] == tmp_path / "cache" / "fast" / "candidate_union_20260903_1345.json"
     assert len(captured["frame"]) == 1
+    assert {"ma10", "ma20", "return_10d", "elapsed_trade_minutes"}.issubset(captured["frame"].columns)

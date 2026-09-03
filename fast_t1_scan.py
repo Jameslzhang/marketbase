@@ -783,7 +783,7 @@ def main() -> int:
         f"candidate_union_{candidate_dt.strftime('%Y%m%d')}_{candidate_dt.strftime('%H%M')}.json"
     )
     candidate_union = build_candidate_union(
-        out_df,
+        candidates.copy(),
         trade_date=today_str,
         observed_at=candidate_observed_at,
         market_rows=initial,
