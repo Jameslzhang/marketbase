@@ -47,7 +47,7 @@ def _base_daily(**overrides):
 
 
 def _base_industry(**overrides):
-    payload = {"industry": "bank", "advance_ratio": 0.62}
+    payload = {"industry": "bank", "advance_ratio": 0.62, "industry_sync": True}
     payload.update(overrides)
     return payload
 
@@ -502,6 +502,36 @@ def test_single_failed_hard_gate_vetoes_buyable(field_overrides, objective_kwarg
     assert expected_reason in row["reason_codes"]
 
 
+@pytest.mark.parametrize(
+    ("executability_overrides", "expected_reason"),
+    [
+        ({"buy_low": None}, "buy_zone_missing"),
+        ({"buy_high": None}, "buy_zone_missing"),
+        ({"no_chase_price": None, "chase_line": None}, "no_chase_missing"),
+        ({"protection_constructible": None}, "protection_constructibility_missing"),
+        ({"is_untradable": None}, "executability_status_missing"),
+        ({"fee_adjusted_rr": None}, "fee_adjusted_rr_missing"),
+    ],
+)
+def test_missing_executability_fields_fail_closed(executability_overrides, expected_reason):
+    base = _base_executability()
+    if "no_chase_price" not in executability_overrides and expected_reason != "no_chase_missing":
+        base["no_chase_price"] = 54.5
+    base.update(executability_overrides)
+
+    row = full_market_t1.evaluate_candidate(
+        _candidate(),
+        _objective(executability_overrides=base),
+        _market(),
+    )
+
+    assert row["decision"] == "data_insufficient"
+    assert row["production_buyable"] is False
+    assert row["buyable"] is False
+    assert row["only_choose_one_eligible"] is False
+    assert expected_reason in row["reason_codes"]
+
+
 def test_missing_data_produces_data_insufficient_without_exception():
     row = full_market_t1.evaluate_candidate(
         _candidate(),
@@ -519,6 +549,38 @@ def test_missing_data_produces_data_insufficient_without_exception():
     assert row["decision"] == "data_insufficient"
     assert row["buyable"] is False
     assert row["reason_codes"] == ["industry_missing", "minute_missing", "vwap_missing"]
+
+
+@pytest.mark.parametrize(
+    ("industry_value", "expected_reason", "expected_decision"),
+    [
+        ({"industry": "bank", "advance_ratio": 0.62}, "industry_sync_missing", "data_insufficient"),
+        ({"industry_sync": None}, "industry_sync_missing", "data_insufficient"),
+        ({"industry_sync": False}, "industry_sync_pending", "conditional_watch"),
+    ],
+)
+def test_industry_sync_requires_explicit_boolean_evidence(industry_value, expected_reason, expected_decision):
+    row = full_market_t1.evaluate_candidate(
+        _candidate(),
+        CandidateObjectiveData(
+            snapshot=_base_snapshot(),
+            daily=_base_daily(),
+            industry=industry_value,
+            minute=_base_minute(),
+            minute_evidence={
+                "confirmed": True,
+                "vwap": 10.05,
+                "afternoon_vwap": 10.08,
+                "named_pivot": 10.02,
+                "reason_codes": [],
+            },
+            executability=_base_executability(),
+        ),
+        _market(),
+    )
+
+    assert row["decision"] == expected_decision
+    assert expected_reason in row["reason_codes"]
 
 
 def test_shadow_candidate_can_never_be_selected():
@@ -575,14 +637,20 @@ def test_build_full_market_decision_groups_are_mutually_exclusive_and_executable
     assert decision["global_status"] == "decision_ready"
     assert decision["only_choose_one"] == "600001"
     assert decision["summary"] == {
-        "executable": 3,
+        "executable": 4,
+        "executable_exposed": 3,
         "watch": 1,
-        "rejected": 1,
+        "rejected": 0,
         "shadow_count": 1,
         "evaluated": 6,
     }
     assert [row["code"] for row in decision["executable"]] == ["600001", "600002", "600003"]
     assert [row["code"] for row in decision["watch"]] == ["600005"]
     assert [row["code"] for row in decision["shadow"]] == ["000001"]
-    assert [row["code"] for row in decision["rejected"]] == ["600004"]
-    assert "execution_group_capped" in decision["rejected"][0]["reason_codes"]
+    assert decision["rejected"] == []
+    assert len(decision["audit_rows"]) == 6
+    fourth = next(row for row in decision["audit_rows"] if row["code"] == "600004")
+    assert fourth["decision"] == "executable_candidate"
+    assert fourth["buyable"] is True
+    assert fourth["production_buyable"] is True
+    assert fourth["only_choose_one_eligible"] is True

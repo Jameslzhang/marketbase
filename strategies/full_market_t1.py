@@ -395,11 +395,14 @@ def _build_execution_evidence(objective: CandidateObjectiveData) -> tuple[dict[s
     return evidence, []
 
 
-def _industry_sync(industry: Mapping | None) -> bool:
+def _industry_sync(industry: Mapping | None) -> bool | None:
     industry_mapping = _native_mapping(industry)
     if "industry_sync" in industry_mapping:
-        return bool(industry_mapping.get("industry_sync"))
-    return _coerce_float(industry_mapping.get("advance_ratio")) is not None and float(industry_mapping.get("advance_ratio", 0.0)) >= 0.5
+        value = industry_mapping.get("industry_sync")
+        if isinstance(value, bool):
+            return value
+        return None
+    return None
 
 
 def _watch_reason(reason: str) -> bool:
@@ -423,6 +426,42 @@ def _sort_key(row: Mapping) -> tuple[float, float, float, float]:
         float(row.get("fee_adjusted_rr") or 0.0),
         float(row.get("amount") or 0.0),
     )
+
+
+def _validate_executability_fields(executability: Mapping) -> tuple[dict[str, object], list[str]]:
+    normalized = dict(executability)
+    reasons: list[str] = []
+
+    buy_low = _coerce_float(normalized.get("buy_low"))
+    buy_high = _coerce_float(normalized.get("buy_high"))
+    if buy_low is None or buy_high is None:
+        _append_unique(reasons, "buy_zone_missing")
+
+    no_chase_price = _coerce_float(normalized.get("no_chase_price"))
+    if no_chase_price is None:
+        no_chase_price = _coerce_float(normalized.get("chase_line"))
+    if no_chase_price is None:
+        _append_unique(reasons, "no_chase_missing")
+
+    protection_constructible = normalized.get("protection_constructible")
+    if not isinstance(protection_constructible, bool):
+        _append_unique(reasons, "protection_constructibility_missing")
+
+    is_untradable = normalized.get("is_untradable")
+    if not isinstance(is_untradable, bool):
+        _append_unique(reasons, "executability_status_missing")
+
+    fee_adjusted_rr = _coerce_float(normalized.get("fee_adjusted_rr"))
+    if fee_adjusted_rr is None:
+        _append_unique(reasons, "fee_adjusted_rr_missing")
+
+    normalized["buy_low"] = buy_low
+    normalized["buy_high"] = buy_high
+    normalized["no_chase_price"] = no_chase_price
+    normalized["protection_constructible"] = protection_constructible if isinstance(protection_constructible, bool) else None
+    normalized["is_untradable"] = is_untradable if isinstance(is_untradable, bool) else None
+    normalized["fee_adjusted_rr"] = fee_adjusted_rr
+    return normalized, reasons
 
 
 def evaluate_candidate(candidate: Mapping, objective: CandidateObjectiveData, market: Mapping) -> dict[str, object]:
@@ -459,14 +498,23 @@ def evaluate_candidate(candidate: Mapping, objective: CandidateObjectiveData, ma
     else:
         execution_score = compute_execution_score(execution_evidence)
 
-    buy_low = _coerce_float(executability.get("buy_low"))
-    buy_high = _coerce_float(executability.get("buy_high"))
-    no_chase_price = _coerce_float(executability.get("no_chase_price"))
-    if no_chase_price is None:
-        no_chase_price = _coerce_float(executability.get("chase_line"))
-    protection_constructible = executability.get("protection_constructible") is True
-    is_untradable = executability.get("is_untradable") is True
-    fee_adjusted_rr = _coerce_float(executability.get("fee_adjusted_rr"))
+    industry_sync = _industry_sync(industry)
+    if objective_row.industry is not None and industry_sync is None:
+        candidate_status = "data_insufficient"
+        _append_unique(reason_codes, "industry_sync_missing")
+
+    executability, executability_missing_reasons = _validate_executability_fields(executability)
+    if executability_missing_reasons:
+        candidate_status = "data_insufficient"
+        for reason in executability_missing_reasons:
+            _append_unique(reason_codes, reason)
+
+    buy_low = executability.get("buy_low")
+    buy_high = executability.get("buy_high")
+    no_chase_price = executability.get("no_chase_price")
+    protection_constructible = executability.get("protection_constructible")
+    is_untradable = executability.get("is_untradable")
+    fee_adjusted_rr = executability.get("fee_adjusted_rr")
     market_advance_ratio = _coerce_float(market_row.get("advance_ratio")) or 0.0
 
     row = {
@@ -517,13 +565,13 @@ def evaluate_candidate(candidate: Mapping, objective: CandidateObjectiveData, ma
         gate_failures.append("buy_zone_not_ready")
     if no_chase_price is None or price > no_chase_price:
         gate_failures.append("above_no_chase_price")
-    if not _industry_sync(industry):
+    if industry_sync is False:
         gate_failures.append("industry_sync_pending")
     if market_advance_ratio < 0.35:
         gate_failures.append("market_breadth_below_threshold")
-    if not protection_constructible:
+    if protection_constructible is False:
         gate_failures.append("protection_not_constructible")
-    if is_untradable:
+    if is_untradable is True:
         gate_failures.append("candidate_untradable")
     if fee_adjusted_rr is None or fee_adjusted_rr < 1.5:
         gate_failures.append("fee_adjusted_rr_below_threshold")
@@ -589,7 +637,7 @@ def build_full_market_decision(candidate_union: Mapping, handoff: Mapping, *, de
         row = evaluate_candidate(candidate_row, objective, market)
         evaluated.append(row)
 
-    executable = sorted(
+    executable_all = sorted(
         [row for row in evaluated if row.get("decision") == "executable_candidate"],
         key=_sort_key,
         reverse=True,
@@ -597,18 +645,9 @@ def build_full_market_decision(candidate_union: Mapping, handoff: Mapping, *, de
     watch = [row for row in evaluated if row.get("decision") == "conditional_watch"]
     shadow = [row for row in evaluated if str(row.get("decision", "")).startswith("shadow_")]
     rejected = [row for row in evaluated if row.get("decision") in {"reject", "data_insufficient"}]
+    executable = executable_all[:3]
 
     only_choose_one_code = choose_one(evaluated)
-    if len(executable) > 3:
-        for overflow in executable[3:]:
-            overflow_row = {**overflow}
-            overflow_row["decision"] = "reject"
-            overflow_row["production_buyable"] = False
-            overflow_row["buyable"] = False
-            overflow_row["only_choose_one_eligible"] = False
-            overflow_row["reason_codes"] = [*overflow.get("reason_codes", []), "execution_group_capped"]
-            rejected.append(overflow_row)
-        executable = executable[:3]
 
     global_status = "data_not_ready" if handoff_row.get("critical_ready") is False or market.get("critical_ready") is False else "decision_ready"
     return {
@@ -620,7 +659,8 @@ def build_full_market_decision(candidate_union: Mapping, handoff: Mapping, *, de
         "global_status": global_status,
         "only_choose_one": only_choose_one_code,
         "summary": {
-            "executable": len(executable),
+            "executable": len(executable_all),
+            "executable_exposed": len(executable),
             "watch": len(watch),
             "rejected": len(rejected),
             "shadow_count": len(shadow),
@@ -630,4 +670,5 @@ def build_full_market_decision(candidate_union: Mapping, handoff: Mapping, *, de
         "watch": watch,
         "rejected": rejected,
         "shadow": shadow,
+        "audit_rows": evaluated,
     }
