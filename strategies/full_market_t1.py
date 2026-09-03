@@ -874,6 +874,88 @@ def _validate_decision_payload(decision: Mapping[str, object]) -> None:
     audit_rows = decision.get("audit_rows")
     if not isinstance(audit_rows, list):
         raise ValueError("decision audit_rows group must be a list")
+    audit_by_code: dict[str, dict[str, object]] = {}
+    for row in audit_rows:
+        mapping = _native_mapping(row)
+        code = str(mapping.get("code", "") or "")
+        if code in audit_by_code:
+            raise ValueError("decision audit_rows must have a unique code per row")
+        audit_by_code[code] = mapping
+
+    only_choose_one = decision.get("only_choose_one")
+    if global_status == "data_not_ready":
+        if decision.get("executable"):
+            raise ValueError("data_not_ready decision executable group must be empty")
+        if _coerce_non_negative_int(summary.get("executable")) != 0:
+            raise ValueError("data_not_ready decision summary.executable must be zero")
+        if _coerce_non_negative_int(summary.get("executable_exposed")) != 0:
+            raise ValueError("data_not_ready decision summary.executable_exposed must be zero")
+        if only_choose_one is not None:
+            raise ValueError("data_not_ready decision must keep only_choose_one null")
+        for row in audit_rows:
+            mapping = _native_mapping(row)
+            if mapping.get("entry_state") == EntryState.ENTRY_ACTIVE.value:
+                raise ValueError("data_not_ready audit row cannot be entry_active")
+            trajectory = _to_native(mapping.get("entry_state_trajectory"))
+            if isinstance(trajectory, list):
+                for transition in trajectory:
+                    transition_mapping = _native_mapping(transition)
+                    if EntryState.ENTRY_ACTIVE.value in {
+                        transition_mapping.get("from_state"),
+                        transition_mapping.get("to_state"),
+                    }:
+                        raise ValueError("data_not_ready audit row trajectory cannot contain entry_active")
+            for flag in ("production_buyable", "buyable", "only_choose_one_eligible"):
+                if mapping.get(flag) is True:
+                    raise ValueError(f"data_not_ready audit row cannot set {flag}=true")
+
+    expected_group_rows = {
+        "executable": sorted(
+            [row for row in audit_by_code.values() if row.get("decision") == "executable_candidate"],
+            key=_sort_key,
+            reverse=True,
+        )[:3],
+        "watch": [row for row in audit_by_code.values() if row.get("decision") == "conditional_watch"],
+        "rejected": [
+            row for row in audit_by_code.values() if row.get("decision") in {"reject", "data_insufficient"}
+        ],
+        "shadow": [
+            row for row in audit_by_code.values() if str(row.get("decision", "") or "").startswith("shadow_")
+        ],
+    }
+    supported_decisions = {"executable_candidate", "conditional_watch", "reject", "data_insufficient"}
+    for row in audit_by_code.values():
+        row_decision = str(row.get("decision", "") or "")
+        if row_decision not in supported_decisions and not row_decision.startswith("shadow_"):
+            raise ValueError(f"decision audit_rows has unsupported decision classification: {row_decision}")
+
+    consistency_fields = (
+        "decision",
+        "price_band",
+        "production_buyable",
+        "buyable",
+        "only_choose_one_eligible",
+        "entry_state",
+        "strategy_channel",
+        "dual_axis",
+    )
+    for group_name, expected_rows in expected_group_rows.items():
+        group_rows = [_native_mapping(row) for row in decision[group_name]]
+        expected_codes = {str(row.get("code", "") or "") for row in expected_rows}
+        actual_codes = [str(row.get("code", "") or "") for row in group_rows]
+        if len(actual_codes) != len(set(actual_codes)) or set(actual_codes) != expected_codes:
+            raise ValueError(
+                f"decision {group_name} group must match audit_rows decision classification"
+            )
+        for group_row in group_rows:
+            code = str(group_row.get("code", "") or "")
+            audit_row = audit_by_code[code]
+            for field in consistency_fields:
+                if _to_native(group_row.get(field)) != _to_native(audit_row.get(field)):
+                    raise ValueError(
+                        f"decision {group_name} row must match audit_rows field {field} for code {code}"
+                    )
+
     executable_count = 0
     watch_count = 0
     rejected_count = 0
@@ -901,29 +983,6 @@ def _validate_decision_payload(decision: Mapping[str, object]) -> None:
         raise ValueError("decision summary.shadow_count must match shadow group")
     if _coerce_non_negative_int(summary.get("evaluated")) != len(audit_rows):
         raise ValueError("decision summary.evaluated must match audit_rows")
-    if group_lengths["executable"] > executable_count:
-        raise ValueError("decision executable group cannot exceed executable audit rows")
-
-    only_choose_one = decision.get("only_choose_one")
-    if decision.get("global_status") == "data_not_ready":
-        if only_choose_one is not None:
-            raise ValueError("data_not_ready decision must keep only_choose_one null")
-        for row in audit_rows:
-            mapping = _native_mapping(row)
-            if mapping.get("entry_state") == EntryState.ENTRY_ACTIVE.value:
-                raise ValueError("data_not_ready audit row cannot be entry_active")
-            trajectory = _to_native(mapping.get("entry_state_trajectory"))
-            if isinstance(trajectory, list):
-                for transition in trajectory:
-                    transition_mapping = _native_mapping(transition)
-                    if EntryState.ENTRY_ACTIVE.value in {
-                        transition_mapping.get("from_state"),
-                        transition_mapping.get("to_state"),
-                    }:
-                        raise ValueError("data_not_ready audit row trajectory cannot contain entry_active")
-            for flag in ("production_buyable", "buyable", "only_choose_one_eligible"):
-                if mapping.get(flag) is True:
-                    raise ValueError(f"data_not_ready audit row cannot set {flag}=true")
     if only_choose_one is not None:
         code = str(only_choose_one)
         if len(code) != 6 or not code.isdigit():

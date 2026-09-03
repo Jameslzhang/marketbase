@@ -1706,6 +1706,130 @@ def test_validator_rejects_actions_in_data_not_ready_payload(mutation: str):
         full_market_t1._validate_decision_payload(payload)
 
 
+def _valid_grouped_decision_payload_for_validation() -> dict[str, object]:
+    payload = _valid_decision_payload_for_validation()
+    rows = [
+        payload["audit_rows"][0],
+        {
+            **payload["audit_rows"][1],
+            "code": "600002",
+            "decision": "conditional_watch",
+            "reason_codes": ["minute_confirmation_missing"],
+        },
+        {
+            **payload["audit_rows"][1],
+            "code": "600003",
+            "decision": "reject",
+        },
+        {
+            **payload["audit_rows"][1],
+            "code": "600004",
+            "price_band": "shadow_40_50",
+            "decision": "shadow_watch",
+            "reason_codes": ["shadow_price_band"],
+        },
+    ]
+    for index, row in enumerate(rows):
+        row.update(
+            {
+                "entry_state": "confirmed_candidate" if index == 0 else "deep_watch",
+                "strategy_channel": "trend_recovery",
+                "dual_axis": {"status": "evaluated", "decision": row["decision"]},
+            }
+        )
+    payload["audit_rows"] = rows
+    payload["executable"] = [rows[0]]
+    payload["watch"] = [rows[1]]
+    payload["rejected"] = [rows[2]]
+    payload["shadow"] = [rows[3]]
+    payload["summary"] = {
+        "executable": 1,
+        "executable_exposed": 1,
+        "watch": 1,
+        "rejected": 1,
+        "shadow_count": 1,
+        "evaluated": 4,
+    }
+    return payload
+
+
+def test_validator_rejects_forged_executable_clone_in_data_not_ready_payload():
+    payload = _valid_decision_payload_for_validation()
+    payload["global_status"] = "data_not_ready"
+    payload["only_choose_one"] = None
+    audit_row = payload["audit_rows"][0]
+    audit_row.update(
+        {
+            "production_buyable": False,
+            "buyable": False,
+            "only_choose_one_eligible": False,
+        }
+    )
+    forged = {**audit_row, "production_buyable": True, "buyable": True, "only_choose_one_eligible": True}
+    payload["executable"] = [forged]
+
+    with pytest.raises(ValueError, match="data_not_ready.*executable"):
+        full_market_t1._validate_decision_payload(payload)
+
+
+def test_validator_requires_zero_executable_summary_in_data_not_ready_payload():
+    payload = _valid_decision_payload_for_validation()
+    payload["global_status"] = "data_not_ready"
+    payload["only_choose_one"] = None
+    payload["audit_rows"][0].update(
+        {
+            "production_buyable": False,
+            "buyable": False,
+            "only_choose_one_eligible": False,
+        }
+    )
+    payload["executable"] = []
+    payload["summary"]["executable_exposed"] = 0
+
+    with pytest.raises(ValueError, match="data_not_ready.*summary.executable"):
+        full_market_t1._validate_decision_payload(payload)
+
+
+@pytest.mark.parametrize(
+    ("group_name", "field", "drifted_value"),
+    [
+        ("executable", "production_buyable", False),
+        ("watch", "entry_state", "entry_active"),
+        ("rejected", "dual_axis", {"status": "evaluated", "decision": "conditional_watch"}),
+        ("shadow", "strategy_channel", "high_momentum"),
+    ],
+)
+def test_validator_rejects_repeated_group_field_drift(
+    group_name: str, field: str, drifted_value: object
+):
+    payload = _valid_grouped_decision_payload_for_validation()
+    payload[group_name] = [{**payload[group_name][0], field: drifted_value}]
+
+    with pytest.raises(ValueError, match=rf"{group_name}.*audit_rows.*{field}"):
+        full_market_t1._validate_decision_payload(payload)
+
+
+def test_validator_rejects_group_membership_that_disagrees_with_audit_decisions():
+    payload = _valid_grouped_decision_payload_for_validation()
+    payload["watch"] = [payload["audit_rows"][2]]
+    payload["rejected"] = [payload["audit_rows"][1]]
+
+    with pytest.raises(ValueError, match="watch.*decision classification"):
+        full_market_t1._validate_decision_payload(payload)
+
+
+def test_validator_rejects_duplicate_audit_codes():
+    payload = _valid_grouped_decision_payload_for_validation()
+    payload["audit_rows"][1]["code"] = payload["audit_rows"][0]["code"]
+
+    with pytest.raises(ValueError, match="audit_rows.*unique code"):
+        full_market_t1._validate_decision_payload(payload)
+
+
+def test_validator_accepts_consistent_executable_watch_rejected_and_shadow_groups():
+    full_market_t1._validate_decision_payload(_valid_grouped_decision_payload_for_validation())
+
+
 @pytest.mark.parametrize("only_choose_one", ["999999", "600002"])
 def test_orchestrate_full_market_t1_rejects_invalid_only_choose_one_codes(
     tmp_path: Path,
