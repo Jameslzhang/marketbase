@@ -47,6 +47,14 @@ def _saved_replay_expected_summary() -> dict[str, object]:
     return json.loads((_saved_replay_fixture_dir() / "expected_summary.json").read_text(encoding="utf-8"))
 
 
+def _saved_replay_manifest_key() -> str:
+    return f"data/daily_runs/{SAVED_REPLAY_TRADE_DATE}/134656_intraday_1300_objective_data/manifest.json"
+
+
+def _saved_replay_data_audit_key() -> str:
+    return f"data/daily_runs/{SAVED_REPLAY_TRADE_DATE}/134656_intraday_1300_objective_data/data_audit.json"
+
+
 def _saved_replay_source_paths(repo_root: Path) -> dict[str, Path]:
     run_dir = repo_root / "data" / "daily_runs" / SAVED_REPLAY_TRADE_DATE / "134656_intraday_1300_objective_data"
     return {
@@ -98,9 +106,18 @@ def _verify_saved_replay_source_hashes(repo_root: Path) -> dict[str, Path]:
     return source_paths
 
 
+def _saved_replay_manifest(source_paths: dict[str, Path]) -> dict[str, object]:
+    return json.loads(source_paths[_saved_replay_manifest_key()].read_text(encoding="utf-8"))
+
+
+def _saved_replay_data_audit(source_paths: dict[str, Path]) -> dict[str, object]:
+    return json.loads(source_paths[_saved_replay_data_audit_key()].read_text(encoding="utf-8"))
+
+
 def _replay_saved_full_market_t1_inputs(tmp_path: Path) -> tuple[dict[str, object], dict[str, Path]]:
     repo_root = _saved_replay_repo_root()
     source_paths = _verify_saved_replay_source_hashes(repo_root)
+    saved_manifest = _saved_replay_manifest(source_paths)
     frame = pd.read_csv(source_paths["data/cache/fast/scan_result_20260903_1353.csv"])
     candidate_union = build_candidate_union(
         frame,
@@ -117,7 +134,7 @@ def _replay_saved_full_market_t1_inputs(tmp_path: Path) -> tuple[dict[str, objec
     candidate_union_path.write_text(json.dumps(candidate_union, ensure_ascii=False, indent=2), encoding="utf-8")
     latest_payload = {
         "schema_version": 1,
-        "generated_at": SAVED_REPLAY_GENERATED_AT,
+        "generated_at": saved_manifest["generated_at"],
         "market_snapshot_path": str(source_paths[f"data/daily_runs/{SAVED_REPLAY_TRADE_DATE}/134656_intraday_1300_objective_data/market_snapshot.json"].resolve()),
         "daily_indicators_path": str(source_paths[f"data/daily_runs/{SAVED_REPLAY_TRADE_DATE}/134656_intraday_1300_objective_data/daily_indicators.csv"].resolve()),
         "classification_map_path": str(source_paths[f"data/daily_runs/{SAVED_REPLAY_TRADE_DATE}/134656_intraday_1300_objective_data/classification_map.csv"].resolve()),
@@ -1570,15 +1587,17 @@ def test_orchestrate_full_market_t1_replays_saved_2026_09_03_inputs(tmp_path: Pa
     expected_summary = _saved_replay_expected_summary()
     decision, source_paths = _replay_saved_full_market_t1_inputs(tmp_path)
 
-    data_audit = json.loads(
-        source_paths[f"data/daily_runs/{SAVED_REPLAY_TRADE_DATE}/134656_intraday_1300_objective_data/data_audit.json"].read_text(
-            encoding="utf-8"
-        )
-    )
+    saved_manifest = _saved_replay_manifest(source_paths)
+    data_audit = _saved_replay_data_audit(source_paths)
+    replay_manifest = json.loads((tmp_path / "latest_codex_input.json").read_text(encoding="utf-8"))
     assert decision["trade_date"] == expected_summary["trade_date"]
     assert decision["global_status"] == expected_summary["global_status"]
     assert decision["only_choose_one"] == expected_summary["only_choose_one"]
+    assert saved_manifest["generated_at"] == expected_summary["manifest_generated_at"]
+    assert replay_manifest["generated_at"] == expected_summary["manifest_generated_at"]
     assert data_audit["quality_status"] == "partial"
+    assert data_audit["quality_reason_codes"] == expected_summary["quality_reason_codes"]
+    assert "classification_coverage_insufficient" in data_audit["quality_reason_codes"]
     assert decision["summary"] == {
         "executable": expected_summary["executable"],
         "executable_exposed": expected_summary["executable_exposed"],

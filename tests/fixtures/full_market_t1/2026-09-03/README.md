@@ -7,6 +7,7 @@ This fixture freezes the real full-market T+1 replay inputs used by Task 6 witho
 - Candidate scan source: `data/cache/fast/scan_result_20260903_1353.csv`
 - Candidate union `observed_at`: `2026-09-03T13:53:00+08:00`
 - Saved run manifest `generated_at`: `2026-09-03T13:46:56.819085+08:00`
+- Frozen `data_audit.quality_reason_codes`: `["classification_coverage_insufficient"]`
 - Contract interpretation: the candidate scan was observed about 6 minutes after the saved run manifest generation time, which stays within the 20-minute handoff contract enforced by `strategies.full_market_t1._validate_contract`.
 - Replay decision time: `2026-09-03T13:53:00+08:00`
 - Replay test: `.venv\Scripts\python.exe -m pytest tests/test_full_market_t1.py -k replays_saved_2026_09_03_inputs -q`

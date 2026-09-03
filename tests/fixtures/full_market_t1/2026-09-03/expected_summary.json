@@ -2,6 +2,7 @@
   "trade_date": "2026-09-03",
   "market_rows": 5546,
   "only_choose_one": null,
+  "manifest_generated_at": "2026-09-03T13:46:56.819085+08:00",
   "global_status": "decision_ready",
   "executable": 0,
   "executable_exposed": 0,
@@ -11,5 +12,8 @@
   "evaluated": 36,
   "shadow_codes": [
     "600362"
+  ],
+  "quality_reason_codes": [
+    "classification_coverage_insufficient"
   ]
 }

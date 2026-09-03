@@ -14,21 +14,23 @@
 ## RED
 
 - Added `test_orchestrate_full_market_t1_replays_saved_2026_09_03_inputs`.
-- Verified the new test failed first because `tests/fixtures/full_market_t1/2026-09-03/expected_summary.json` did not exist yet.
+- Tightened the replay assertions so the test now requires:
+  - `data_audit.quality_reason_codes == ["classification_coverage_insufficient"]`
+  - the temp `latest_codex_input.json.generated_at` to come from the saved hashed manifest, not a duplicated constant
 - Command:
   - `.venv\Scripts\python.exe -m pytest tests/test_full_market_t1.py -k replays_saved_2026_09_03_inputs -q`
 - Failure summary:
-  - `FileNotFoundError: tests\fixtures\full_market_t1\2026-09-03\expected_summary.json`
+  - after monkeypatching the saved-time constant to an invalid future timestamp, replay failed contract validation with `ValueError: candidate union trade_date does not match handoff observation date`, proving the helper was still sourcing `generated_at` from the constant.
 
 ## GREEN
 
 - Added deterministic replay helpers that:
   - load the saved `scan_result_20260903_1353.csv`
   - rebuild the candidate union with `trade_date=2026-09-03`, `observed_at=2026-09-03T13:53:00+08:00`, `market_rows=5546`
-  - write a temporary `latest_codex_input.json` that points only at the saved run files
+  - read the saved hashed `manifest.json` and write its real `generated_at` into the temporary `latest_codex_input.json`
   - verify the saved source hashes recorded in the fixture README before evaluation
   - skip cleanly in another checkout if the large saved inputs are absent
-- Added fixture documentation plus frozen expected summary.
+- Added fixture documentation plus frozen expected summary, including `manifest_generated_at` and `quality_reason_codes`.
 - No production semantic defect was exposed, so `strategies/full_market_t1.py` was left unchanged.
 
 ## Actual replay summary
@@ -50,7 +52,11 @@
   "shadow_codes": [
     "600362"
   ],
-  "data_audit_quality_status": "partial"
+  "data_audit_quality_status": "partial",
+  "data_audit_quality_reason_codes": [
+    "classification_coverage_insufficient"
+  ],
+  "manifest_generated_at": "2026-09-03T13:46:56.819085+08:00"
 }
 ```
 
