@@ -384,6 +384,38 @@ def _indicator_record(code: str, daily_root: Path, today_str: str) -> dict | Non
         return None
 
 
+def compute_full_market_indicators(
+    df: pd.DataFrame,
+    daily_root: Path,
+    today_str: str,
+    workers: int,
+    fast_dir: Path,
+) -> pd.DataFrame:
+    """Use the optional workspace cache while remaining valid in a clean checkout."""
+    cache_loader = globals().get("load_or_compute_indicators")
+    if callable(cache_loader):
+        return cache_loader(df, daily_root, today_str, workers, fast_dir)
+    return compute_indicators_parallel(df, daily_root, today_str, workers)
+
+
+def map_full_market_rps20(
+    candidate_indicators: pd.DataFrame,
+    full_market_indicators: pd.DataFrame,
+) -> pd.DataFrame:
+    """Map RPS20 ranked on the complete tradable main-board cross-section."""
+    result = candidate_indicators.copy()
+    result["rps20"] = result["code"].astype(str).str.zfill(6).map(
+        compute_rps20(full_market_indicators)
+    )
+    return result
+
+
+def select_rps20_universe(eligible_main_board: pd.DataFrame) -> pd.DataFrame:
+    """Keep the full tradable board before any price or liquidity threshold."""
+    volume = pd.to_numeric(eligible_main_board["volume"], errors="coerce").fillna(0)
+    return eligible_main_board[volume > 0].copy()
+
+
 def compute_indicators_parallel(df: pd.DataFrame, daily_root: Path,
                                 today_str: str, workers: int) -> pd.DataFrame:
     codes = df["code"].tolist()
@@ -689,12 +721,34 @@ def main() -> int:
     # v2.1 (2026-09-03): 用户指令型规则——剔除创业板(30)/科创板(68)，仅沪主板(60)/深主板(00)参与
     code_str = df["code"].astype(str).str.zfill(6)
     df = df[code_str.str.startswith(("60", "00"))]
-    # 正式下限仍为 50 元；40–49.99 元保留到候选并集，由价格带分类强制影子化。
-    df = df[pd.to_numeric(df["price"], errors="coerce").fillna(0) >= 40]
-    df = df[pd.to_numeric(df["volume"], errors="coerce").fillna(0) > 0]
     if "listed_days" in df.columns:
         ld = pd.to_numeric(df["listed_days"], errors="coerce")
         df = df[(ld.isna()) | (ld >= 60)]
+
+    # RPS20 母集合同候选价格/流动性门槛解耦：先对完整可交易主板计算日线与横截面排名。
+    rps_universe_df = select_rps20_universe(df)
+    t0 = time.perf_counter()
+    fast_dir = args.data_root / "cache" / "fast"
+    full_ind_df = compute_full_market_indicators(
+        rps_universe_df,
+        official_daily_cache_root(args.data_root),
+        today_str,
+        args.workers,
+        fast_dir,
+    )
+    lifecycle_indicator_fields = {
+        "ma11", "ma23", "momentum_delta_1", "momentum_delta_3", "repeated_upper_shadow"
+    }
+    if not lifecycle_indicator_fields.issubset(full_ind_df.columns):
+        # 旧版同日缓存不含生命周期字段时从完整母集原始日线重算。
+        full_ind_df = compute_indicators_parallel(
+            rps_universe_df, official_daily_cache_root(args.data_root), today_str, args.workers
+        )
+    full_ind_df = map_full_market_rps20(full_ind_df, full_ind_df)
+
+    # 正式下限仍为 50 元；40–49.99 元保留到候选并集，由价格带分类强制影子化。
+    df = df[pd.to_numeric(df["price"], errors="coerce").fillna(0) >= 40]
+    df = select_rps20_universe(df)
     df["industry"] = df["industry"].fillna("未知") if "industry" in df.columns else "未知"
     after_hard = len(df)
     log(f"② 硬过滤：{initial} -> {after_hard}" + "（仅主板 + 现价≥40；40–49.99 仅影子）")
@@ -722,10 +776,8 @@ def main() -> int:
 
     # ⑤ 指标并行计算（官方日线缓存 + 排除当日 bar，与官方管道口径一致；
     #    量比的 5 日均量在同一次 JSON 读取中顺带算出，不再有独立量比阶段）
-    t0 = time.perf_counter()
-    ind_df = compute_indicators_parallel(df, official_daily_cache_root(args.data_root),
-                                         today_str, args.workers)
-    ind_df["rps20"] = ind_df["code"].map(compute_rps20(ind_df))
+    candidate_codes = set(df["code"].astype(str).str.zfill(6))
+    ind_df = full_ind_df[full_ind_df["code"].astype(str).str.zfill(6).isin(candidate_codes)].copy()
     avg5d = ind_df.set_index("code")["avg5d"]
     df = df.merge(ind_df, on="code", how="left")
     df = df.dropna(subset=["ma5", "ma10", "ma20", "ma60", "rsi14", "atr14_pct", "boll_position"])

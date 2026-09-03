@@ -2,16 +2,20 @@
   "trade_date": "2026-09-03",
   "market_rows": 5546,
   "only_choose_one": null,
-  "manifest_generated_at": "2026-09-03T13:46:56.819085+08:00",
+  "manifest_generated_at": "2026-09-03T14:43:09.708426+08:00",
   "global_status": "decision_ready",
   "executable": 0,
   "executable_exposed": 0,
-  "watch": 2,
-  "rejected": 33,
-  "shadow_count": 1,
-  "evaluated": 36,
+  "watch": 3,
+  "rejected": 43,
+  "shadow_count": 5,
+  "evaluated": 51,
   "shadow_codes": [
-    "600362"
+    "603009",
+    "600362",
+    "603663",
+    "601208",
+    "002466"
   ],
   "quality_reason_codes": [
     "classification_coverage_insufficient"

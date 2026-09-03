@@ -21,6 +21,15 @@ RESTRICTED_PREFIXES = ("300", "301", "688")
 SCHEMA_VERSION = "1.0.0"
 EXECUTION_RULE_VERSION = "1.0.0"
 DECISION_RULE_VERSION = "1.0.0"
+CHANNEL_MAPPING_VERSION = "frozen_v2_to_lifecycle_v1"
+ATR14_PCT_INPUT_UNIT = "percent_points"
+ATR14_PCT_LIFECYCLE_UNIT = "decimal_ratio"
+LIFECYCLE_TO_FROZEN_CHANNEL = {
+    "strong_pullback_reclaim": "stable_pullback",
+    "trend_continuation": "trend_recovery",
+    "high_momentum": "high_momentum",
+    "sector_reversal_challenger": "oversold_theme_reversal",
+}
 CANDIDATE_PROTECTION_RULE_VERSION = "candidate_guardrail_formula_v1"
 CANDIDATE_FEE_SOURCE = "candidate_cn_equity_fee_formula_v1"
 FEE_ADJUSTED_RR_FORMULA_VERSION = "cn_equity_fee_v1"
@@ -421,6 +430,8 @@ def build_candidate_union(
         candidate["code"] = code
         candidate["market"] = market
         candidate["candidate_reason"] = _normalize_candidate_reason(candidate.get("opportunity_tags"))
+        if _coerce_float(candidate.get("atr14_pct")) is not None:
+            candidate["atr14_pct_unit"] = ATR14_PCT_INPUT_UNIT
         candidate["price_band"] = classify_price_band(code, market, price)
         candidate["protection_constructible"] = protection_constructible
         candidate["protection_constructible_source"] = protection_source
@@ -890,6 +901,16 @@ def _validate_decision_payload(decision: Mapping[str, object]) -> None:
         raise ValueError("decision executable group cannot exceed executable audit rows")
 
     only_choose_one = decision.get("only_choose_one")
+    if decision.get("global_status") == "data_not_ready":
+        if only_choose_one is not None:
+            raise ValueError("data_not_ready decision must keep only_choose_one null")
+        for row in audit_rows:
+            mapping = _native_mapping(row)
+            if mapping.get("entry_state") == EntryState.ENTRY_ACTIVE.value:
+                raise ValueError("data_not_ready audit row cannot be entry_active")
+            for flag in ("production_buyable", "buyable", "only_choose_one_eligible"):
+                if mapping.get(flag) is True:
+                    raise ValueError(f"data_not_ready audit row cannot set {flag}=true")
     if only_choose_one is not None:
         code = str(only_choose_one)
         if len(code) != 6 or not code.isdigit():
@@ -1053,6 +1074,31 @@ def _serialize_entry_history(machine: EntryStateMachine) -> list[dict[str, objec
     ]
 
 
+def _lifecycle_atr14_pct(
+    candidate: Mapping[str, object],
+    daily: Mapping[str, object],
+    snapshot: Mapping[str, object],
+    executability: Mapping[str, object],
+) -> float | None:
+    """Adapt persisted percent points to the lifecycle's decimal-ratio contract."""
+    for source_name, source in (
+        ("candidate", candidate),
+        ("daily", daily),
+        ("snapshot", snapshot),
+        ("executability", executability),
+    ):
+        value = _coerce_float(source.get("atr14_pct"))
+        if value is None:
+            continue
+        unit = str(source.get("atr14_pct_unit", "") or "").strip()
+        if unit == ATR14_PCT_INPUT_UNIT or (source_name == "daily" and not unit):
+            return value / 100.0
+        if unit in {ATR14_PCT_LIFECYCLE_UNIT, "ratio"} or not unit:
+            return value
+        return None
+    return None
+
+
 def _evaluate_lifecycle(
     candidate: Mapping[str, object],
     objective: CandidateObjectiveData,
@@ -1076,6 +1122,7 @@ def _evaluate_lifecycle(
         "turnover_rate",
     )
     values = {field: _coerce_float(_first_source_value(sources, field)) for field in numeric_fields}
+    values["atr14_pct"] = _lifecycle_atr14_pct(candidate_row, daily, snapshot, executability)
     missing = [field for field, value in values.items() if value is None]
     trend_aligned = _first_source_value(sources, "trend_aligned")
     industry_sync = industry.get("industry_sync")
@@ -1107,6 +1154,8 @@ def _evaluate_lifecycle(
         machine.to_unassessed_to_data_insufficient(decision_id, {"missing_fields": missing})
         return {
             "strategy_channel": "unresolved",
+            "lifecycle_channel": "unresolved",
+            "channel_mapping_version": CHANNEL_MAPPING_VERSION,
             "channel_evidence": {"status": "data_insufficient", "missing_fields": missing, "results": []},
             "dual_axis": {"status": "not_evaluated", "reason_code": "lifecycle_data_insufficient"},
             "entry_state": machine.state.value,
@@ -1121,6 +1170,8 @@ def _evaluate_lifecycle(
         machine.to_unassessed_to_data_insufficient(decision_id, {"missing_fields": ["price"]})
         return {
             "strategy_channel": "unresolved",
+            "lifecycle_channel": "unresolved",
+            "channel_mapping_version": CHANNEL_MAPPING_VERSION,
             "channel_evidence": {"status": "data_insufficient", "missing_fields": ["price"], "results": []},
             "dual_axis": {"status": "not_evaluated", "reason_code": "lifecycle_data_insufficient"},
             "entry_state": machine.state.value,
@@ -1161,6 +1212,8 @@ def _evaluate_lifecycle(
         machine.to_unassessed_to_rejected(decision_id, {"channel_results": channel_rows})
         return {
             "strategy_channel": "none",
+            "lifecycle_channel": "none",
+            "channel_mapping_version": CHANNEL_MAPPING_VERSION,
             "channel_evidence": {"status": "evaluated", "results": channel_rows},
             "dual_axis": {"status": "not_evaluated", "reason_code": "all_channels_hard_fail"},
             "entry_state": machine.state.value,
@@ -1168,7 +1221,12 @@ def _evaluate_lifecycle(
             "reason_code": "all_channels_hard_fail",
         }, machine
 
-    machine.to_unassessed_to_deep_watch(decision_id, {"strategy_channel": primary.channel.value})
+    lifecycle_channel = primary.channel.value
+    strategy_channel = LIFECYCLE_TO_FROZEN_CHANNEL[lifecycle_channel]
+    machine.to_unassessed_to_deep_watch(
+        decision_id,
+        {"strategy_channel": strategy_channel, "lifecycle_channel": lifecycle_channel},
+    )
     protection_constructible = executability.get("protection_constructible") is True
     sell_zone_constructible = _coerce_float(candidate_row.get("sell1_low")) is not None
     if not sell_zone_constructible:
@@ -1223,7 +1281,9 @@ def _evaluate_lifecycle(
             lifecycle_reason = "lifecycle_not_confirmed"
 
     return {
-        "strategy_channel": primary.channel.value,
+        "strategy_channel": strategy_channel,
+        "lifecycle_channel": lifecycle_channel,
+        "channel_mapping_version": CHANNEL_MAPPING_VERSION,
         "channel_evidence": {"status": "evaluated", "results": channel_rows},
         "dual_axis": dual_row,
         "entry_state": machine.state.value,
@@ -1359,6 +1419,8 @@ def evaluate_candidate(candidate: Mapping, objective: CandidateObjectiveData, ma
         "reason_codes": [],
         "decision": "reject",
         "strategy_channel": lifecycle["strategy_channel"],
+        "lifecycle_channel": lifecycle["lifecycle_channel"],
+        "channel_mapping_version": lifecycle["channel_mapping_version"],
         "channel_evidence": lifecycle["channel_evidence"],
         "dual_axis": lifecycle["dual_axis"],
         "entry_state": lifecycle["entry_state"],
@@ -1454,6 +1516,11 @@ def build_full_market_decision(candidate_union: Mapping, handoff: Mapping, *, de
         or _native_mapping(candidate_union_row.get("objective_by_code"))
     )
 
+    effective_critical_ready = not (
+        handoff_row.get("critical_ready") is False or market.get("critical_ready") is False
+    )
+    lifecycle_market = {**market, "critical_ready": effective_critical_ready}
+
     evaluated: list[dict[str, object]] = []
     for raw_candidate in _to_native(candidate_union_row.get("candidates", [])) or []:
         candidate_row = _native_mapping(raw_candidate)
@@ -1468,10 +1535,10 @@ def build_full_market_decision(candidate_union: Mapping, handoff: Mapping, *, de
                 minute_evidence={},
                 executability={},
             )
-        row = evaluate_candidate(candidate_row, objective, market)
+        row = evaluate_candidate(candidate_row, objective, lifecycle_market)
         evaluated.append(row)
 
-    global_status = "data_not_ready" if handoff_row.get("critical_ready") is False or market.get("critical_ready") is False else "decision_ready"
+    global_status = "decision_ready" if effective_critical_ready else "data_not_ready"
     if global_status == "data_not_ready":
         for row in evaluated:
             row["production_buyable"] = False
@@ -1500,7 +1567,7 @@ def build_full_market_decision(candidate_union: Mapping, handoff: Mapping, *, de
         "decision_at": decision_at.isoformat(),
         "trade_date": candidate_union_row.get("trade_date") or handoff_row.get("trade_date"),
         "observed_at": candidate_union_row.get("observed_at") or handoff_row.get("observed_at"),
-        "market": market,
+        "market": lifecycle_market,
         "global_status": global_status,
         "only_choose_one": only_choose_one_code,
         "input_metadata": _native_mapping(handoff_row.get("input_metadata")),

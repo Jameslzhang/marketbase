@@ -26,9 +26,11 @@ from strategies.full_market_t1 import (
 
 TZ_SHANGHAI = timezone(timedelta(hours=8))
 SAVED_REPLAY_TRADE_DATE = "2026-09-03"
-SAVED_REPLAY_OBSERVED_AT = "2026-09-03T13:53:00+08:00"
-SAVED_REPLAY_GENERATED_AT = "2026-09-03T13:46:56.819085+08:00"
+SAVED_REPLAY_OBSERVED_AT = "2026-09-03T14:41:00+08:00"
+SAVED_REPLAY_GENERATED_AT = "2026-09-03T14:43:09.708426+08:00"
 SAVED_REPLAY_MARKET_ROWS = 5546
+SAVED_REPLAY_RUN_NAME = "144309_intraday_1430_objective_data"
+SAVED_REPLAY_SCAN_NAME = "scan_result_20260903_1441.csv"
 SAVED_REPLAY_SOURCE_BLOCK = re.compile(
     r"<!-- task6-source-records:start -->\s*```json\s*(.*?)\s*```\s*<!-- task6-source-records:end -->",
     re.DOTALL,
@@ -48,25 +50,25 @@ def _saved_replay_expected_summary() -> dict[str, object]:
 
 
 def _saved_replay_manifest_key() -> str:
-    return f"data/daily_runs/{SAVED_REPLAY_TRADE_DATE}/134656_intraday_1300_objective_data/manifest.json"
+    return f"data/daily_runs/{SAVED_REPLAY_TRADE_DATE}/{SAVED_REPLAY_RUN_NAME}/manifest.json"
 
 
 def _saved_replay_data_audit_key() -> str:
-    return f"data/daily_runs/{SAVED_REPLAY_TRADE_DATE}/134656_intraday_1300_objective_data/data_audit.json"
+    return f"data/daily_runs/{SAVED_REPLAY_TRADE_DATE}/{SAVED_REPLAY_RUN_NAME}/data_audit.json"
 
 
 def _saved_replay_source_paths(repo_root: Path) -> dict[str, Path]:
-    run_dir = repo_root / "data" / "daily_runs" / SAVED_REPLAY_TRADE_DATE / "134656_intraday_1300_objective_data"
+    run_dir = repo_root / "data" / "daily_runs" / SAVED_REPLAY_TRADE_DATE / SAVED_REPLAY_RUN_NAME
     return {
-        "data/cache/fast/scan_result_20260903_1353.csv": repo_root / "data" / "cache" / "fast" / "scan_result_20260903_1353.csv",
-        f"data/daily_runs/{SAVED_REPLAY_TRADE_DATE}/134656_intraday_1300_objective_data/market_snapshot.json": run_dir / "market_snapshot.json",
-        f"data/daily_runs/{SAVED_REPLAY_TRADE_DATE}/134656_intraday_1300_objective_data/daily_indicators.csv": run_dir / "daily_indicators.csv",
-        f"data/daily_runs/{SAVED_REPLAY_TRADE_DATE}/134656_intraday_1300_objective_data/classification_map.csv": run_dir / "classification_map.csv",
-        f"data/daily_runs/{SAVED_REPLAY_TRADE_DATE}/134656_intraday_1300_objective_data/industry_agg.csv": run_dir / "industry_agg.csv",
-        f"data/daily_runs/{SAVED_REPLAY_TRADE_DATE}/134656_intraday_1300_objective_data/market_breadth.json": run_dir / "market_breadth.json",
-        f"data/daily_runs/{SAVED_REPLAY_TRADE_DATE}/134656_intraday_1300_objective_data/intraday_minutes.parquet": run_dir / "intraday_minutes.parquet",
-        f"data/daily_runs/{SAVED_REPLAY_TRADE_DATE}/134656_intraday_1300_objective_data/data_audit.json": run_dir / "data_audit.json",
-        f"data/daily_runs/{SAVED_REPLAY_TRADE_DATE}/134656_intraday_1300_objective_data/manifest.json": run_dir / "manifest.json",
+        f"data/cache/fast/{SAVED_REPLAY_SCAN_NAME}": repo_root / "data" / "cache" / "fast" / SAVED_REPLAY_SCAN_NAME,
+        **{
+            f"data/daily_runs/{SAVED_REPLAY_TRADE_DATE}/{SAVED_REPLAY_RUN_NAME}/{name}": run_dir / name
+            for name in (
+                "market_snapshot.json", "daily_indicators.csv", "classification_map.csv",
+                "industry_agg.csv", "market_breadth.json", "intraday_minutes.parquet",
+                "data_audit.json", "manifest.json",
+            )
+        },
     }
 
 
@@ -118,7 +120,21 @@ def _replay_saved_full_market_t1_inputs(tmp_path: Path) -> tuple[dict[str, objec
     repo_root = _saved_replay_repo_root()
     source_paths = _verify_saved_replay_source_hashes(repo_root)
     saved_manifest = _saved_replay_manifest(source_paths)
-    frame = pd.read_csv(source_paths["data/cache/fast/scan_result_20260903_1353.csv"])
+    frame = pd.read_csv(source_paths[f"data/cache/fast/{SAVED_REPLAY_SCAN_NAME}"], dtype={"code": str})
+    daily = pd.read_csv(
+        source_paths[f"data/daily_runs/{SAVED_REPLAY_TRADE_DATE}/{SAVED_REPLAY_RUN_NAME}/daily_indicators.csv"],
+        dtype={"code": str},
+    )
+    lifecycle_fields = [
+        "code", "ma11", "ma23", "momentum_delta_1", "momentum_delta_3",
+        "repeated_upper_shadow", "rps20", "atr14",
+    ]
+    # Equivalent to the current scanner artifact: enrich the saved scan with the exact
+    # same-run lifecycle indicator contract instead of substituting approximate fields.
+    frame["code"] = frame["code"].astype(str).str.zfill(6)
+    frame = frame.drop(columns=[field for field in lifecycle_fields[1:] if field in frame.columns]).merge(
+        daily[lifecycle_fields], on="code", how="left"
+    )
     candidate_union = build_candidate_union(
         frame,
         trade_date=SAVED_REPLAY_TRADE_DATE,
@@ -135,13 +151,18 @@ def _replay_saved_full_market_t1_inputs(tmp_path: Path) -> tuple[dict[str, objec
     latest_payload = {
         "schema_version": 1,
         "generated_at": saved_manifest["generated_at"],
-        "market_snapshot_path": str(source_paths[f"data/daily_runs/{SAVED_REPLAY_TRADE_DATE}/134656_intraday_1300_objective_data/market_snapshot.json"].resolve()),
-        "daily_indicators_path": str(source_paths[f"data/daily_runs/{SAVED_REPLAY_TRADE_DATE}/134656_intraday_1300_objective_data/daily_indicators.csv"].resolve()),
-        "classification_map_path": str(source_paths[f"data/daily_runs/{SAVED_REPLAY_TRADE_DATE}/134656_intraday_1300_objective_data/classification_map.csv"].resolve()),
-        "industry_agg_path": str(source_paths[f"data/daily_runs/{SAVED_REPLAY_TRADE_DATE}/134656_intraday_1300_objective_data/industry_agg.csv"].resolve()),
-        "market_breadth_path": str(source_paths[f"data/daily_runs/{SAVED_REPLAY_TRADE_DATE}/134656_intraday_1300_objective_data/market_breadth.json"].resolve()),
-        "intraday_minutes_path": str(source_paths[f"data/daily_runs/{SAVED_REPLAY_TRADE_DATE}/134656_intraday_1300_objective_data/intraday_minutes.parquet"].resolve()),
-        "data_audit_path": str(source_paths[f"data/daily_runs/{SAVED_REPLAY_TRADE_DATE}/134656_intraday_1300_objective_data/data_audit.json"].resolve()),
+        **{
+            key: str(source_paths[f"data/daily_runs/{SAVED_REPLAY_TRADE_DATE}/{SAVED_REPLAY_RUN_NAME}/{name}"].resolve())
+            for key, name in {
+                "market_snapshot_path": "market_snapshot.json",
+                "daily_indicators_path": "daily_indicators.csv",
+                "classification_map_path": "classification_map.csv",
+                "industry_agg_path": "industry_agg.csv",
+                "market_breadth_path": "market_breadth.json",
+                "intraday_minutes_path": "intraday_minutes.parquet",
+                "data_audit_path": "data_audit.json",
+            }.items()
+        },
     }
     (tmp_path / "latest_codex_input.json").write_text(
         json.dumps(latest_payload, ensure_ascii=False, indent=2),
@@ -150,7 +171,7 @@ def _replay_saved_full_market_t1_inputs(tmp_path: Path) -> tuple[dict[str, objec
     decision = orchestrate_full_market_t1(
         data_root=tmp_path,
         candidate_union_path=candidate_union_path,
-        decision_at=datetime(2026, 9, 3, 13, 53, tzinfo=TZ_SHANGHAI),
+        decision_at=datetime(2026, 9, 3, 14, 43, tzinfo=TZ_SHANGHAI),
         output_path=tmp_path / "decision.json",
     )
     return decision, source_paths
@@ -192,7 +213,8 @@ def _base_daily(**overrides):
         "return_5d": 0.03,
         "return_20d": 0.09,
         "atr14": 1.0,
-        "atr14_pct": 0.02,
+        # compute_daily_indicators contract: percentage points (2.0 means 2%).
+        "atr14_pct": 2.0,
     }
     payload.update(overrides)
     return payload
@@ -347,6 +369,7 @@ def test_build_candidate_union_preserves_metadata_and_normalizes_reasons():
                 "name": "浦发银行",
                 "price": 52.0,
                 "amount": 80_000_000,
+                "atr14_pct": 2.0,
                 "opportunity_tags": "trend_full|vr_good(2.0)",
                 "buy_low": 51.2,
                 "buy_high": 51.8,
@@ -408,6 +431,7 @@ def test_build_candidate_union_preserves_metadata_and_normalizes_reasons():
     assert payload["candidates"][0]["fee_adjusted_rr_formula_version"] == "cn_equity_fee_v1"
     assert payload["candidates"][0]["fee_adjusted_rr_source"] == "candidate_cn_equity_fee_formula_v1"
     assert payload["candidates"][0]["fee_adjusted_rr"] == pytest.approx(2.4868)
+    assert payload["candidates"][0]["atr14_pct_unit"] == "percent_points"
     assert payload["candidates"][1]["candidate_reason"] == ["shadow_watch"]
     assert payload["candidates"][1]["price_band"] == "shadow_40_50"
     assert payload["candidates"][2]["candidate_reason"] == []
@@ -741,8 +765,11 @@ def test_buyable_requires_both_scores_and_all_hard_gates():
     assert row["only_choose_one_eligible"] is True
     assert row["decision"] == "executable_candidate"
     assert row["reason_codes"] == []
-    assert row["strategy_channel"] == "trend_continuation"
+    assert row["strategy_channel"] == "trend_recovery"
+    assert row["lifecycle_channel"] == "trend_continuation"
+    assert row["channel_mapping_version"] == "frozen_v2_to_lifecycle_v1"
     assert row["dual_axis"]["decision"] == "can_enter_candidate"
+    assert row["dual_axis"]["tail_risk"] == "low"
     assert row["entry_state"] == "entry_active"
     assert [item["to_state"] for item in row["entry_state_trajectory"]] == [
         "deep_watch",
@@ -751,6 +778,15 @@ def test_buyable_requires_both_scores_and_all_hard_gates():
         "plan_published",
         "entry_active",
     ]
+
+
+def test_frozen_v2_channel_mapping_is_explicit_and_complete():
+    assert full_market_t1.LIFECYCLE_TO_FROZEN_CHANNEL == {
+        "strong_pullback_reclaim": "stable_pullback",
+        "trend_continuation": "trend_recovery",
+        "high_momentum": "high_momentum",
+        "sector_reversal_challenger": "oversold_theme_reversal",
+    }
 
 
 def test_global_data_not_ready_vetoes_every_production_action_but_keeps_audit_rows():
@@ -779,6 +815,32 @@ def test_global_data_not_ready_vetoes_every_production_action_but_keeps_audit_ro
         assert "global_data_not_ready" in row["reason_codes"]
         assert row["entry_state"] == "rejected"
         assert row["dual_axis"]["reason_code"] == "market_veto"
+
+
+def test_handoff_not_ready_vetoes_lifecycle_even_when_market_context_is_ready():
+    candidate = _candidate(code="600001")
+    objective = _objective()
+
+    decision = full_market_t1.build_full_market_decision(
+        _handoff([candidate], {"600001": objective}),
+        {
+            "critical_ready": False,
+            "objective_by_code": {"600001": objective},
+            "market": _market(critical_ready=True),
+        },
+        decision_at=datetime(2026, 9, 3, 13, 45, tzinfo=TZ_SHANGHAI),
+    )
+
+    row = decision["audit_rows"][0]
+    assert decision["global_status"] == "data_not_ready"
+    assert decision["only_choose_one"] is None
+    assert row["entry_state"] != "entry_active"
+    assert row["dual_axis"]["status"] == "evaluated"
+    assert row["dual_axis"]["reason_code"] == "market_veto"
+    assert row["dual_axis"]["decision"] == "reject"
+    assert row["production_buyable"] is False
+    assert row["buyable"] is False
+    assert row["only_choose_one_eligible"] is False
 
 
 @pytest.mark.parametrize(
@@ -1542,6 +1604,7 @@ def _valid_decision_payload_for_validation() -> dict[str, object]:
         "trade_date": "2026-09-03",
         "decision_at": "2026-09-03T13:45:00+08:00",
         "observed_at": "2026-09-03T13:43:00+08:00",
+        "global_status": "decision_ready",
         "input_metadata": {
             "candidate_union": {"path": "candidate.json", "sha256": "abc"},
             "declared_inputs": {"market_snapshot_path": {"path": "snapshot.json", "sha256": "def"}},
@@ -1561,6 +1624,39 @@ def _valid_decision_payload_for_validation() -> dict[str, object]:
         "shadow": [],
         "only_choose_one": "600001",
     }
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "entry_active",
+        "production_buyable",
+        "buyable",
+        "only_choose_one_eligible",
+        "only_choose_one",
+    ],
+)
+def test_validator_rejects_actions_in_data_not_ready_payload(mutation: str):
+    payload = _valid_decision_payload_for_validation()
+    payload["global_status"] = "data_not_ready"
+    payload["only_choose_one"] = None
+    payload["audit_rows"][0]["production_buyable"] = False
+    payload["audit_rows"][0]["buyable"] = False
+    payload["audit_rows"][0]["only_choose_one_eligible"] = False
+    payload["audit_rows"][0]["decision"] = "data_insufficient"
+    payload["summary"].update({"executable": 0, "executable_exposed": 0, "rejected": 2})
+    payload["executable"] = []
+    payload["rejected"] = payload["audit_rows"]
+
+    if mutation == "entry_active":
+        payload["audit_rows"][0]["entry_state"] = "entry_active"
+    elif mutation == "only_choose_one":
+        payload["only_choose_one"] = "600001"
+    else:
+        payload["audit_rows"][0][mutation] = True
+
+    with pytest.raises(ValueError, match="data_not_ready"):
+        full_market_t1._validate_decision_payload(payload)
 
 
 @pytest.mark.parametrize("only_choose_one", ["999999", "600002"])
@@ -1669,6 +1765,15 @@ def test_orchestrate_full_market_t1_replays_saved_2026_09_03_inputs(tmp_path: Pa
     assert all(row["production_buyable"] is False for row in decision["shadow"])
     assert all(row["buyable"] is False for row in decision["shadow"])
     assert all(row["only_choose_one_eligible"] is False for row in decision["shadow"])
+    evaluated = [row for row in decision["audit_rows"] if row["dual_axis"]["status"] == "evaluated"]
+    assert evaluated, "saved replay must exercise the real dual-axis lifecycle"
+    for row in evaluated:
+        assert row["strategy_channel"] in {
+            "stable_pullback", "trend_recovery", "high_momentum", "oversold_theme_reversal"
+        }
+        assert row["lifecycle_channel"]
+        assert row["channel_mapping_version"] == "frozen_v2_to_lifecycle_v1"
+        assert row["entry_state_trajectory"]
     _assert_reason_codes_present(decision["watch"])
     _assert_reason_codes_present(decision["rejected"])
     _assert_reason_codes_present(

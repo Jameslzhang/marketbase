@@ -271,3 +271,35 @@ def test_main_writes_candidate_union_with_scan_metadata(tmp_path: Path, monkeypa
         "rps20",
     }
     assert all(lifecycle_fields.issubset(row) for row in by_code.values())
+
+
+def test_rps20_uses_full_tradable_main_board_cross_section_before_candidate_filters():
+    full_market_indicators = pd.DataFrame(
+        [
+            {"code": "000001", "return_20d": 0.10},
+            {"code": "600001", "return_20d": 0.20},
+            {"code": "600002", "return_20d": 0.30},
+            {"code": "600003", "return_20d": 0.40},
+        ]
+    )
+    candidate = full_market_indicators.iloc[[1]].copy()
+
+    mapped = fast_t1_scan.map_full_market_rps20(candidate, full_market_indicators)
+    candidate_only_rank = fast_t1_scan.compute_rps20(candidate).loc["600001"]
+
+    assert mapped.iloc[0]["rps20"] == 50.0
+    assert candidate_only_rank == 100.0
+
+
+def test_rps20_universe_keeps_low_price_and_low_liquidity_but_excludes_zero_volume():
+    eligible_main_board = pd.DataFrame(
+        [
+            {"code": "600001", "price": 20.0, "amount": 1_000_000, "volume": 10_000},
+            {"code": "600002", "price": 80.0, "amount": 90_000_000, "volume": 20_000},
+            {"code": "600003", "price": 90.0, "amount": 90_000_000, "volume": 0},
+        ]
+    )
+
+    universe = fast_t1_scan.select_rps20_universe(eligible_main_board)
+
+    assert universe["code"].tolist() == ["600001", "600002"]
