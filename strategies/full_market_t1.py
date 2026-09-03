@@ -11,6 +11,10 @@ from typing import Mapping, Sequence
 
 import pandas as pd
 
+from strategies.strategy_lifecycle.channel_identifier import ChannelIdentifier
+from strategies.strategy_lifecycle.dual_axis import DualAxis, DualAxisDecision
+from strategies.strategy_lifecycle.entry_state_machine import EntryState, EntryStateMachine
+
 PRODUCTION_MIN_PRICE = 50.0
 SHADOW_MIN_PRICE = 40.0
 RESTRICTED_PREFIXES = ("300", "301", "688")
@@ -1024,7 +1028,208 @@ def _watch_reason(reason: str) -> bool:
         "market_breadth_below_threshold",
         "protection_not_constructible",
         "fee_adjusted_rr_below_threshold",
+        "lifecycle_not_confirmed",
+        "lifecycle_data_insufficient",
     }
+
+
+def _first_source_value(sources: Sequence[Mapping], field: str):
+    for source in sources:
+        if field in source and source[field] is not None:
+            return source[field]
+    return None
+
+
+def _serialize_entry_history(machine: EntryStateMachine) -> list[dict[str, object]]:
+    return [
+        {
+            "from_state": item.from_state.value,
+            "to_state": item.to_state.value,
+            "decision_id": item.decision_id,
+            "reason_code": item.reason_code,
+            "evidence": _to_native(item.evidence),
+        }
+        for item in machine.history
+    ]
+
+
+def _evaluate_lifecycle(
+    candidate: Mapping[str, object],
+    objective: CandidateObjectiveData,
+    market: Mapping[str, object],
+) -> tuple[dict[str, object], EntryStateMachine]:
+    candidate_row = _native_mapping(candidate)
+    snapshot = _native_mapping(objective.snapshot)
+    daily = _native_mapping(objective.daily)
+    industry = _native_mapping(objective.industry)
+    minute = _native_mapping(objective.minute_evidence)
+    executability = _native_mapping(objective.executability)
+    sources = (candidate_row, daily, snapshot, executability)
+    code = _normalize_code(candidate_row.get("code", ""))
+    decision_id = f"full_market_t1:{code}:{EXECUTION_RULE_VERSION}"
+    machine = EntryStateMachine(code, "full_market_t1_v1", EXECUTION_RULE_VERSION)
+
+    numeric_fields = (
+        "ma11", "ma23", "rsi14", "rps20", "momentum_delta_1",
+        "momentum_delta_3", "boll_position", "return_5d", "return_20d",
+        "atr14", "atr14_pct", "ma20", "volume_ratio", "change_pct",
+        "turnover_rate",
+    )
+    values = {field: _coerce_float(_first_source_value(sources, field)) for field in numeric_fields}
+    missing = [field for field, value in values.items() if value is None]
+    trend_aligned = _first_source_value(sources, "trend_aligned")
+    industry_sync = industry.get("industry_sync")
+    tail_tags_raw = candidate_row.get("tail_risk_tags")
+    if isinstance(tail_tags_raw, str):
+        tail_tags = {item for item in tail_tags_raw.split("|") if item}
+    elif isinstance(tail_tags_raw, list):
+        tail_tags = {str(item) for item in tail_tags_raw}
+    else:
+        tail_tags = set()
+        missing.append("tail_risk_tags")
+    if not isinstance(trend_aligned, bool):
+        missing.append("trend_aligned")
+    if not isinstance(industry_sync, bool):
+        missing.append("industry_sync")
+
+    risk_flags: dict[str, bool] = {}
+    for field, tag in (
+        ("repeated_upper_shadow", "repeated_upper_shadow"),
+        ("long_upper_shadow", "long_upper_shadow"),
+        ("industry_crowding", "industry_crowding"),
+        ("limit_proximity", "limit_proximity"),
+    ):
+        explicit = _first_source_value((snapshot, candidate_row), field)
+        risk_flags[field] = explicit if isinstance(explicit, bool) else tag in tail_tags
+
+    if missing:
+        missing = sorted(set(missing))
+        machine.to_unassessed_to_data_insufficient(decision_id, {"missing_fields": missing})
+        return {
+            "strategy_channel": "unresolved",
+            "channel_evidence": {"status": "data_insufficient", "missing_fields": missing, "results": []},
+            "dual_axis": {"status": "not_evaluated", "reason_code": "lifecycle_data_insufficient"},
+            "entry_state": machine.state.value,
+            "entry_state_trajectory": _serialize_entry_history(machine),
+            "reason_code": "lifecycle_data_insufficient",
+        }, machine
+
+    price = _coerce_float(candidate_row.get("price"))
+    if price is None:
+        price = _coerce_float(snapshot.get("price"))
+    if price is None:
+        machine.to_unassessed_to_data_insufficient(decision_id, {"missing_fields": ["price"]})
+        return {
+            "strategy_channel": "unresolved",
+            "channel_evidence": {"status": "data_insufficient", "missing_fields": ["price"], "results": []},
+            "dual_axis": {"status": "not_evaluated", "reason_code": "lifecycle_data_insufficient"},
+            "entry_state": machine.state.value,
+            "entry_state_trajectory": _serialize_entry_history(machine),
+            "reason_code": "lifecycle_data_insufficient",
+        }, machine
+
+    channel_results = ChannelIdentifier.identify_all(
+        adjusted_close=price,
+        ma11=values["ma11"],
+        ma23=values["ma23"],
+        rsi14=values["rsi14"],
+        rps20=values["rps20"],
+        momentum_delta_1=values["momentum_delta_1"],
+        momentum_delta_3=values["momentum_delta_3"],
+        boll_position=values["boll_position"],
+        return_20d=values["return_20d"],
+        atr14=values["atr14"],
+        atr14_pct=values["atr14_pct"],
+        repeated_upper_shadow=risk_flags["repeated_upper_shadow"],
+        full_day_vwap=_coerce_float(minute.get("vwap")),
+        afternoon_avwap=_coerce_float(minute.get("afternoon_vwap")),
+        pre_reclaim_low=_coerce_float(snapshot.get("low")),
+        pullback_vwap_frozen=_coerce_float(minute.get("vwap")),
+    )
+    channel_rows = [
+        {
+            "channel": result.channel.value,
+            "passed": result.passed,
+            "production_buyable": result.production_buyable,
+            "reason": result.reason,
+            "evidence": _to_native(result.evidence),
+        }
+        for result in channel_results
+    ]
+    primary = next((result for result in channel_results if result.passed and result.production_buyable), None)
+    if primary is None:
+        machine.to_unassessed_to_rejected(decision_id, {"channel_results": channel_rows})
+        return {
+            "strategy_channel": "none",
+            "channel_evidence": {"status": "evaluated", "results": channel_rows},
+            "dual_axis": {"status": "not_evaluated", "reason_code": "all_channels_hard_fail"},
+            "entry_state": machine.state.value,
+            "entry_state_trajectory": _serialize_entry_history(machine),
+            "reason_code": "all_channels_hard_fail",
+        }, machine
+
+    machine.to_unassessed_to_deep_watch(decision_id, {"strategy_channel": primary.channel.value})
+    protection_constructible = executability.get("protection_constructible") is True
+    sell_zone_constructible = _coerce_float(candidate_row.get("sell1_low")) is not None
+    if not sell_zone_constructible:
+        sell_zone_constructible = _coerce_float(executability.get("sell1_low")) is not None
+    dual = DualAxis.evaluate(
+        trend_aligned=trend_aligned,
+        rsi14=values["rsi14"],
+        volume_ratio=values["volume_ratio"],
+        change_pct=values["change_pct"],
+        rps20=values["rps20"],
+        return_5d=values["return_5d"],
+        return_20d=values["return_20d"],
+        industry_sync_pass=industry_sync,
+        channel_type=primary.channel.value,
+        price=price,
+        ma20=values["ma20"],
+        turnover_rate=values["turnover_rate"],
+        atr14_pct=values["atr14_pct"],
+        repeated_upper_shadow=risk_flags["repeated_upper_shadow"],
+        long_upper_shadow=risk_flags["long_upper_shadow"],
+        industry_crowding=risk_flags["industry_crowding"],
+        limit_proximity=risk_flags["limit_proximity"],
+        market_veto=(
+            market.get("critical_ready") is False
+            or (_coerce_float(market.get("advance_ratio")) or 0.0) < 0.35
+        ),
+        protection_constructible=protection_constructible,
+        sell_zone_constructible=sell_zone_constructible,
+    )
+    dual_row = {
+        "status": "evaluated",
+        "opportunity_quality": dual.opportunity_quality.value,
+        "tail_risk": dual.tail_risk.value,
+        "decision": dual.decision.value,
+        "op_score": dual.op_score,
+        "op_detail": dual.op_detail,
+        "tr_count": dual.tr_count,
+        "tr_flags": dual.tr_flags,
+        "reason_code": dual.reason_code,
+    }
+    lifecycle_reason = ""
+    if dual.decision == DualAxisDecision.REJECT:
+        machine.to_rejected(decision_id, dual.reason_code or "dual_axis_reject", {"dual_axis": dual_row})
+        lifecycle_reason = dual.reason_code or "dual_axis_reject"
+    else:
+        machine.to_deep_watch_to_conditional_watch(decision_id, {"dual_axis": dual_row})
+        if dual.decision == DualAxisDecision.CONDITIONAL_WATCH:
+            lifecycle_reason = "dual_axis_conditional_watch"
+        elif minute.get("confirmed") is True:
+            machine.to_conditional_watch_to_confirmed_candidate(decision_id, {"minute_evidence": minute})
+        else:
+            lifecycle_reason = "lifecycle_not_confirmed"
+
+    return {
+        "strategy_channel": primary.channel.value,
+        "channel_evidence": {"status": "evaluated", "results": channel_rows},
+        "dual_axis": dual_row,
+        "entry_state": machine.state.value,
+        "entry_state_trajectory": _serialize_entry_history(machine),
+        "reason_code": lifecycle_reason,
+    }, machine
 
 
 def _sort_key(row: Mapping) -> tuple[float, float, float, float]:
@@ -1124,6 +1329,7 @@ def evaluate_candidate(candidate: Mapping, objective: CandidateObjectiveData, ma
     is_untradable = executability.get("is_untradable")
     fee_adjusted_rr = executability.get("fee_adjusted_rr")
     market_advance_ratio = _coerce_float(market_row.get("advance_ratio")) or 0.0
+    lifecycle, entry_machine = _evaluate_lifecycle(candidate_row, objective_row, market_row)
 
     row = {
         **candidate_row,
@@ -1152,8 +1358,14 @@ def evaluate_candidate(candidate: Mapping, objective: CandidateObjectiveData, ma
         "only_choose_one_eligible": False,
         "reason_codes": [],
         "decision": "reject",
+        "strategy_channel": lifecycle["strategy_channel"],
+        "channel_evidence": lifecycle["channel_evidence"],
+        "dual_axis": lifecycle["dual_axis"],
+        "entry_state": lifecycle["entry_state"],
+        "entry_state_trajectory": lifecycle["entry_state_trajectory"],
     }
 
+    lifecycle_reason = str(lifecycle.get("reason_code", "") or "")
     if candidate_status != "ready":
         row["decision"] = "data_insufficient"
         row["reason_codes"] = reason_codes
@@ -1164,6 +1376,8 @@ def evaluate_candidate(candidate: Mapping, objective: CandidateObjectiveData, ma
         return row
 
     gate_failures: list[str] = []
+    if entry_machine.state != EntryState.CONFIRMED_CANDIDATE:
+        gate_failures.append(lifecycle_reason or "lifecycle_not_confirmed")
     if opportunity_score < 65.0:
         gate_failures.append("opportunity_score_below_threshold")
     if execution_score is None or execution_score < 68.0:
@@ -1192,6 +1406,17 @@ def evaluate_candidate(candidate: Mapping, objective: CandidateObjectiveData, ma
 
     row["reason_codes"] = gate_failures
     if not gate_failures:
+        decision_id = f"full_market_t1:{code}:{EXECUTION_RULE_VERSION}"
+        entry_machine.to_confirmed_candidate_to_plan_published(
+            decision_id,
+            {"price_band": price_band, "production_gates": "passed"},
+        )
+        entry_machine.to_plan_published_to_entry_active(
+            decision_id,
+            {"price": price, "minute_confirmation": True},
+        )
+        row["entry_state"] = entry_machine.state.value
+        row["entry_state_trajectory"] = _serialize_entry_history(entry_machine)
         row["production_buyable"] = True
         row["buyable"] = True
         row["only_choose_one_eligible"] = True
@@ -1246,6 +1471,16 @@ def build_full_market_decision(candidate_union: Mapping, handoff: Mapping, *, de
         row = evaluate_candidate(candidate_row, objective, market)
         evaluated.append(row)
 
+    global_status = "data_not_ready" if handoff_row.get("critical_ready") is False or market.get("critical_ready") is False else "decision_ready"
+    if global_status == "data_not_ready":
+        for row in evaluated:
+            row["production_buyable"] = False
+            row["buyable"] = False
+            row["only_choose_one_eligible"] = False
+            _append_unique(row["reason_codes"], "global_data_not_ready")
+            if row.get("decision") == "executable_candidate":
+                row["decision"] = "data_insufficient"
+
     executable_all = sorted(
         [row for row in evaluated if row.get("decision") == "executable_candidate"],
         key=_sort_key,
@@ -1258,7 +1493,6 @@ def build_full_market_decision(candidate_union: Mapping, handoff: Mapping, *, de
 
     only_choose_one_code = choose_one(evaluated)
 
-    global_status = "data_not_ready" if handoff_row.get("critical_ready") is False or market.get("critical_ready") is False else "decision_ready"
     return {
         "schema_version": candidate_union_row.get("schema_version", SCHEMA_VERSION),
         "decision_rule_version": DECISION_RULE_VERSION,

@@ -56,7 +56,7 @@ if str(MB_ROOT) not in sys.path:
     sys.path.insert(0, str(MB_ROOT))
 
 from marketbase.market_collector import collect_market_snapshot  # noqa: E402
-from marketbase.indicators import compute_daily_indicators  # noqa: E402
+from marketbase.indicators import compute_daily_indicators, compute_rps20  # noqa: E402
 from marketbase.volume_ratio import elapsed_trade_minutes  # noqa: E402
 from marketbase.snapshot import fetch_cn_snapshot  # noqa: E402
 from marketbase.realtime_window import fetch_tencent_quotes  # noqa: E402
@@ -64,10 +64,11 @@ from strategies.full_market_t1 import build_candidate_union, write_candidate_uni
 
 REPORT_DIR = MB_ROOT / "reports"  # HTML 报告默认输出目录（可用 --html 覆盖）
 
-IND_FIELDS = ["ma5", "ma10", "ma20", "ma60", "rsi14", "atr14", "atr14_pct",
+IND_FIELDS = ["ma5", "ma10", "ma11", "ma20", "ma23", "ma60", "rsi14", "atr14", "atr14_pct",
               "boll_upper", "boll_middle", "boll_lower", "boll_position",
               "return_5d", "return_10d", "return_20d",
-              "upper_shadow_ratio", "lower_shadow_ratio", "input_rows"]
+              "upper_shadow_ratio", "lower_shadow_ratio", "repeated_upper_shadow",
+              "momentum_delta_1", "momentum_delta_3", "input_rows"]
 
 CN_TZ = timezone(timedelta(hours=8))
 
@@ -685,13 +686,18 @@ def main() -> int:
     chg_abs = pd.to_numeric(df["change_pct"], errors="coerce").fillna(0)
     df = df[(chg_abs < 9.9) & (chg_abs > -9.9)]  # 涨跌停近似剔除
     df = df[df["market"] != "bj"]
+    # v2.1 (2026-09-03): 用户指令型规则——剔除创业板(30)/科创板(68)，仅沪主板(60)/深主板(00)参与
+    code_str = df["code"].astype(str).str.zfill(6)
+    df = df[code_str.str.startswith(("60", "00"))]
+    # 正式下限仍为 50 元；40–49.99 元保留到候选并集，由价格带分类强制影子化。
+    df = df[pd.to_numeric(df["price"], errors="coerce").fillna(0) >= 40]
     df = df[pd.to_numeric(df["volume"], errors="coerce").fillna(0) > 0]
     if "listed_days" in df.columns:
         ld = pd.to_numeric(df["listed_days"], errors="coerce")
         df = df[(ld.isna()) | (ld >= 60)]
     df["industry"] = df["industry"].fillna("未知") if "industry" in df.columns else "未知"
     after_hard = len(df)
-    log(f"② 硬过滤：{initial} -> {after_hard}")
+    log(f"② 硬过滤：{initial} -> {after_hard}" + "（仅主板 + 现价≥40；40–49.99 仅影子）")
 
     # ③ 市场环境（实时）
     valid_chg = pd.to_numeric(df["change_pct"], errors="coerce").dropna()
@@ -719,6 +725,7 @@ def main() -> int:
     t0 = time.perf_counter()
     ind_df = compute_indicators_parallel(df, official_daily_cache_root(args.data_root),
                                          today_str, args.workers)
+    ind_df["rps20"] = ind_df["code"].map(compute_rps20(ind_df))
     avg5d = ind_df.set_index("code")["avg5d"]
     df = df.merge(ind_df, on="code", how="left")
     df = df.dropna(subset=["ma5", "ma10", "ma20", "ma60", "rsi14", "atr14_pct", "boll_position"])
@@ -748,12 +755,17 @@ def main() -> int:
         & (df["rr_ratio"] >= 1.5)
         & (df["industry_chg"] > 0)
     ].sort_values("opportunity_score", ascending=False)
-    official = candidates[
-        (candidates["opportunity_score"] >= 55) & (candidates["tail_risk_count"] == 0)
+    production_candidates = candidates[pd.to_numeric(candidates["price"], errors="coerce") >= 50]
+    official = production_candidates[
+        (production_candidates["opportunity_score"] >= 55) & (production_candidates["tail_risk_count"] == 0)
     ].head(20).copy()
     official["fast_entry"] = official["opportunity_score"] >= 85
-    watch = candidates[~candidates.index.isin(official.index)].head(15)
-    log(f"⑧ 评分完成：候选 {len(candidates)} 只 | 正式 {len(official)} 只 | 观察 {len(watch)} 只")
+    watch = production_candidates[~production_candidates.index.isin(official.index)].head(15)
+    shadow_count = int((pd.to_numeric(candidates["price"], errors="coerce") < 50).sum())
+    log(
+        f"⑧ 评分完成：候选并集 {len(candidates)} 只（影子 {shadow_count}）"
+        f" | 正式 {len(official)} 只 | 观察 {len(watch)} 只"
+    )
 
     # ⑨ 输出
     fast_dir = args.data_root / "cache" / "fast"
@@ -764,11 +776,12 @@ def main() -> int:
                    "opportunity_score", "tail_risk_count",
                    "buy_low", "buy_high", "chase_line", "protect",
                    "sell1_low", "sell1_high", "sell2_low", "sell2_high",
-                   "rr_ratio", "rsi14", "atr14_pct", "boll_position",
-                   "trend_aligned", "return_5d", "return_20d"]
-    out_df = candidates[[c for c in output_cols if c in candidates.columns]].copy()
-    out_df["opportunity_tags"] = candidates["opportunity_tags"].apply(lambda x: "|".join(x))
-    out_df["tail_risk_tags"] = candidates["tail_risk_tags"].apply(lambda x: "|".join(x))
+                   "rr_ratio", "rsi14", "rps20", "atr14_pct", "boll_position",
+                   "trend_aligned", "return_5d", "return_20d", "ma11", "ma23",
+                   "momentum_delta_1", "momentum_delta_3", "repeated_upper_shadow"]
+    out_df = production_candidates[[c for c in output_cols if c in production_candidates.columns]].copy()
+    out_df["opportunity_tags"] = production_candidates["opportunity_tags"].apply(lambda x: "|".join(x))
+    out_df["tail_risk_tags"] = production_candidates["tail_risk_tags"].apply(lambda x: "|".join(x))
     out_df.to_csv(csv_path, index=False, encoding="utf-8-sig")
     funnel_counts = {
         "initial": initial,

@@ -120,27 +120,32 @@ def test_main_writes_candidate_union_with_scan_metadata(tmp_path: Path, monkeypa
             return fixed_now.astimezone(tz)
 
     def fake_snapshot(data_root: Path, observed_at, fresh_minutes: int):
+        def row(code: str, price: float):
+            return {
+                "code": code,
+                "name": f"测试{code}",
+                "market": "sh" if code.startswith("6") else "sz",
+                "price": price,
+                "change_pct": 2.0,
+                "volume": 1_000_000,
+                "amount": 80_000_000,
+                "circ_mv": 4_000_000_000,
+                "turnover_rate": 1.2,
+                "industry": "银行",
+                "concepts": "金融",
+                "observed_at": observed_label,
+                "is_st": False,
+                "is_suspended": False,
+                "delist_risk": False,
+                "listed_days": 300,
+            }
         return (
             pd.DataFrame(
                 [
-                    {
-                        "code": "600000",
-                        "name": "浦发银行",
-                        "market": "sh",
-                        "price": 52.0,
-                        "change_pct": 2.0,
-                        "volume": 1_000_000,
-                        "amount": 80_000_000,
-                        "circ_mv": 4_000_000_000,
-                        "turnover_rate": 1.2,
-                        "industry": "银行",
-                        "concepts": "金融",
-                        "observed_at": observed_label,
-                        "is_st": False,
-                        "is_suspended": False,
-                        "delist_risk": False,
-                        "listed_days": 300,
-                    }
+                    row("600039", 39.99),
+                    row("600040", 40.0),
+                    row("600049", 49.99),
+                    row("600050", 50.0),
                 ]
             ),
             "fixture-snapshot",
@@ -148,40 +153,46 @@ def test_main_writes_candidate_union_with_scan_metadata(tmp_path: Path, monkeypa
             {},
         )
 
-    def fake_indicator_frame():
+    def fake_indicator_frame(codes=("600040", "600049", "600050")):
         return pd.DataFrame(
             [
-                {
-                    "code": "600000",
-                    "avg5d": 400_000.0,
-                    "ma5": 50.0,
-                    "ma10": 49.0,
-                    "ma20": 48.0,
-                    "ma60": 47.0,
+                    {
+                        "code": code,
+                        "avg5d": 400_000.0,
+                        "ma5": 38.0,
+                        "ma10": 37.0,
+                        "ma11": 36.8,
+                        "ma20": 36.0,
+                        "ma23": 35.8,
+                        "ma60": 35.0,
                     "rsi14": 55.0,
                     "atr14": 1.0,
                     "atr14_pct": 2.0,
                     "boll_upper": 55.0,
                     "boll_middle": 52.0,
-                    "boll_lower": 50.0,
+                        "boll_lower": 35.0,
                     "boll_position": 0.5,
                     "return_5d": 0.03,
                     "return_10d": 0.04,
-                    "return_20d": 0.05,
+                        "return_20d": 0.05,
+                        "momentum_delta_1": 0.02,
+                        "momentum_delta_3": 0.05,
+                        "repeated_upper_shadow": False,
                     "upper_shadow_ratio": 0.1,
                     "lower_shadow_ratio": 0.1,
                     "input_rows": 250,
                 }
+                for code in codes
             ]
         )
 
     def fake_compute_indicators(df, daily_root: Path, today_str: str, workers: int):
-        return fake_indicator_frame()
+        return fake_indicator_frame(tuple(df["code"]))
 
     def fake_load_or_compute_indicators(
         df, daily_root: Path, today_str: str, workers: int, fast_dir: Path
     ):
-        return fake_indicator_frame()
+        return fake_indicator_frame(tuple(df["code"]))
 
     def fake_apply_volume_ratio(df, avg5d, observed_at):
         result = df.copy()
@@ -217,7 +228,6 @@ def test_main_writes_candidate_union_with_scan_metadata(tmp_path: Path, monkeypa
     monkeypatch.setattr(fast_t1_scan, "apply_volume_ratio", fake_apply_volume_ratio)
     monkeypatch.setattr(fast_t1_scan, "official_daily_cache_root", lambda data_root: tmp_path / "daily")
     monkeypatch.setattr(fast_t1_scan, "render_html", lambda ctx: "<html></html>")
-    monkeypatch.setattr(fast_t1_scan, "build_candidate_union", fake_build_candidate_union, raising=False)
     monkeypatch.setattr(fast_t1_scan, "write_candidate_union", fake_write_candidate_union, raising=False)
     monkeypatch.setattr(
         sys,
@@ -236,16 +246,28 @@ def test_main_writes_candidate_union_with_scan_metadata(tmp_path: Path, monkeypa
     rc = fast_t1_scan.main()
 
     assert rc == 0
-    assert captured["trade_date"] == "2026-09-03"
-    assert captured["observed_at"] == "2026-09-03T13:45:00+08:00"
-    assert captured["market_rows"] == 1
-    assert captured["funnel"] == {
-        "initial": 1,
-        "after_hard": 1,
-        "candidates": 1,
+    assert captured["payload"]["trade_date"] == "2026-09-03"
+    assert captured["payload"]["observed_at"] == "2026-09-03T13:45:00+08:00"
+    assert captured["payload"]["market_rows"] == 4
+    assert captured["payload"]["funnel"] == {
+        "initial": 4,
+        "after_hard": 3,
+        "candidates": 3,
         "official": 1,
         "watch": 0,
     }
     assert captured["path"] == tmp_path / "cache" / "fast" / "candidate_union_20260903_1345.json"
-    assert len(captured["frame"]) == 1
-    assert {"ma10", "ma20", "return_10d", "elapsed_trade_minutes"}.issubset(captured["frame"].columns)
+    by_code = {row["code"]: row for row in captured["payload"]["candidates"]}
+    assert "600039" not in by_code
+    assert by_code["600040"]["price_band"] == "shadow_40_50"
+    assert by_code["600049"]["price_band"] == "shadow_40_50"
+    assert by_code["600050"]["price_band"] == "production"
+    lifecycle_fields = {
+        "ma11",
+        "ma23",
+        "momentum_delta_1",
+        "momentum_delta_3",
+        "repeated_upper_shadow",
+        "rps20",
+    }
+    assert all(lifecycle_fields.issubset(row) for row in by_code.values())

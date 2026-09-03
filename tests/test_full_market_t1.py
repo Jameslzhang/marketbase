@@ -169,6 +169,9 @@ def _base_snapshot(**overrides):
         "turnover_rate": 4.8,
         "low": 9.7,
         "high": 10.8,
+        "long_upper_shadow": False,
+        "repeated_upper_shadow": False,
+        "limit_proximity": False,
     }
     payload.update(overrides)
     return payload
@@ -178,6 +181,18 @@ def _base_daily(**overrides):
     payload = {
         "ma5": 9.9,
         "ma10": 9.8,
+        "ma11": 9.8,
+        "ma20": 9.7,
+        "ma23": 9.6,
+        "rsi14": 55.0,
+        "rps20": 80.0,
+        "momentum_delta_1": 0.02,
+        "momentum_delta_3": 0.05,
+        "boll_position": 0.5,
+        "return_5d": 0.03,
+        "return_20d": 0.09,
+        "atr14": 1.0,
+        "atr14_pct": 0.02,
     }
     payload.update(overrides)
     return payload
@@ -228,6 +243,10 @@ def _candidate(**overrides):
         "opportunity_score": 70.0,
         "price_band": "production",
         "candidate_reason": ["trend_full"],
+        "trend_aligned": True,
+        "volume_ratio": 2.0,
+        "tail_risk_tags": [],
+        "sell1_low": 57.0,
     }
     payload.update(overrides)
     return payload
@@ -722,6 +741,44 @@ def test_buyable_requires_both_scores_and_all_hard_gates():
     assert row["only_choose_one_eligible"] is True
     assert row["decision"] == "executable_candidate"
     assert row["reason_codes"] == []
+    assert row["strategy_channel"] == "trend_continuation"
+    assert row["dual_axis"]["decision"] == "can_enter_candidate"
+    assert row["entry_state"] == "entry_active"
+    assert [item["to_state"] for item in row["entry_state_trajectory"]] == [
+        "deep_watch",
+        "conditional_watch",
+        "confirmed_candidate",
+        "plan_published",
+        "entry_active",
+    ]
+
+
+def test_global_data_not_ready_vetoes_every_production_action_but_keeps_audit_rows():
+    candidates = [_candidate(code="600001"), _candidate(code="600002")]
+    objectives = {candidate["code"]: _objective() for candidate in candidates}
+
+    decision = full_market_t1.build_full_market_decision(
+        _handoff(candidates, objectives),
+        {
+            "critical_ready": False,
+            "objective_by_code": objectives,
+            "market": _market(critical_ready=False),
+        },
+        decision_at=datetime(2026, 9, 3, 13, 45, tzinfo=TZ_SHANGHAI),
+    )
+
+    assert decision["global_status"] == "data_not_ready"
+    assert decision["only_choose_one"] is None
+    assert decision["executable"] == []
+    assert decision["summary"]["executable"] == 0
+    assert len(decision["audit_rows"]) == 2
+    for row in decision["audit_rows"]:
+        assert row["production_buyable"] is False
+        assert row["buyable"] is False
+        assert row["only_choose_one_eligible"] is False
+        assert "global_data_not_ready" in row["reason_codes"]
+        assert row["entry_state"] == "rejected"
+        assert row["dual_axis"]["reason_code"] == "market_veto"
 
 
 @pytest.mark.parametrize(
@@ -734,7 +791,7 @@ def test_buyable_requires_both_scores_and_all_hard_gates():
         ({}, {"executability_overrides": {"buy_low": 52.5}}, {}, "buy_zone_not_ready", "conditional_watch"),
         ({}, {"executability_overrides": {"no_chase_price": 51.0}}, {}, "above_no_chase_price", "conditional_watch"),
         ({}, {"industry_overrides": {"industry_sync": False}}, {}, "industry_sync_pending", "conditional_watch"),
-        ({}, {}, {"advance_ratio": 0.34}, "market_breadth_below_threshold", "conditional_watch"),
+        ({}, {}, {"advance_ratio": 0.34}, "market_breadth_below_threshold", "reject"),
         ({}, {"executability_overrides": {"protection_constructible": False}}, {}, "protection_not_constructible", "conditional_watch"),
         ({}, {"executability_overrides": {"is_untradable": True}}, {}, "candidate_untradable", "reject"),
         ({}, {"executability_overrides": {"fee_adjusted_rr": 1.49}}, {}, "fee_adjusted_rr_below_threshold", "conditional_watch"),
