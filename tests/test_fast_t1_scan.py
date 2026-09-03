@@ -148,7 +148,7 @@ def test_main_writes_candidate_union_with_scan_metadata(tmp_path: Path, monkeypa
             {},
         )
 
-    def fake_indicators(df, daily_root: Path, today_str: str, workers: int, fast_dir: Path):
+    def fake_indicator_frame():
         return pd.DataFrame(
             [
                 {
@@ -175,6 +175,14 @@ def test_main_writes_candidate_union_with_scan_metadata(tmp_path: Path, monkeypa
             ]
         )
 
+    def fake_compute_indicators(df, daily_root: Path, today_str: str, workers: int):
+        return fake_indicator_frame()
+
+    def fake_load_or_compute_indicators(
+        df, daily_root: Path, today_str: str, workers: int, fast_dir: Path
+    ):
+        return fake_indicator_frame()
+
     def fake_apply_volume_ratio(df, avg5d, observed_at):
         result = df.copy()
         result["volume_ratio"] = 2.0
@@ -199,7 +207,13 @@ def test_main_writes_candidate_union_with_scan_metadata(tmp_path: Path, monkeypa
     monkeypatch.setattr(fast_t1_scan, "datetime", FixedDateTime)
     monkeypatch.setattr(fast_t1_scan, "get_snapshot", fake_snapshot)
     monkeypatch.setattr(fast_t1_scan, "ensure_industry", lambda df, data_root: (df, "fixture-industry"))
-    monkeypatch.setattr(fast_t1_scan, "load_or_compute_indicators", fake_indicators)
+    monkeypatch.setattr(fast_t1_scan, "compute_indicators_parallel", fake_compute_indicators)
+    if hasattr(fast_t1_scan, "load_or_compute_indicators"):
+        monkeypatch.setattr(
+            fast_t1_scan,
+            "load_or_compute_indicators",
+            fake_load_or_compute_indicators,
+        )
     monkeypatch.setattr(fast_t1_scan, "apply_volume_ratio", fake_apply_volume_ratio)
     monkeypatch.setattr(fast_t1_scan, "official_daily_cache_root", lambda data_root: tmp_path / "daily")
     monkeypatch.setattr(fast_t1_scan, "render_html", lambda ctx: "<html></html>")
