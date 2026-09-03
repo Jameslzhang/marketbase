@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 from typing import Mapping, Sequence
@@ -16,6 +17,9 @@ RESTRICTED_PREFIXES = ("300", "301", "688")
 SCHEMA_VERSION = "1.0.0"
 EXECUTION_RULE_VERSION = "1.0.0"
 DECISION_RULE_VERSION = "1.0.0"
+CANDIDATE_PROTECTION_RULE_VERSION = "candidate_guardrail_formula_v1"
+CANDIDATE_FEE_SOURCE = "candidate_cn_equity_fee_formula_v1"
+FEE_ADJUSTED_RR_FORMULA_VERSION = "cn_equity_fee_v1"
 REQUIRED_EXECUTION_FIELDS = (
     "dist_vwap_pct",
     "change_pct",
@@ -142,26 +146,9 @@ def _normalize_time_label(value) -> str | None:
     return None
 
 
-def build_minute_evidence(minutes: pd.DataFrame, code: str, observed_at: datetime) -> dict[str, object]:
-    normalized_code = _normalize_code(code)
-    reason_codes: list[str] = []
-
-    if minutes is None or minutes.empty:
-        return {
-            "code": normalized_code,
-            "hold_minutes": [],
-            "activity_non_contracting": False,
-            "confirmed": False,
-            "last_completed_minute": None,
-            "vwap": None,
-            "afternoon_vwap": None,
-            "pivot": None,
-            "named_pivot": None,
-            "execution_rule_version": EXECUTION_RULE_VERSION,
-            "reason_codes": ["minute_missing", "vwap_missing", "insufficient_completed_minutes"],
-        }
-
+def _normalize_minute_frame(minutes: pd.DataFrame, code: str) -> pd.DataFrame:
     frame = minutes.copy()
+    normalized_code = _normalize_code(code)
     if "code" in frame.columns:
         frame["code"] = frame["code"].astype(str).str.strip().str.zfill(6)
         frame = frame[frame["code"] == normalized_code]
@@ -181,7 +168,91 @@ def build_minute_evidence(minutes: pd.DataFrame, code: str, observed_at: datetim
     frame["_volume"] = pd.to_numeric(frame.get("volume"), errors="coerce")
     frame["_amount"] = pd.to_numeric(frame.get("amount"), errors="coerce")
     frame = frame.dropna(subset=["_close", "_volume", "_amount"])
-    frame = frame.sort_values("_time_label")
+    return frame.sort_values("_time_label")
+
+
+def _coerce_non_negative_int(value) -> int | None:
+    native = _to_native(value)
+    if isinstance(native, bool):
+        return None
+    if isinstance(native, int):
+        return native if native >= 0 else None
+    return None
+
+
+def _is_finite_positive(value: float | None) -> bool:
+    return value is not None and math.isfinite(value) and value > 0
+
+
+def _derive_candidate_protection_constructible(candidate: Mapping[str, object]) -> tuple[bool | None, str]:
+    explicit = _coerce_bool(candidate.get("protection_constructible"))
+    if isinstance(explicit, bool):
+        return explicit, "explicit_candidate_field"
+
+    protect = _first_float(candidate.get("protect"), candidate.get("protection_price"))
+    buy_low = _first_float(candidate.get("buy_low"), candidate.get("buy_zone_lower"))
+    buy_high = _first_float(candidate.get("buy_high"), candidate.get("buy_zone_upper"))
+    no_chase_price = _first_float(candidate.get("no_chase_price"), candidate.get("chase_line"))
+    if not all(_is_finite_positive(value) for value in (protect, buy_low, buy_high, no_chase_price)):
+        return None, "missing"
+    derived = bool(protect < buy_low <= buy_high <= no_chase_price)
+    return derived, CANDIDATE_PROTECTION_RULE_VERSION
+
+
+def _derive_candidate_fee_adjusted_rr(candidate: Mapping[str, object], protection_constructible: bool | None) -> tuple[float | None, str, str]:
+    explicit = _coerce_float(candidate.get("fee_adjusted_rr"))
+    if explicit is not None:
+        source = str(candidate.get("fee_adjusted_rr_source") or "explicit_candidate_field")
+        version = str(candidate.get("fee_adjusted_rr_formula_version") or FEE_ADJUSTED_RR_FORMULA_VERSION)
+        return round(explicit, 4), source, version
+
+    buy_high = _coerce_float(candidate.get("buy_high"))
+    protect = _first_float(candidate.get("protect"), candidate.get("protection_price"))
+    sell1_low = _coerce_float(candidate.get("sell1_low"))
+    if (
+        protection_constructible is not True
+        or not _is_finite_positive(buy_high)
+        or not _is_finite_positive(protect)
+        or not _is_finite_positive(sell1_low)
+        or protect >= buy_high
+        or sell1_low <= buy_high
+    ):
+        return None, "missing", FEE_ADJUSTED_RR_FORMULA_VERSION
+
+    gross_reward = sell1_low - buy_high
+    gross_risk = buy_high - protect
+    if gross_reward <= 0 or gross_risk <= 0:
+        return None, "missing", FEE_ADJUSTED_RR_FORMULA_VERSION
+
+    estimated_buy_cost = buy_high * 0.00025
+    estimated_sell_cost = sell1_low * 0.00125
+    adjusted_reward = gross_reward - estimated_buy_cost - estimated_sell_cost
+    adjusted_risk = gross_risk + estimated_buy_cost
+    if adjusted_reward <= 0 or adjusted_risk <= 0:
+        return None, "missing", FEE_ADJUSTED_RR_FORMULA_VERSION
+    return round(adjusted_reward / adjusted_risk, 4), CANDIDATE_FEE_SOURCE, FEE_ADJUSTED_RR_FORMULA_VERSION
+
+
+def build_minute_evidence(minutes: pd.DataFrame, code: str, observed_at: datetime) -> dict[str, object]:
+    normalized_code = _normalize_code(code)
+    reason_codes: list[str] = []
+
+    if minutes is None or minutes.empty:
+        return {
+            "code": normalized_code,
+            "hold_minutes": [],
+            "activity_non_contracting": False,
+            "confirmed": False,
+            "last_completed_minute": None,
+            "vwap": None,
+            "afternoon_vwap": None,
+            "pivot": None,
+            "named_pivot": None,
+            "execution_rule_version": EXECUTION_RULE_VERSION,
+            "reason_codes": ["minute_missing", "vwap_missing", "insufficient_completed_minutes"],
+        }
+
+    frame = _normalize_minute_frame(minutes, normalized_code)
 
     current_minute = observed_at.strftime("%H:%M")
     completed = frame[frame["_time_label"] < current_minute].copy()
@@ -230,7 +301,7 @@ def build_minute_evidence(minutes: pd.DataFrame, code: str, observed_at: datetim
         previous3_volume = float(baseline["_volume"].sum())
         last3_volume = float(hold["_volume"].sum())
         activity_non_contracting = last3_volume >= previous3_volume * 0.85
-        holds_above_references = bool(((hold_closes > vwap) & (hold_closes > named_pivot)).all())
+        holds_above_references = bool(((hold_closes > vwap) & (hold_closes >= named_pivot)).all())
         confirmed = activity_non_contracting and holds_above_references
     else:
         activity_non_contracting = False
@@ -249,7 +320,7 @@ def build_minute_evidence(minutes: pd.DataFrame, code: str, observed_at: datetim
     if len(completed) >= 6 and vwap is not None and named_pivot is not None and not confirmed:
         if not bool((hold["_close"] > vwap).all()):
             reason_codes.append("hold_below_vwap")
-        if not bool((hold["_close"] > named_pivot).all()):
+        if not bool((hold["_close"] >= named_pivot).all()):
             reason_codes.append("hold_below_pivot")
 
     return {
@@ -341,10 +412,17 @@ def build_candidate_union(
         market = str(candidate.get("market", "") or "").strip()
         price_value = pd.to_numeric(candidate.get("price"), errors="coerce")
         price = float(price_value) if pd.notna(price_value) else float("nan")
+        protection_constructible, protection_source = _derive_candidate_protection_constructible(candidate)
+        fee_adjusted_rr, fee_rr_source, fee_rr_version = _derive_candidate_fee_adjusted_rr(candidate, protection_constructible)
         candidate["code"] = code
         candidate["market"] = market
         candidate["candidate_reason"] = _normalize_candidate_reason(candidate.get("opportunity_tags"))
         candidate["price_band"] = classify_price_band(code, market, price)
+        candidate["protection_constructible"] = protection_constructible
+        candidate["protection_constructible_source"] = protection_source
+        candidate["fee_adjusted_rr"] = fee_adjusted_rr
+        candidate["fee_adjusted_rr_source"] = fee_rr_source
+        candidate["fee_adjusted_rr_formula_version"] = fee_rr_version
         candidate["production_buyable"] = False
         candidate["buyable"] = False
         candidate["only_choose_one_eligible"] = False
@@ -569,8 +647,6 @@ def _build_executability(candidate: Mapping[str, object], snapshot: Mapping[str,
     protect = _coerce_float(candidate_row.get("protect"))
     protection_price = _coerce_float(candidate_row.get("protection_price"))
     protection_constructible = _coerce_bool(candidate_row.get("protection_constructible"))
-    if protection_constructible is None and (protect is not None or protection_price is not None):
-        protection_constructible = True
 
     is_untradable = _coerce_bool(snapshot_row.get("is_untradable"))
     if is_untradable is None and isinstance(snapshot_row.get("tradable"), bool):
@@ -582,7 +658,7 @@ def _build_executability(candidate: Mapping[str, object], snapshot: Mapping[str,
         "no_chase_price": _first_float(candidate_row.get("no_chase_price"), candidate_row.get("chase_line")),
         "protection_price": protection_price if protection_price is not None else protect,
         "protection_constructible": protection_constructible,
-        "fee_adjusted_rr": _first_float(candidate_row.get("fee_adjusted_rr"), candidate_row.get("rr_ratio")),
+        "fee_adjusted_rr": _coerce_float(candidate_row.get("fee_adjusted_rr")),
         "is_untradable": is_untradable,
         "dist_vwap_pct": _first_float(candidate_row.get("dist_vwap_pct"), _derive_percentage(
             None if price is None or vwap is None else price - vwap,
@@ -650,19 +726,16 @@ def _prepare_handoff(
         code_minutes = minute_frame[minute_frame["code"] == code].copy() if "code" in minute_frame.columns else minute_frame.iloc[0:0].copy()
         if pivot is not None and not code_minutes.empty:
             code_minutes["named_pivot"] = pivot
-        minute_evidence = build_minute_evidence(code_minutes, code, decision_at)
+        normalized_minutes = _normalize_minute_frame(code_minutes, code) if not code_minutes.empty else code_minutes.copy()
+        minute_evidence = build_minute_evidence(normalized_minutes, code, decision_at)
         if pivot is not None:
             minute_evidence["named_pivot"] = pivot
             minute_evidence["pivot"] = pivot
             minute_evidence["pivot_source"] = pivot_source
         last_completed = None
         last_label = minute_evidence.get("last_completed_minute")
-        if isinstance(last_label, str) and not code_minutes.empty:
-            matches = code_minutes[code_minutes["time"].astype(str).str.slice(0, 5) == last_label]
-            if matches.empty and "timestamp" in code_minutes.columns:
-                matches = code_minutes[
-                    pd.to_datetime(code_minutes["timestamp"], errors="coerce").dt.strftime("%H:%M") == last_label
-                ]
+        if isinstance(last_label, str) and not normalized_minutes.empty:
+            matches = normalized_minutes[normalized_minutes["_time_label"] == last_label]
             if not matches.empty:
                 last_completed = {str(key): _to_native(value) for key, value in matches.iloc[-1].to_dict().items()}
         if last_completed is not None:
@@ -702,6 +775,9 @@ def _prepare_handoff(
 def _validate_decision_payload(decision: Mapping[str, object]) -> None:
     required_keys = (
         "schema_version",
+        "decision_rule_version",
+        "execution_rule_version",
+        "input_metadata",
         "summary",
         "audit_rows",
         "executable",
@@ -713,17 +789,107 @@ def _validate_decision_payload(decision: Mapping[str, object]) -> None:
     for key in required_keys:
         if key not in decision:
             raise ValueError(f"decision payload missing required key: {key}")
-    shadow_rows = decision.get("shadow")
-    if not isinstance(shadow_rows, list):
-        raise ValueError("decision shadow group must be a list")
-    for row in shadow_rows:
+    for key in ("schema_version", "decision_rule_version", "execution_rule_version"):
+        value = decision.get(key)
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"decision payload {key} must be a non-empty string")
+    input_metadata = _to_native(decision.get("input_metadata"))
+    if not isinstance(input_metadata, Mapping):
+        raise ValueError("decision input_metadata must be a mapping")
+    input_metadata_mapping = _native_mapping(input_metadata)
+    candidate_union_metadata = _native_mapping(input_metadata_mapping.get("candidate_union"))
+    if not isinstance(candidate_union_metadata.get("path"), str) or not str(candidate_union_metadata["path"]).strip():
+        raise ValueError("decision input_metadata.candidate_union.path must be a non-empty string")
+    if not isinstance(candidate_union_metadata.get("sha256"), str) or not str(candidate_union_metadata["sha256"]).strip():
+        raise ValueError("decision input_metadata.candidate_union.sha256 must be a non-empty string")
+    declared_inputs = _to_native(input_metadata_mapping.get("declared_inputs"))
+    if not isinstance(declared_inputs, Mapping) or not declared_inputs:
+        raise ValueError("decision input_metadata.declared_inputs must be a non-empty mapping")
+    for key, record in declared_inputs.items():
+        record_mapping = _native_mapping(record)
+        if not isinstance(record_mapping.get("path"), str) or not str(record_mapping["path"]).strip():
+            raise ValueError(f"decision input_metadata.declared_inputs.{key}.path must be a non-empty string")
+        if not isinstance(record_mapping.get("sha256"), str) or not str(record_mapping["sha256"]).strip():
+            raise ValueError(f"decision input_metadata.declared_inputs.{key}.sha256 must be a non-empty string")
+
+    summary = _to_native(decision.get("summary"))
+    if not isinstance(summary, Mapping):
+        raise ValueError("decision summary must be a mapping")
+    for key in ("executable", "executable_exposed", "watch", "rejected", "shadow_count", "evaluated"):
+        if _coerce_non_negative_int(summary.get(key)) is None:
+            raise ValueError(f"decision summary.{key} must be a non-negative int")
+
+    group_lengths: dict[str, int] = {}
+
+    def _validate_row_group(group_name: str, *, enforce_shadow_false: bool = False) -> None:
+        rows = decision.get(group_name)
+        if not isinstance(rows, list):
+            raise ValueError(f"decision {group_name} group must be a list")
+        group_lengths[group_name] = len(rows)
+        for row in rows:
+            mapping = _native_mapping(row)
+            code = str(mapping.get("code", "") or "")
+            if len(code) != 6 or not code.isdigit():
+                raise ValueError(f"{group_name} row code must be a 6-digit string")
+            if not isinstance(mapping.get("decision"), str) or not str(mapping.get("decision")).strip():
+                raise ValueError(f"{group_name} row decision must be a non-empty string")
+            for flag in ("production_buyable", "buyable", "only_choose_one_eligible"):
+                if not isinstance(mapping.get(flag), bool):
+                    raise ValueError(f"{group_name} row {flag} must be bool")
+            if not isinstance(mapping.get("reason_codes"), list):
+                raise ValueError(f"{group_name} row reason_codes must be a list")
+            if enforce_shadow_false:
+                if mapping.get("production_buyable") is not False:
+                    raise ValueError("shadow row must keep production_buyable=false")
+                if mapping.get("buyable") is not False:
+                    raise ValueError("shadow row must keep buyable=false")
+                if mapping.get("only_choose_one_eligible") is not False:
+                    raise ValueError("shadow row must keep only_choose_one_eligible=false")
+
+    _validate_row_group("audit_rows")
+    _validate_row_group("executable")
+    _validate_row_group("watch")
+    _validate_row_group("rejected")
+    _validate_row_group("shadow", enforce_shadow_false=True)
+
+    audit_rows = decision.get("audit_rows")
+    if not isinstance(audit_rows, list):
+        raise ValueError("decision audit_rows group must be a list")
+    executable_count = 0
+    watch_count = 0
+    rejected_count = 0
+    shadow_count = 0
+    for row in audit_rows:
         mapping = _native_mapping(row)
-        if mapping.get("production_buyable") is not False:
-            raise ValueError("shadow row must keep production_buyable=false")
-        if mapping.get("buyable") is not False:
-            raise ValueError("shadow row must keep buyable=false")
-        if mapping.get("only_choose_one_eligible") is not False:
-            raise ValueError("shadow row must keep only_choose_one_eligible=false")
+        row_decision = str(mapping.get("decision", "") or "")
+        if row_decision == "executable_candidate":
+            executable_count += 1
+        elif row_decision == "conditional_watch":
+            watch_count += 1
+        elif row_decision in {"reject", "data_insufficient"}:
+            rejected_count += 1
+        elif row_decision.startswith("shadow_"):
+            shadow_count += 1
+    if _coerce_non_negative_int(summary.get("executable")) != executable_count:
+        raise ValueError("decision summary.executable must match audit_rows")
+    if _coerce_non_negative_int(summary.get("executable_exposed")) != group_lengths["executable"]:
+        raise ValueError("decision summary.executable_exposed must match executable group")
+    if _coerce_non_negative_int(summary.get("watch")) != watch_count or watch_count != group_lengths["watch"]:
+        raise ValueError("decision summary.watch must match watch group")
+    if _coerce_non_negative_int(summary.get("rejected")) != rejected_count or rejected_count != group_lengths["rejected"]:
+        raise ValueError("decision summary.rejected must match rejected group")
+    if _coerce_non_negative_int(summary.get("shadow_count")) != shadow_count or shadow_count != group_lengths["shadow"]:
+        raise ValueError("decision summary.shadow_count must match shadow group")
+    if _coerce_non_negative_int(summary.get("evaluated")) != len(audit_rows):
+        raise ValueError("decision summary.evaluated must match audit_rows")
+    if group_lengths["executable"] > executable_count:
+        raise ValueError("decision executable group cannot exceed executable audit rows")
+
+    only_choose_one = decision.get("only_choose_one")
+    if only_choose_one is not None:
+        code = str(only_choose_one)
+        if len(code) != 6 or not code.isdigit():
+            raise ValueError("decision only_choose_one must be null or a 6-digit code")
 
 
 def _write_json_atomic(path: Path, payload: Mapping[str, object]) -> Path:

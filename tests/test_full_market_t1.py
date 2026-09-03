@@ -193,6 +193,11 @@ def test_build_candidate_union_preserves_metadata_and_normalizes_reasons():
                 "price": 52.0,
                 "amount": 80_000_000,
                 "opportunity_tags": "trend_full|vr_good(2.0)",
+                "buy_low": 51.2,
+                "buy_high": 51.8,
+                "chase_line": 52.1,
+                "protect": 50.8,
+                "sell1_low": 54.4,
             },
             {
                 "code": "000001",
@@ -201,6 +206,11 @@ def test_build_candidate_union_preserves_metadata_and_normalizes_reasons():
                 "price": 45.0,
                 "amount": 60_000_000,
                 "opportunity_tags": ["shadow_watch"],
+                "buy_low": 44.2,
+                "buy_high": 44.7,
+                "chase_line": 45.0,
+                "protect": 44.0,
+                "sell1_low": 46.3,
             },
             {
                 "code": "600519",
@@ -208,6 +218,11 @@ def test_build_candidate_union_preserves_metadata_and_normalizes_reasons():
                 "name": "贵州茅台",
                 "price": 1800.0,
                 "amount": 90_000_000,
+                "buy_low": 1785.0,
+                "buy_high": 1790.0,
+                "chase_line": 1795.0,
+                "protect": 1770.0,
+                "sell1_low": 1830.0,
             },
         ]
     )
@@ -233,6 +248,11 @@ def test_build_candidate_union_preserves_metadata_and_normalizes_reasons():
     assert [row["code"] for row in payload["candidates"]] == ["600000", "000001", "600519"]
     assert payload["candidates"][0]["candidate_reason"] == ["trend_full", "vr_good(2.0)"]
     assert payload["candidates"][0]["price_band"] == "production"
+    assert payload["candidates"][0]["protection_constructible"] is True
+    assert payload["candidates"][0]["protection_constructible_source"] == "candidate_guardrail_formula_v1"
+    assert payload["candidates"][0]["fee_adjusted_rr_formula_version"] == "cn_equity_fee_v1"
+    assert payload["candidates"][0]["fee_adjusted_rr_source"] == "candidate_cn_equity_fee_formula_v1"
+    assert payload["candidates"][0]["fee_adjusted_rr"] == pytest.approx(2.4868)
     assert payload["candidates"][1]["candidate_reason"] == ["shadow_watch"]
     assert payload["candidates"][1]["price_band"] == "shadow_40_50"
     assert payload["candidates"][2]["candidate_reason"] == []
@@ -258,6 +278,70 @@ def test_candidate_union_is_never_buyable_at_generation_time():
     assert all(row["production_buyable"] is False for row in payload["candidates"])
     assert all(row["buyable"] is False for row in payload["candidates"])
     assert all(row["only_choose_one_eligible"] is False for row in payload["candidates"])
+
+
+def test_build_candidate_union_preserves_explicit_executability_fields_without_aliasing_rr_ratio():
+    frame = pd.DataFrame(
+        [
+            {
+                "code": "600000",
+                "market": "sh",
+                "price": 52.0,
+                "buy_high": 51.5,
+                "protect": 50.9,
+                "sell1_low": 53.7,
+                "protection_constructible": False,
+                "fee_adjusted_rr": 1.61,
+                "fee_adjusted_rr_source": "upstream_explicit",
+                "fee_adjusted_rr_formula_version": "upstream_v9",
+                "rr_ratio": 9.99,
+            },
+            {
+                "code": "600001",
+                "market": "sh",
+                "price": 52.0,
+                "buy_high": 51.5,
+                "protect": 52.5,
+                "sell1_low": 53.7,
+                "rr_ratio": 1.88,
+            },
+            {
+                "code": "600002",
+                "market": "sh",
+                "price": 52.0,
+                "buy_low": 51.0,
+                "buy_high": 51.5,
+                "chase_line": 51.8,
+                "protect": 50.9,
+                "sell1_low": 53.7,
+            },
+        ]
+    )
+
+    payload = build_candidate_union(
+        frame,
+        trade_date="2026-09-03",
+        observed_at="2026-09-03T13:45:00+08:00",
+        market_rows=3,
+        funnel={"initial": 3},
+    )
+
+    first, second, third = payload["candidates"]
+    assert first["protection_constructible"] is False
+    assert first["protection_constructible_source"] == "explicit_candidate_field"
+    assert first["fee_adjusted_rr"] == 1.61
+    assert first["fee_adjusted_rr_source"] == "upstream_explicit"
+    assert first["fee_adjusted_rr_formula_version"] == "upstream_v9"
+    assert second["protection_constructible"] is None
+    assert second["protection_constructible_source"] == "missing"
+    assert second["fee_adjusted_rr"] is None
+    assert second["fee_adjusted_rr_source"] == "missing"
+    assert second["fee_adjusted_rr_formula_version"] == "cn_equity_fee_v1"
+    assert third["protection_constructible"] is True
+    assert third["protection_constructible_source"] == "candidate_guardrail_formula_v1"
+    assert third["fee_adjusted_rr"] == pytest.approx(3.4591)
+    assert third["fee_adjusted_rr_source"] == "candidate_cn_equity_fee_formula_v1"
+    assert third["fee_adjusted_rr_formula_version"] == "cn_equity_fee_v1"
 
 
 def test_write_candidate_union_writes_utf8_json_atomically(tmp_path: Path, monkeypatch):
@@ -349,6 +433,38 @@ def test_build_minute_evidence_excludes_current_unfinished_minute():
     assert evidence["hold_minutes"][-1] == "13:44"
     assert "13:45" not in evidence["hold_minutes"]
     assert evidence["named_pivot"] == pytest.approx(10.02)
+
+
+def test_build_minute_evidence_accepts_timestamp_column_for_completed_minute_lookup():
+    evidence = build_minute_evidence(
+        pd.DataFrame(
+            [
+                {
+                    "code": "1234",
+                    "timestamp": f"2026-09-03T{label}:00+08:00",
+                    "close": close,
+                    "volume": volume,
+                    "amount": round(close * volume, 2),
+                    "named_pivot": 10.02,
+                }
+                for label, close, volume in (
+                    ("13:39", 10.00, 100.0),
+                    ("13:40", 10.01, 100.0),
+                    ("13:41", 10.02, 100.0),
+                    ("13:42", 10.11, 90.0),
+                    ("13:43", 10.13, 85.0),
+                    ("13:44", 10.15, 85.0),
+                    ("13:45", 9.80, 500.0),
+                )
+            ]
+        ),
+        code="1234",
+        observed_at=datetime(2026, 9, 3, 13, 45, 30, tzinfo=TZ_SHANGHAI),
+    )
+
+    assert evidence["confirmed"] is True
+    assert evidence["last_completed_minute"] == "13:44"
+    assert evidence["hold_minutes"] == ["13:42", "13:43", "13:44"]
 
 
 def test_build_minute_evidence_requires_six_completed_rows_to_confirm():
@@ -890,6 +1006,120 @@ def test_orchestrate_full_market_t1_marks_candidate_with_missing_daily_as_data_i
     assert (tmp_path / "decision.json").is_file()
 
 
+def test_orchestrate_full_market_t1_accepts_timestamp_only_intraday_fixture(tmp_path: Path):
+    candidate = {
+        "code": "000001",
+        "name": "平安银行",
+        "market": "sz",
+        "price": 45.0,
+        "amount": 55_000_000,
+        "opportunity_score": 90.0,
+        "price_band": "shadow_40_50",
+        "candidate_reason": ["shadow_watch"],
+        "buy_low": 44.5,
+        "buy_high": 45.2,
+        "chase_line": 45.3,
+        "protect": 43.8,
+        "protection_constructible": True,
+        "fee_adjusted_rr": 1.8,
+        "named_pivot": 44.8,
+    }
+    minute_rows = [
+        {
+            "code": "000001",
+            "timestamp": f"2026-09-03T{label}:00+08:00",
+            "close": close,
+            "volume": volume,
+            "amount": round(close * volume, 2),
+            "named_pivot": 44.8,
+        }
+        for label, close, volume in (
+            ("13:39", 44.45, 1000.0),
+            ("13:40", 44.50, 1000.0),
+            ("13:41", 44.52, 1000.0),
+            ("13:42", 44.80, 900.0),
+            ("13:43", 44.88, 900.0),
+            ("13:44", 45.00, 900.0),
+            ("13:45", 43.80, 1500.0),
+        )
+    ]
+    fixture = _write_full_market_inputs(tmp_path, candidates=[candidate], minute_rows=minute_rows)
+
+    decision = orchestrate_full_market_t1(
+        data_root=fixture["data_root"],
+        candidate_union_path=fixture["candidate_union_path"],
+        decision_at=datetime(2026, 9, 3, 13, 45, tzinfo=TZ_SHANGHAI),
+        output_path=tmp_path / "decision.json",
+    )
+
+    shadow = decision["shadow"][0]
+    assert shadow["decision"] == "shadow_watch"
+    assert shadow["minute_evidence"]["last_completed_minute"] == "13:44"
+    assert shadow["minute_evidence"]["confirmed"] is True
+
+
+def test_orchestrate_full_market_t1_requires_explicit_protection_constructibility(tmp_path: Path):
+    candidate = {
+        "code": "600000",
+        "name": "浦发银行",
+        "market": "sh",
+        "price": 52.4,
+        "amount": 80_000_000,
+        "opportunity_score": 70.0,
+        "price_band": "production",
+        "candidate_reason": ["trend_full"],
+        "buy_low": 51.8,
+        "buy_high": 52.6,
+        "chase_line": 52.8,
+        "protect": 51.2,
+        "named_pivot": 52.0,
+    }
+    fixture = _write_full_market_inputs(tmp_path, candidates=[candidate])
+
+    decision = orchestrate_full_market_t1(
+        data_root=fixture["data_root"],
+        candidate_union_path=fixture["candidate_union_path"],
+        decision_at=datetime(2026, 9, 3, 13, 45, tzinfo=TZ_SHANGHAI),
+        output_path=tmp_path / "decision.json",
+    )
+
+    row = decision["rejected"][0]
+    assert row["decision"] == "data_insufficient"
+    assert "protection_constructibility_missing" in row["reason_codes"]
+
+
+def test_orchestrate_full_market_t1_requires_explicit_fee_adjusted_rr(tmp_path: Path):
+    candidate = {
+        "code": "600000",
+        "name": "浦发银行",
+        "market": "sh",
+        "price": 52.4,
+        "amount": 80_000_000,
+        "opportunity_score": 70.0,
+        "price_band": "production",
+        "candidate_reason": ["trend_full"],
+        "buy_low": 51.8,
+        "buy_high": 52.6,
+        "chase_line": 52.8,
+        "protect": 51.2,
+        "protection_constructible": True,
+        "rr_ratio": 9.9,
+        "named_pivot": 52.0,
+    }
+    fixture = _write_full_market_inputs(tmp_path, candidates=[candidate])
+
+    decision = orchestrate_full_market_t1(
+        data_root=fixture["data_root"],
+        candidate_union_path=fixture["candidate_union_path"],
+        decision_at=datetime(2026, 9, 3, 13, 45, tzinfo=TZ_SHANGHAI),
+        output_path=tmp_path / "decision.json",
+    )
+
+    row = decision["rejected"][0]
+    assert row["decision"] == "data_insufficient"
+    assert "fee_adjusted_rr_missing" in row["reason_codes"]
+
+
 def test_orchestrate_full_market_t1_uses_only_declared_inputs_for_metadata_and_checksums(tmp_path: Path):
     candidate = {
         "code": "000001",
@@ -970,6 +1200,107 @@ def test_orchestrate_full_market_t1_never_writes_shadow_ledger_when_output_final
         monkeypatch.setattr("strategies.full_market_t1.os.replace", lambda *_args: (_ for _ in ()).throw(OSError("replace failed")))
 
     with pytest.raises((ValueError, OSError)):
+        orchestrate_full_market_t1(
+            data_root=fixture["data_root"],
+            candidate_union_path=fixture["candidate_union_path"],
+            decision_at=datetime(2026, 9, 3, 13, 45, tzinfo=TZ_SHANGHAI),
+            output_path=output_path,
+        )
+
+    assert not output_path.exists()
+    assert not output_path.with_suffix(".tmp").exists()
+    assert not ledger_path.exists()
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"schema_version": None, "decision_rule_version": "1.0.0", "execution_rule_version": "1.0.0"},
+        {
+            "schema_version": "1.0.0",
+            "decision_rule_version": "1.0.0",
+            "execution_rule_version": "1.0.0",
+            "input_metadata": {},
+            "summary": [],
+            "audit_rows": [],
+            "executable": [],
+            "watch": [],
+            "rejected": [],
+            "shadow": [],
+            "only_choose_one": None,
+        },
+        {
+            "schema_version": "1.0.0",
+            "decision_rule_version": "1.0.0",
+            "execution_rule_version": "1.0.0",
+            "input_metadata": {"declared_inputs": {}, "candidate_union": {}},
+            "summary": {"executable": -1, "executable_exposed": 0, "watch": 0, "rejected": 0, "shadow_count": 0, "evaluated": 0},
+            "audit_rows": [],
+            "executable": [],
+            "watch": [],
+            "rejected": [],
+            "shadow": [],
+            "only_choose_one": "bad",
+        },
+        {
+            "schema_version": "1.0.0",
+            "decision_rule_version": "1.0.0",
+            "execution_rule_version": "1.0.0",
+            "input_metadata": {"declared_inputs": {}, "candidate_union": {}},
+            "summary": {"executable": 0, "executable_exposed": 0, "watch": 0, "rejected": 0, "shadow_count": 1, "evaluated": 1},
+            "audit_rows": [{"code": "000001", "decision": "shadow_watch", "production_buyable": False, "buyable": False, "only_choose_one_eligible": False, "reason_codes": []}],
+            "executable": [],
+            "watch": [],
+            "rejected": [],
+            "shadow": [{"code": "000001", "decision": "shadow_watch", "production_buyable": False, "buyable": True, "only_choose_one_eligible": False, "reason_codes": []}],
+            "only_choose_one": None,
+        },
+        {
+            "schema_version": "1.0.0",
+            "decision_rule_version": "1.0.0",
+            "execution_rule_version": "1.0.0",
+            "input_metadata": {
+                "candidate_union": {"path": "candidate.json", "sha256": "abc"},
+                "declared_inputs": {"market_snapshot_path": {"path": "snapshot.json"}},
+            },
+            "summary": {"executable": 0, "executable_exposed": 0, "watch": 0, "rejected": 0, "shadow_count": 0, "evaluated": 1},
+            "audit_rows": [{"code": "000001", "decision": "reject", "production_buyable": False, "buyable": False, "only_choose_one_eligible": False, "reason_codes": []}],
+            "executable": [],
+            "watch": [],
+            "rejected": [{"code": "000001", "decision": "reject", "production_buyable": False, "buyable": False, "only_choose_one_eligible": False, "reason_codes": []}],
+            "shadow": [],
+            "only_choose_one": None,
+        },
+    ],
+)
+def test_orchestrate_full_market_t1_rejects_malformed_decision_payloads_without_writing_files(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    payload: dict[str, object],
+):
+    candidate = {
+        "code": "000001",
+        "name": "平安银行",
+        "market": "sz",
+        "price": 45.0,
+        "amount": 55_000_000,
+        "opportunity_score": 90.0,
+        "price_band": "shadow_40_50",
+        "candidate_reason": ["shadow_watch"],
+        "buy_low": 44.5,
+        "buy_high": 45.2,
+        "chase_line": 45.3,
+        "protect": 43.8,
+        "protection_constructible": True,
+        "fee_adjusted_rr": 1.8,
+        "named_pivot": 44.8,
+    }
+    fixture = _write_full_market_inputs(tmp_path, candidates=[candidate])
+    output_path = tmp_path / "decision.json"
+    ledger_path = fixture["data_root"] / "shadow" / "full_market_t1_shadow.jsonl"
+    monkeypatch.setattr(full_market_t1, "build_full_market_decision", lambda *args, **kwargs: payload)
+
+    with pytest.raises(ValueError):
         orchestrate_full_market_t1(
             data_root=fixture["data_root"],
             candidate_union_path=fixture["candidate_union_path"],
