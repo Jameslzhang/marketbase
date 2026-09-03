@@ -1311,3 +1311,137 @@ def test_orchestrate_full_market_t1_rejects_malformed_decision_payloads_without_
     assert not output_path.exists()
     assert not output_path.with_suffix(".tmp").exists()
     assert not ledger_path.exists()
+
+
+def _valid_decision_payload_for_validation() -> dict[str, object]:
+    audit_rows = [
+        {
+            "code": "600001",
+            "price_band": "production",
+            "buyable": True,
+            "only_choose_one_eligible": True,
+            "production_buyable": True,
+            "decision": "executable_candidate",
+            "reason_codes": [],
+            "execution_score": 82.0,
+            "opportunity_score": 70.0,
+            "fee_adjusted_rr": 1.8,
+            "amount": 50_000_000,
+        },
+        {
+            "code": "600002",
+            "price_band": "production",
+            "buyable": False,
+            "only_choose_one_eligible": False,
+            "production_buyable": False,
+            "decision": "reject",
+            "reason_codes": ["buy_zone_not_ready"],
+            "execution_score": 70.0,
+            "opportunity_score": 60.0,
+            "fee_adjusted_rr": 1.4,
+            "amount": 40_000_000,
+        },
+    ]
+    return {
+        "schema_version": "1.0.0",
+        "decision_rule_version": "1.0.0",
+        "execution_rule_version": "1.0.0",
+        "trade_date": "2026-09-03",
+        "decision_at": "2026-09-03T13:45:00+08:00",
+        "observed_at": "2026-09-03T13:43:00+08:00",
+        "input_metadata": {
+            "candidate_union": {"path": "candidate.json", "sha256": "abc"},
+            "declared_inputs": {"market_snapshot_path": {"path": "snapshot.json", "sha256": "def"}},
+        },
+        "summary": {
+            "executable": 1,
+            "executable_exposed": 1,
+            "watch": 0,
+            "rejected": 1,
+            "shadow_count": 0,
+            "evaluated": 2,
+        },
+        "audit_rows": audit_rows,
+        "executable": [audit_rows[0]],
+        "watch": [],
+        "rejected": [audit_rows[1]],
+        "shadow": [],
+        "only_choose_one": "600001",
+    }
+
+
+@pytest.mark.parametrize("only_choose_one", ["999999", "600002"])
+def test_orchestrate_full_market_t1_rejects_invalid_only_choose_one_codes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    only_choose_one: str,
+):
+    candidate = {
+        "code": "000001",
+        "name": "平安银行",
+        "market": "sz",
+        "price": 45.0,
+        "amount": 55_000_000,
+        "opportunity_score": 90.0,
+        "price_band": "shadow_40_50",
+        "candidate_reason": ["shadow_watch"],
+        "buy_low": 44.5,
+        "buy_high": 45.2,
+        "chase_line": 45.3,
+        "protect": 43.8,
+        "protection_constructible": True,
+        "fee_adjusted_rr": 1.8,
+        "named_pivot": 44.8,
+    }
+    fixture = _write_full_market_inputs(tmp_path, candidates=[candidate])
+    output_path = tmp_path / "decision.json"
+    ledger_path = fixture["data_root"] / "shadow" / "full_market_t1_shadow.jsonl"
+    payload = _valid_decision_payload_for_validation()
+    payload["only_choose_one"] = only_choose_one
+    monkeypatch.setattr(full_market_t1, "build_full_market_decision", lambda *args, **kwargs: payload)
+
+    with pytest.raises(ValueError, match="only_choose_one"):
+        orchestrate_full_market_t1(
+            data_root=fixture["data_root"],
+            candidate_union_path=fixture["candidate_union_path"],
+            decision_at=datetime(2026, 9, 3, 13, 45, tzinfo=TZ_SHANGHAI),
+            output_path=output_path,
+        )
+
+    assert not output_path.exists()
+    assert not output_path.with_suffix(".tmp").exists()
+    assert not ledger_path.exists()
+
+
+def test_orchestrate_full_market_t1_accepts_valid_only_choose_one_winner(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    candidate = {
+        "code": "000001",
+        "name": "平安银行",
+        "market": "sz",
+        "price": 45.0,
+        "amount": 55_000_000,
+        "opportunity_score": 90.0,
+        "price_band": "shadow_40_50",
+        "candidate_reason": ["shadow_watch"],
+        "buy_low": 44.5,
+        "buy_high": 45.2,
+        "chase_line": 45.3,
+        "protect": 43.8,
+        "protection_constructible": True,
+        "fee_adjusted_rr": 1.8,
+        "named_pivot": 44.8,
+    }
+    fixture = _write_full_market_inputs(tmp_path, candidates=[candidate])
+    output_path = tmp_path / "decision.json"
+    payload = _valid_decision_payload_for_validation()
+    monkeypatch.setattr(full_market_t1, "build_full_market_decision", lambda *args, **kwargs: payload)
+
+    decision = orchestrate_full_market_t1(
+        data_root=fixture["data_root"],
+        candidate_union_path=fixture["candidate_union_path"],
+        decision_at=datetime(2026, 9, 3, 13, 45, tzinfo=TZ_SHANGHAI),
+        output_path=output_path,
+    )
+
+    assert decision["only_choose_one"] == "600001"
+    assert output_path.exists()

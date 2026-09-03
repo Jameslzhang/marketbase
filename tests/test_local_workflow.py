@@ -843,6 +843,8 @@ def _full_market_candidate(
         "buy_high": round(price + 0.2, 2),
         "chase_line": round(price + 0.3, 2),
         "protect": round(price - 1.2, 2),
+        "protection_constructible": True,
+        "fee_adjusted_rr": 1.8,
         "rr_ratio": 1.8,
         "named_pivot": named_pivot,
     }

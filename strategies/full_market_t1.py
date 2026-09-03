@@ -890,6 +890,20 @@ def _validate_decision_payload(decision: Mapping[str, object]) -> None:
         code = str(only_choose_one)
         if len(code) != 6 or not code.isdigit():
             raise ValueError("decision only_choose_one must be null or a 6-digit code")
+        eligible_rows = [
+            _native_mapping(row)
+            for row in audit_rows
+            if _native_mapping(row).get("price_band") == "production"
+            and _native_mapping(row).get("buyable") is True
+            and _native_mapping(row).get("only_choose_one_eligible") is True
+            and _native_mapping(row).get("decision") == "executable_candidate"
+        ]
+        eligible_codes = {str(row.get("code", "") or "") for row in eligible_rows}
+        if code not in eligible_codes:
+            raise ValueError("decision only_choose_one must reference an eligible executable candidate")
+        expected_winner = choose_one(eligible_rows)
+        if expected_winner is not None and code != expected_winner:
+            raise ValueError("decision only_choose_one must match choose_one winner")
 
 
 def _write_json_atomic(path: Path, payload: Mapping[str, object]) -> Path:
