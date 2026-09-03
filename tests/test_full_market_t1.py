@@ -1627,6 +1627,53 @@ def _valid_decision_payload_for_validation() -> dict[str, object]:
 
 
 @pytest.mark.parametrize(
+    ("status", "remove_key"),
+    [
+        (None, True),
+        (None, False),
+        ("", False),
+        ("ready-ish", False),
+        (1, False),
+    ],
+)
+def test_validator_requires_valid_global_status(status: object, remove_key: bool):
+    payload = _valid_decision_payload_for_validation()
+    if remove_key:
+        payload.pop("global_status")
+    else:
+        payload["global_status"] = status
+
+    with pytest.raises(ValueError, match="global_status"):
+        full_market_t1._validate_decision_payload(payload)
+
+
+@pytest.mark.parametrize("trajectory_field", ["from_state", "to_state"])
+def test_validator_rejects_entry_active_in_data_not_ready_trajectory(trajectory_field: str):
+    payload = _valid_decision_payload_for_validation()
+    payload["global_status"] = "data_not_ready"
+    payload["only_choose_one"] = None
+    payload["audit_rows"][0].update(
+        {
+            "production_buyable": False,
+            "buyable": False,
+            "only_choose_one_eligible": False,
+            "decision": "data_insufficient",
+            "entry_state": "data_insufficient",
+            "entry_state_trajectory": [
+                {"from_state": "unassessed", "to_state": "data_insufficient"}
+            ],
+        }
+    )
+    payload["audit_rows"][0]["entry_state_trajectory"][0][trajectory_field] = "entry_active"
+    payload["summary"].update({"executable": 0, "executable_exposed": 0, "rejected": 2})
+    payload["executable"] = []
+    payload["rejected"] = payload["audit_rows"]
+
+    with pytest.raises(ValueError, match="data_not_ready.*trajectory.*entry_active"):
+        full_market_t1._validate_decision_payload(payload)
+
+
+@pytest.mark.parametrize(
     "mutation",
     [
         "entry_active",

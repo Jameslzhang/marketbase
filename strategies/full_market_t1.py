@@ -799,6 +799,7 @@ def _validate_decision_payload(decision: Mapping[str, object]) -> None:
         "watch",
         "rejected",
         "shadow",
+        "global_status",
         "only_choose_one",
     )
     for key in required_keys:
@@ -808,6 +809,9 @@ def _validate_decision_payload(decision: Mapping[str, object]) -> None:
         value = decision.get(key)
         if not isinstance(value, str) or not value.strip():
             raise ValueError(f"decision payload {key} must be a non-empty string")
+    global_status = decision.get("global_status")
+    if not isinstance(global_status, str) or global_status not in {"decision_ready", "data_not_ready"}:
+        raise ValueError("decision payload global_status must be decision_ready or data_not_ready")
     input_metadata = _to_native(decision.get("input_metadata"))
     if not isinstance(input_metadata, Mapping):
         raise ValueError("decision input_metadata must be a mapping")
@@ -908,6 +912,15 @@ def _validate_decision_payload(decision: Mapping[str, object]) -> None:
             mapping = _native_mapping(row)
             if mapping.get("entry_state") == EntryState.ENTRY_ACTIVE.value:
                 raise ValueError("data_not_ready audit row cannot be entry_active")
+            trajectory = _to_native(mapping.get("entry_state_trajectory"))
+            if isinstance(trajectory, list):
+                for transition in trajectory:
+                    transition_mapping = _native_mapping(transition)
+                    if EntryState.ENTRY_ACTIVE.value in {
+                        transition_mapping.get("from_state"),
+                        transition_mapping.get("to_state"),
+                    }:
+                        raise ValueError("data_not_ready audit row trajectory cannot contain entry_active")
             for flag in ("production_buyable", "buyable", "only_choose_one_eligible"):
                 if mapping.get(flag) is True:
                     raise ValueError(f"data_not_ready audit row cannot set {flag}=true")

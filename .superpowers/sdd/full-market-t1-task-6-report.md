@@ -1,5 +1,12 @@
 # Task 6 Report: deterministic 2026-09-03 replay
 
+> **Authoritative replay supersession (2026-09-03):** The original 13:53 replay and its
+> 36 evaluated rows remain below as a historical record, but they are no longer the release
+> authority. Commit `1917c79` replaced them with the later 14:41 candidate scan plus the
+> 14:43 objective-data run, evaluating 51 rows. The authoritative result is now
+> `global_status=decision_ready`, `only_choose_one=null`, `executable=0`, `watch=3`,
+> `rejected=43`, and `shadow_count=5`; see the frozen fixture README and expected summary.
+
 ## Scope
 
 - Starting commit: `ea6eef7`
