@@ -361,6 +361,16 @@ def _run_enrich_classification(
 
 # ── 分钟快照追加 ─────────────────────────────────────────────────────
 
+def _read_run_local_minutes(path: Path) -> pd.DataFrame:
+    """Load collector OHLCV data with the column names used by minute analytics."""
+    return (
+        pd.read_parquet(path)
+        .rename(columns={"timestamp": "time", "close": "price"})
+        .sort_values(["code", "time"])
+        .reset_index(drop=True)
+    )
+
+
 def _run_minute_snapshot(
     frame: pd.DataFrame,
     cache_root: Path,
@@ -386,13 +396,14 @@ def _run_minute_snapshot(
     run_ohlcv_path: Path | None = None
     if intraday_minutes_path and Path(intraday_minutes_path).exists():
         run_ohlcv_path = Path(intraday_minutes_path)
+    run_local_requested = intraday_minutes_audit is not None or intraday_minutes_path is not None
     if intraday_minutes_audit is not None:
         minute_audit["collection_audit"] = dict(intraday_minutes_audit)
     # 移除：elif 回退到 cache/intraday_1m.parquet（旧缓存混入风险）
 
     # post_close: 不采集盘中分钟，不追加快照，不构建序列审计
     # 避免共享缓存中旧数据被误判为本次运行的分钟证据
-    if intraday_minutes_audit is None and intraday_minutes_path is None:
+    if not run_local_requested:
         minute_audit["status"] = "not_requested"
         minute_audit["reason"] = "post_close_no_intraday_collection"
         return minute_audit
@@ -414,10 +425,12 @@ def _run_minute_snapshot(
         return minute_audit
     try:
         if run_ohlcv_path:
-            seq = pd.read_parquet(run_ohlcv_path).rename(
-                columns={"timestamp": "time", "close": "price"}
-            )
-            seq = seq.sort_values(["code", "time"]).reset_index(drop=True)
+            seq = _read_run_local_minutes(run_ohlcv_path)
+        elif run_local_requested:
+            missing_path = str(intraday_minutes_path) if intraday_minutes_path else "not produced"
+            minute_audit["sequence_error"] = f"run-local intraday parquet missing: {missing_path}"
+            emit(f"minute seq: {minute_audit['sequence_error']}")
+            seq = pd.DataFrame()
         else:
             seq = build_intraday_sequence(intraday_path)
         if not seq.empty:
@@ -444,8 +457,7 @@ def _run_minute_snapshot(
         emit(f"VWAP skipped: {minute_audit['vwap_error']}")
     elif run_ohlcv_path and run_ohlcv_path.exists():
         try:
-            ohlcv_df = pd.read_parquet(run_ohlcv_path)
-            ohlcv_df = ohlcv_df.rename(columns={"timestamp": "time", "close": "price"})
+            ohlcv_df = _read_run_local_minutes(run_ohlcv_path)
             frame = compute_vwap_from_minute(
                 cast(pd.DataFrame, ohlcv_df), frame,
                 vwap_source_label="tencent_intraday",
@@ -469,8 +481,7 @@ def _run_minute_snapshot(
         emit(f"intraday structure skipped: {minute_audit['intraday_structure_error']}")
     elif run_ohlcv_path and run_ohlcv_path.exists():
         try:
-            ohlcv_df = pd.read_parquet(run_ohlcv_path)
-            ohlcv_df = ohlcv_df.rename(columns={"timestamp": "time", "close": "price"})
+            ohlcv_df = _read_run_local_minutes(run_ohlcv_path)
             frame = compute_intraday_structure(
                 cast(pd.DataFrame, ohlcv_df), frame,
             )
@@ -497,12 +508,14 @@ def _run_minute_snapshot(
     if intraday_failed:
         minute_audit["minute_facts_error"] = "intraday collection failed, facts skipped"
         emit(f"minute facts skipped: {minute_audit['minute_facts_error']}")
+    elif run_local_requested and not run_ohlcv_path:
+        minute_audit["minute_facts_error"] = "run-local intraday parquet unavailable, facts skipped"
+        emit(f"minute facts skipped: {minute_audit['minute_facts_error']}")
     else:
         try:
             # 优先使用 run 专属 intraday_1m.parquet（完整 OHLCV，含 high/low）
             if run_ohlcv_path and run_ohlcv_path.exists():
-                ohlcv_df = pd.read_parquet(run_ohlcv_path)
-                ohlcv_df = ohlcv_df.rename(columns={"timestamp": "time", "close": "price"})
+                ohlcv_df = _read_run_local_minutes(run_ohlcv_path)
                 facts_df = compute_minute_facts(cast(pd.DataFrame, ohlcv_df), frame)
                 minute_audit["fact_source"] = "intraday_1m.parquet"
             else:

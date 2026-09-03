@@ -134,8 +134,8 @@ def _providers(tmp_path: Path, calls: list[str] | None = None) -> dict[str, obje
     }
 
 
-@pytest.fixture(autouse=True)
-def _deterministic_workflow_providers(monkeypatch):
+@pytest.fixture
+def workflow_provider_fixtures(monkeypatch):
     def collect_run_local_minutes(codes, _cache_root, run_dir, observed_at, _emit, session_phase):
         if not session_phase.startswith("intraday"):
             return None, None
@@ -177,7 +177,7 @@ def _serialized_paths(run_dir: Path) -> list[Path]:
     return [path for path in run_dir.iterdir() if path.suffix in {".json", ".csv", ".log"}]
 
 
-def test_run_collection_collects_every_market_code_and_writes_only_protocol_files(tmp_path):
+def test_run_collection_collects_every_market_code_and_writes_only_protocol_files(tmp_path, workflow_provider_fixtures):
     calls: list[str] = []
     summary = local_workflow.run_collection(
         data_root=tmp_path,
@@ -214,7 +214,7 @@ def test_run_collection_collects_every_market_code_and_writes_only_protocol_file
     assert not any(path.name.endswith(".json") for path in run_dir.iterdir() if path.name.startswith("codex_"))
 
 
-def test_run_collection_keeps_cache_and_latest_handoff_outside_run_directory(tmp_path):
+def test_run_collection_keeps_cache_and_latest_handoff_outside_run_directory(tmp_path, workflow_provider_fixtures):
     summary = local_workflow.run_collection(
         data_root=tmp_path,
         now=NOW,
@@ -244,7 +244,7 @@ def test_run_collection_keeps_cache_and_latest_handoff_outside_run_directory(tmp
         assert isinstance(record["rows"], int)
 
 
-def test_run_collection_records_cache_hits_failures_and_objective_outputs(tmp_path):
+def test_run_collection_records_cache_hits_failures_and_objective_outputs(tmp_path, workflow_provider_fixtures):
     local_workflow.run_collection(
         data_root=tmp_path,
         now=NOW,
@@ -269,7 +269,7 @@ def test_run_collection_records_cache_hits_failures_and_objective_outputs(tmp_pa
         assert content  # data files are non-empty
 
 
-def test_daily_progress_log_includes_complete_event_state_and_timestamp(tmp_path):
+def test_daily_progress_log_includes_complete_event_state_and_timestamp(tmp_path, workflow_provider_fixtures):
     summary = local_workflow.run_collection(
         data_root=tmp_path,
         now=NOW,
@@ -297,7 +297,7 @@ def test_daily_progress_log_includes_complete_event_state_and_timestamp(tmp_path
     assert "candidate" not in daily_line.lower()
 
 
-def test_daily_audit_scans_requested_code_caches_and_handoff_includes_coverage(tmp_path):
+def test_daily_audit_scans_requested_code_caches_and_handoff_includes_coverage(tmp_path, workflow_provider_fixtures):
     local_workflow.run_collection(
         data_root=tmp_path,
         now=NOW,
@@ -337,7 +337,7 @@ def test_daily_audit_scans_requested_code_caches_and_handoff_includes_coverage(t
     assert handoff["daily_short_history"] == 1
 
 
-def test_manifest_records_final_workflow_log_rows_and_hash(tmp_path):
+def test_manifest_records_final_workflow_log_rows_and_hash(tmp_path, workflow_provider_fixtures):
     summary = local_workflow.run_collection(
         data_root=tmp_path,
         now=NOW,
@@ -374,7 +374,7 @@ def test_neutralization_preserves_values_when_keys_or_columns_collide():
     assert frame.iloc[0].tolist() == [1, 2]
 
 
-def test_serialized_outputs_neutralize_provider_text(tmp_path):
+def test_serialized_outputs_neutralize_provider_text(tmp_path, workflow_provider_fixtures):
     providers = _providers(tmp_path)
 
     def market_collector(**kwargs):
@@ -455,7 +455,7 @@ def test_create_run_directory_retries_after_atomic_name_collision(tmp_path, monk
     assert any(path.name == "094330_intraday_1300_objective_data_2" and not exist_ok for path, exist_ok in calls)
 
 
-def test_older_run_does_not_replace_newer_latest_handoff(tmp_path):
+def test_older_run_does_not_replace_newer_latest_handoff(tmp_path, workflow_provider_fixtures):
     newer = local_workflow.run_collection(
         data_root=tmp_path,
         now=NOW + timedelta(seconds=1),
@@ -475,7 +475,7 @@ def test_older_run_does_not_replace_newer_latest_handoff(tmp_path):
     assert latest["run_dir"] == newer["run_dir"]
 
 
-def test_run_collection_resolves_same_second_without_overwriting(tmp_path):
+def test_run_collection_resolves_same_second_without_overwriting(tmp_path, workflow_provider_fixtures):
     first = local_workflow.run_collection(
         data_root=tmp_path,
         now=NOW,
@@ -678,7 +678,7 @@ def test_stale_or_unknown_quote_is_marked_untradable_in_legacy_field():
     assert frame["tradable"].tolist() == [False, False, False]
 
 
-def test_lunch_break_does_not_append_a_synthetic_minute_snapshot(tmp_path, monkeypatch):
+def test_lunch_break_does_not_append_a_synthetic_minute_snapshot(tmp_path, monkeypatch, workflow_provider_fixtures):
     calls: list[object] = []
     monkeypatch.setattr(
         local_workflow,
@@ -753,6 +753,32 @@ def test_minute_snapshot_audits_run_local_parquet_before_shared_cache(tmp_path):
     assert minute_audit["collection_audit"] is not collection_audit
 
 
+def test_minute_snapshot_rejects_missing_run_local_parquet_without_cache_audit(tmp_path):
+    pytest.importorskip("pyarrow")
+    observed_at = datetime(2026, 7, 22, 13, 3, tzinfo=timezone(timedelta(hours=8)))
+    missing_run_path = tmp_path / "run" / "intraday_minutes.parquet"
+    snapshot = pd.DataFrame(
+        [
+            {"code": "600001", "price": 10.1, "volume": 100.0, "amount": 1010.0, "observed_at": observed_at},
+            {"code": "000002", "price": 10.1, "volume": 100.0, "amount": 1010.0, "observed_at": observed_at},
+        ]
+    )
+
+    minute_audit = local_workflow._run_minute_snapshot(
+        snapshot,
+        tmp_path / "cache",
+        observed_at,
+        lambda message: None,
+        all_codes=["600001", "000002"],
+        intraday_minutes_audit={"status": "collected"},
+        intraday_minutes_path=str(missing_run_path),
+    )
+
+    assert "sequence_audit" not in minute_audit
+    assert minute_audit["sequence_error"] == f"run-local intraday parquet missing: {missing_run_path}"
+    assert pd.read_parquet(tmp_path / "cache" / "intraday_1m.parquet")["time"].nunique() == 1
+
+
 def test_minute_quality_prefers_dynamic_expected_minutes_for_full_threshold():
     assert _compute_minute_quality(
         {
@@ -768,7 +794,7 @@ def test_minute_quality_prefers_dynamic_expected_minutes_for_full_threshold():
     ) == "full"
 
 
-def test_interrupted_lunch_run_never_publishes_a_ready_static_audit(tmp_path, monkeypatch):
+def test_interrupted_lunch_run_never_publishes_a_ready_static_audit(tmp_path, monkeypatch, workflow_provider_fixtures):
     monkeypatch.setattr(
         local_workflow,
         "_run_daily_collection",
