@@ -1,0 +1,10 @@
+diff --git a/fast_t1_scan.py b/fast_t1_scan.py
+--- a/fast_t1_scan.py
++++ b/fast_t1_scan.py
+@@ -783,7 +783,7 @@ def main() -> int:
+     candidate_union = build_candidate_union(
+-        out_df,
++        candidates.copy(),
+         trade_date=today_str,
+         observed_at=candidate_observed_at,
+         market_rows=initial,

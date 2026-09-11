@@ -232,6 +232,14 @@ def _run_collection_locked(
     session_phase = _detect_session_slug(observed_at, phase)
     run_dir = _create_run_directory(root, observed_at, phase=session_phase)
     log_path = run_dir / "workflow.log"
+    stage_timings: dict[str, float] = {}
+
+    def timed(stage: str, func):
+        started = time.perf_counter()
+        value = func()
+        stage_timings[stage] = round(time.perf_counter() - started, 3)
+        emit(f"性能计时 {stage}: {stage_timings[stage]:.3f}s")
+        return value
 
     def emit(message: str) -> None:
         _clear_progress_line()
@@ -253,7 +261,10 @@ def _run_collection_locked(
     cache_root = root / "cache"
 
     # ① 实时行情快照
-    frame, codes, result = _run_market_collection(root, observed_at, emit, configured)
+    frame, codes, result = timed(
+        "market_collection",
+        lambda: _run_market_collection(root, observed_at, emit, configured),
+    )
     bse_codes = set(frame.loc[frame["market"] == "bj", "code"].tolist()) if "market" in frame.columns else set()
 
     # ① 快照落盘：静态 market_snapshot.csv 和 data_audit.json 优先写入，确保分钟采集开始前落盘
@@ -279,8 +290,11 @@ def _run_collection_locked(
     emit("market_snapshot.csv and data_audit.json written (static snapshot)")
 
     # ①.5 完整 1 分钟 OHLCV 采集（盘中下午时段）—— 必须在分钟快照之前，确保分钟事实使用本次新采集的完整 parquet
-    intraday_minutes_audit, intraday_minutes_path = _run_intraday_minutes_collection(
-        codes, cache_root, run_dir, observed_at, emit, session_phase
+    intraday_minutes_audit, intraday_minutes_path = timed(
+        "intraday_minutes_collection",
+        lambda: _run_intraday_minutes_collection(
+            codes, cache_root, run_dir, observed_at, emit, session_phase
+        ),
     )
     # ①.6 分钟快照追加与 VWAP 计算（优先读取 intraday_1m.parquet）
     if session_phase == "lunch_break":
@@ -309,23 +323,41 @@ def _run_collection_locked(
         )
         emit("minute snapshot skipped (lunch break)")
     else:
-        minute_audit = _run_minute_snapshot(
-            frame, cache_root, observed_at, emit, all_codes=codes,
-            intraday_minutes_audit=intraday_minutes_audit,
-            intraday_minutes_path=intraday_minutes_path,
+        minute_audit = timed(
+            "minute_snapshot",
+            lambda: _run_minute_snapshot(
+                frame, cache_root, observed_at, emit, all_codes=codes,
+                intraday_minutes_audit=intraday_minutes_audit,
+                intraday_minutes_path=intraday_minutes_path,
+            ),
         )
     # ② 日线历史与指标计算
-    indicators_df, daily_report = _run_daily_collection(codes, cache_root, observed_at, emit, configured, bse_codes=bse_codes, force_refresh=force_refresh)
+    indicators_df, daily_report = timed(
+        "daily_collection",
+        lambda: _run_daily_collection(
+            codes, cache_root, observed_at, emit, configured,
+            bse_codes=bse_codes, force_refresh=force_refresh,
+        ),
+    )
     # ③ 量比实时计算
-    frame = _run_volume_ratio(frame, cache_root, observed_at, emit)
+    frame = timed(
+        "volume_ratio",
+        lambda: _run_volume_ratio(frame, cache_root, observed_at, emit),
+    )
     # ③.5 交易可执行性标注
-    frame = _run_tradability(frame, root, emit)
+    frame = timed("tradability", lambda: _run_tradability(frame, root, emit))
     # ④ 审计与分类
-    market_audit, classification, classification_audit = _run_audit_and_classification(
-        frame, observed_at, result, root, configured, phase=phase
+    market_audit, classification, classification_audit = timed(
+        "audit_and_classification",
+        lambda: _run_audit_and_classification(
+            frame, observed_at, result, root, configured, phase=phase
+        ),
     )
     # ④.5 行业/概念字段补充
-    frame = _run_enrich_classification(frame, classification, emit)
+    frame = timed(
+        "enrich_classification",
+        lambda: _run_enrich_classification(frame, classification, emit),
+    )
     emit("采集完成")
 
     # --- 市场广度汇总 ---
@@ -347,6 +379,15 @@ def _run_collection_locked(
         minute_audit, collection_started_at, emit, cache_root, phase=phase,
         intraday_minutes_audit=intraday_minutes_audit,
         intraday_minutes_path=intraday_minutes_path,
+    )
+    _write_json_atomic(
+        run_dir / "performance_timings.json",
+        {
+            "schema_version": 1,
+            "generated_at": datetime.now().astimezone().isoformat(),
+            "stages_seconds": stage_timings,
+            "total_seconds": round(sum(stage_timings.values()), 3),
+        },
     )
     # 写入运行状态（成功路径，与失败路径对齐）
     _write_json_atomic(
@@ -440,6 +481,37 @@ def fulfill_request(
     return payload
 
 
+def format_decision_result(decision: Mapping) -> str:
+    """Render the decision itself so CLI completion cannot hide research results."""
+    rows = decision.get("research_choices", [])
+    first = next((r for r in rows if r.get("code") == decision.get("research_first_choice")), None)
+    first_text = f"{first['name']}（{first['code']}）" if first else "无；本轮未生成合格研究对象"
+    lines = ["## 本轮分析结果", "", f"研究首选：{first_text}",
+             f"执行首选：{decision.get('only_choose_one') or '无，当前不新开仓'}", "",
+             f"数据时点：{decision.get('observed_at', '未知')}；决策时点：{decision.get('decision_at', '未知')}。",
+             "", "|研究排名|股票|快照价格|机会分|执行分|预埋参考区|确认/禁追|未通过条件/状态|",
+             "|---|---|---:|---:|---:|---|---|---|"]
+    reasons = {"minute_missing": "缺分钟", "vwap_missing": "缺VWAP",
+               "execution_score_data_missing": "执行数据不足", "stale_snapshot": "快照过期",
+               "closed_session": "已收盘", "global_data_not_ready": "执行证据未就绪"}
+    for r in rows:
+        why = "、".join(reasons.get(code, code) for code in r.get("reason_codes", [])) or r.get("execution_status", "待核验")
+        score = r.get("execution_score")
+        buy_low, buy_high = r.get("buy_low"), r.get("buy_high")
+        planned_zone = (
+            f"{buy_low}-{buy_high}（仅研究参考）"
+            if buy_low is not None and buy_high is not None
+            else "待生成"
+        )
+        confirm = r.get("confirm_price") or r.get("confirmation_price")
+        chase = r.get("chase_line") or r.get("no_chase_price")
+        confirm_text = f"确认 {confirm}; 禁追 {chase}" if confirm is not None or chase is not None else "分钟确认后再定"
+        lines.append(f"|{r.get('rank')}|{r.get('name')}（{r.get('code')}）|{r.get('price')}|{r.get('opportunity_score')}|{score if score is not None else '缺失'}|{planned_zone}|{confirm_text}|{why}|")
+    lines.extend(["", "研究排序不等于买入建议；快照过期时仅供原时点研究。",
+                  f"研究状态：{decision.get('research_status', '未知')}；执行状态：{decision.get('execution_status', '未知')}；程序状态：{decision.get('pipeline_status', '未知')}。"])
+    return "\n".join(lines)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """命令行入口：默认全量采集，也支持 collect-classify / refresh-master / fulfill-request 子命令."""
     parser = argparse.ArgumentParser(description="MarketBase 客观数据入口")
@@ -470,6 +542,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     _ = full_market_t1_parser.add_argument("--candidate-union", type=Path, required=True)
     _ = full_market_t1_parser.add_argument("--decision-at", type=str, required=True)
     _ = full_market_t1_parser.add_argument("--output", type=Path, required=True)
+    _ = full_market_t1_parser.add_argument("--handoff", type=Path, help="固定本轮客观交接文件，避免共享 latest 串轮")
     arguments = parser.parse_args(argv)
     default_root = Path(__file__).resolve().parent / "data" / "daily_runs"
 
@@ -543,12 +616,18 @@ def main(argv: Sequence[str] | None = None) -> int:
                 candidate_union_path=arguments.candidate_union,
                 decision_at=datetime.fromisoformat(arguments.decision_at),
                 output_path=arguments.output,
+                **({"handoff_path": arguments.handoff} if arguments.handoff is not None else {}),
             )
             print(
                 "全市场T1决策完成: "
                 + f"executable={decision['summary']['executable']} "
                 + f"shadow={decision['summary']['shadow_count']}"
             )
+            result_text = format_decision_result(decision)
+            result_path = arguments.output.with_name(arguments.output.stem + "_结果正文.md")
+            result_path.write_text(result_text, encoding="utf-8")
+            print("\n结果正文开始\n" + result_text + "\n结果正文结束")
+            print(f"结果正文文件：{result_path}")
             return 0
         summary = run_collection(
             data_root=getattr(arguments, "data_root", None) or default_root,

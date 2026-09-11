@@ -1,0 +1,530 @@
+# Task 6 Report: deterministic 2026-09-03 replay
+
+## Scope
+
+- Starting commit: `ea6eef7`
+- Allowed code changes used: `tests/test_full_market_t1.py`
+- Added fixtures:
+  - `tests/fixtures/full_market_t1/2026-09-03/README.md`
+  - `tests/fixtures/full_market_t1/2026-09-03/expected_summary.json`
+- Production files changed: none
+- Production `latest_codex_input.json` changed: no
+- Trading actions taken: none
+
+## RED
+
+- Added `test_orchestrate_full_market_t1_replays_saved_2026_09_03_inputs`.
+- Verified the new test failed first because `tests/fixtures/full_market_t1/2026-09-03/expected_summary.json` did not exist yet.
+- Command:
+  - `.venv\Scripts\python.exe -m pytest tests/test_full_market_t1.py -k replays_saved_2026_09_03_inputs -q`
+- Failure summary:
+  - `FileNotFoundError: tests\fixtures\full_market_t1\2026-09-03\expected_summary.json`
+
+## GREEN
+
+- Added deterministic replay helpers that:
+  - load the saved `scan_result_20260903_1353.csv`
+  - rebuild the candidate union with `trade_date=2026-09-03`, `observed_at=2026-09-03T13:53:00+08:00`, `market_rows=5546`
+  - write a temporary `latest_codex_input.json` that points only at the saved run files
+  - verify the saved source hashes recorded in the fixture README before evaluation
+  - skip cleanly in another checkout if the large saved inputs are absent
+- Added fixture documentation plus frozen expected summary.
+- No production semantic defect was exposed, so `strategies/full_market_t1.py` was left unchanged.
+
+## Actual replay summary
+
+```json
+{
+  "trade_date": "2026-09-03",
+  "market_rows": 5546,
+  "only_choose_one": null,
+  "global_status": "decision_ready",
+  "summary": {
+    "executable": 0,
+    "executable_exposed": 0,
+    "watch": 2,
+    "rejected": 33,
+    "shadow_count": 1,
+    "evaluated": 36
+  },
+  "shadow_codes": [
+    "600362"
+  ],
+  "data_audit_quality_status": "partial"
+}
+```
+
+## Verification
+
+- Replay test:
+  - `.venv\Scripts\python.exe -m pytest tests/test_full_market_t1.py -k replays_saved_2026_09_03_inputs -q`
+  - Result: `1 passed, 66 deselected`
+- Full suite bounded limitation:
+  - `.venv\Scripts\python.exe -m pytest -q`
+  - Interrupted after exceeding the brief's no-output boundary; tty surfaced `KeyboardInterrupt` during collection in `marketbase/classification_collector.py` and reported `no tests ran in 104.47s`.
+- Required target suites:
+  - `.venv\Scripts\python.exe -m pytest tests/test_full_market_t1.py tests/test_fast_t1_scan.py tests/test_local_workflow.py tests/test_strategy_lifecycle.py -q`
+  - Result: `182 passed, 19 warnings in 18.53s`
+
+## Source hashes
+
+- `data/cache/fast/scan_result_20260903_1353.csv`
+  - bytes: `13074`
+  - sha256: `951832096c579d287d19a06cea44dce7b90fb304ceeccdb8983e27912cd627f1`
+- `data/daily_runs/2026-09-03/134656_intraday_1300_objective_data/market_snapshot.json`
+  - bytes: `12042899`
+  - sha256: `bce2c0efc5a7333bf3329828f3b883075f0e168be7356846a319cae6450752ac`
+- `data/daily_runs/2026-09-03/134656_intraday_1300_objective_data/daily_indicators.csv`
+  - bytes: `3121082`
+  - sha256: `e567ab577bc4722ab43863258f5ad18b1f60a1a4afab6f38ec3ed0267abdfa77`
+- `data/daily_runs/2026-09-03/134656_intraday_1300_objective_data/classification_map.csv`
+  - bytes: `972381`
+  - sha256: `4450f63decf5616414611a1623c46ad025bd137d59676c4bba42ef76b6ab9de6`
+- `data/daily_runs/2026-09-03/134656_intraday_1300_objective_data/industry_agg.csv`
+  - bytes: `9269`
+  - sha256: `1d606637d9978949dd2d2762d574007d597e2c349fb6b677134215f4a0a5da4d`
+- `data/daily_runs/2026-09-03/134656_intraday_1300_objective_data/market_breadth.json`
+  - bytes: `29925`
+  - sha256: `0283a877a81ca16bbfae75bc9611ebe9eae15d78102a3de9ff64ae88b341c995`
+- `data/daily_runs/2026-09-03/134656_intraday_1300_objective_data/intraday_minutes.parquet`
+  - bytes: `17589118`
+  - sha256: `5f2a8660be950a75c494561878156affc172d581615c0469edfa32290891ea4f`
+- `data/daily_runs/2026-09-03/134656_intraday_1300_objective_data/data_audit.json`
+  - bytes: `824500`
+  - sha256: `97aca8550074449cde2611169f10ee18e4bdde9cacf332723b4de915b7592374`
+- `data/daily_runs/2026-09-03/134656_intraday_1300_objective_data/manifest.json`
+  - bytes: `3892`
+  - sha256: `556fefbca1c84b5085ed496116540dd623fc11a1a0370d40664712caa6c89dea`
+
+## Commit
+
+- Commit message: `test: replay full-market T1 decision`
+
+## Concerns
+
+- The full repository-wide `pytest -q` path did not provide bounded, timely output in this environment, so Task 6 relied on the required four target suites after interrupting the silent run.
+
+6b1a548 test: replay full-market T1 decision
+ .superpowers/sdd/full-market-t1-task-6-report.md   | 105 ++++++++++++++
+ tests/fixtures/full_market_t1/2026-09-03/README.md |  66 +++++++++
+ .../2026-09-03/expected_summary.json               |  15 ++
+ tests/test_full_market_t1.py                       | 153 +++++++++++++++++++++
+ 4 files changed, 339 insertions(+)
+diff --git a/tests/fixtures/full_market_t1/2026-09-03/README.md b/tests/fixtures/full_market_t1/2026-09-03/README.md
+new file mode 100644
+index 0000000..3b2901f
+--- /dev/null
++++ b/tests/fixtures/full_market_t1/2026-09-03/README.md
+@@ -0,0 +1,66 @@
++# 2026-09-03 deterministic replay
++
++This fixture freezes the real full-market T+1 replay inputs used by Task 6 without copying large source data into Git.
++
++## Observation-time interpretation
++
++- Candidate scan source: `data/cache/fast/scan_result_20260903_1353.csv`
++- Candidate union `observed_at`: `2026-09-03T13:53:00+08:00`
++- Saved run manifest `generated_at`: `2026-09-03T13:46:56.819085+08:00`
++- Contract interpretation: the candidate scan was observed about 6 minutes after the saved run manifest generation time, which stays within the 20-minute handoff contract enforced by `strategies.full_market_t1._validate_contract`.
++- Replay decision time: `2026-09-03T13:53:00+08:00`
++- Replay test: `.venv\Scripts\python.exe -m pytest tests/test_full_market_t1.py -k replays_saved_2026_09_03_inputs -q`
++
++## Consumed source records
++
++<!-- task6-source-records:start -->
++```json
++[
++  {
++    "path": "data/cache/fast/scan_result_20260903_1353.csv",
++    "bytes": 13074,
++    "sha256": "951832096c579d287d19a06cea44dce7b90fb304ceeccdb8983e27912cd627f1"
++  },
++  {
++    "path": "data/daily_runs/2026-09-03/134656_intraday_1300_objective_data/market_snapshot.json",
++    "bytes": 12042899,
++    "sha256": "bce2c0efc5a7333bf3329828f3b883075f0e168be7356846a319cae6450752ac"
++  },
++  {
++    "path": "data/daily_runs/2026-09-03/134656_intraday_1300_objective_data/daily_indicators.csv",
++    "bytes": 3121082,
++    "sha256": "e567ab577bc4722ab43863258f5ad18b1f60a1a4afab6f38ec3ed0267abdfa77"
++  },
++  {
++    "path": "data/daily_runs/2026-09-03/134656_intraday_1300_objective_data/classification_map.csv",
++    "bytes": 972381,
++    "sha256": "4450f63decf5616414611a1623c46ad025bd137d59676c4bba42ef76b6ab9de6"
++  },
++  {
++    "path": "data/daily_runs/2026-09-03/134656_intraday_1300_objective_data/industry_agg.csv",
++    "bytes": 9269,
++    "sha256": "1d606637d9978949dd2d2762d574007d597e2c349fb6b677134215f4a0a5da4d"
++  },
++  {
++    "path": "data/daily_runs/2026-09-03/134656_intraday_1300_objective_data/market_breadth.json",
++    "bytes": 29925,
++    "sha256": "0283a877a81ca16bbfae75bc9611ebe9eae15d78102a3de9ff64ae88b341c995"
++  },
++  {
++    "path": "data/daily_runs/2026-09-03/134656_intraday_1300_objective_data/intraday_minutes.parquet",
++    "bytes": 17589118,
++    "sha256": "5f2a8660be950a75c494561878156affc172d581615c0469edfa32290891ea4f"
++  },
++  {
++    "path": "data/daily_runs/2026-09-03/134656_intraday_1300_objective_data/data_audit.json",
++    "bytes": 824500,
++    "sha256": "97aca8550074449cde2611169f10ee18e4bdde9cacf332723b4de915b7592374"
++  },
++  {
++    "path": "data/daily_runs/2026-09-03/134656_intraday_1300_objective_data/manifest.json",
++    "bytes": 3892,
++    "sha256": "556fefbca1c84b5085ed496116540dd623fc11a1a0370d40664712caa6c89dea"
++  }
++]
++```
++<!-- task6-source-records:end -->
+diff --git a/tests/fixtures/full_market_t1/2026-09-03/expected_summary.json b/tests/fixtures/full_market_t1/2026-09-03/expected_summary.json
+new file mode 100644
+index 0000000..f11d49a
+--- /dev/null
++++ b/tests/fixtures/full_market_t1/2026-09-03/expected_summary.json
+@@ -0,0 +1,15 @@
++{
++  "trade_date": "2026-09-03",
++  "market_rows": 5546,
++  "only_choose_one": null,
++  "global_status": "decision_ready",
++  "executable": 0,
++  "executable_exposed": 0,
++  "watch": 2,
++  "rejected": 33,
++  "shadow_count": 1,
++  "evaluated": 36,
++  "shadow_codes": [
++    "600362"
++  ]
++}
+diff --git a/tests/test_full_market_t1.py b/tests/test_full_market_t1.py
+index 325ed96..219e55e 100644
+--- a/tests/test_full_market_t1.py
++++ b/tests/test_full_market_t1.py
+@@ -1,95 +1,214 @@
+ from __future__ import annotations
+ 
+ from dataclasses import FrozenInstanceError
+ from datetime import datetime, timedelta, timezone
++import hashlib
+ import json
+ import os
+ from pathlib import Path
++import re
+ 
+ import pandas as pd
+ import pytest
+ 
+ import strategies.full_market_t1 as full_market_t1
+ from strategies.full_market_t1 import (
+     CandidateObjectiveData,
+     build_candidate_union,
+     build_minute_evidence,
+     orchestrate_full_market_t1,
+     candidate_data_status,
+     classify_price_band,
+     compute_execution_score,
+     write_candidate_union,
+ )
+ 
+ 
+ TZ_SHANGHAI = timezone(timedelta(hours=8))
++SAVED_REPLAY_TRADE_DATE = "2026-09-03"
++SAVED_REPLAY_OBSERVED_AT = "2026-09-03T13:53:00+08:00"
++SAVED_REPLAY_GENERATED_AT = "2026-09-03T13:46:56.819085+08:00"
++SAVED_REPLAY_MARKET_ROWS = 5546
++SAVED_REPLAY_SOURCE_BLOCK = re.compile(
++    r"<!-- task6-source-records:start -->\s*```json\s*(.*?)\s*```\s*<!-- task6-source-records:end -->",
++    re.DOTALL,
++)
++
++
++def _saved_replay_repo_root() -> Path:
++    return Path(__file__).resolve().parents[1]
++
++
++def _saved_replay_fixture_dir() -> Path:
++    return _saved_replay_repo_root() / "tests" / "fixtures" / "full_market_t1" / SAVED_REPLAY_TRADE_DATE
++
++
++def _saved_replay_expected_summary() -> dict[str, object]:
++    return json.loads((_saved_replay_fixture_dir() / "expected_summary.json").read_text(encoding="utf-8"))
++
++
++def _saved_replay_source_paths(repo_root: Path) -> dict[str, Path]:
++    run_dir = repo_root / "data" / "daily_runs" / SAVED_REPLAY_TRADE_DATE / "134656_intraday_1300_objective_data"
++    return {
++        "data/cache/fast/scan_result_20260903_1353.csv": repo_root / "data" / "cache" / "fast" / "scan_result_20260903_1353.csv",
++        f"data/daily_runs/{SAVED_REPLAY_TRADE_DATE}/134656_intraday_1300_objective_data/market_snapshot.json": run_dir / "market_snapshot.json",
++        f"data/daily_runs/{SAVED_REPLAY_TRADE_DATE}/134656_intraday_1300_objective_data/daily_indicators.csv": run_dir / "daily_indicators.csv",
++        f"data/daily_runs/{SAVED_REPLAY_TRADE_DATE}/134656_intraday_1300_objective_data/classification_map.csv": run_dir / "classification_map.csv",
++        f"data/daily_runs/{SAVED_REPLAY_TRADE_DATE}/134656_intraday_1300_objective_data/industry_agg.csv": run_dir / "industry_agg.csv",
++        f"data/daily_runs/{SAVED_REPLAY_TRADE_DATE}/134656_intraday_1300_objective_data/market_breadth.json": run_dir / "market_breadth.json",
++        f"data/daily_runs/{SAVED_REPLAY_TRADE_DATE}/134656_intraday_1300_objective_data/intraday_minutes.parquet": run_dir / "intraday_minutes.parquet",
++        f"data/daily_runs/{SAVED_REPLAY_TRADE_DATE}/134656_intraday_1300_objective_data/data_audit.json": run_dir / "data_audit.json",
++        f"data/daily_runs/{SAVED_REPLAY_TRADE_DATE}/134656_intraday_1300_objective_data/manifest.json": run_dir / "manifest.json",
++    }
++
++
++def _load_saved_replay_source_records() -> list[dict[str, object]]:
++    readme_path = _saved_replay_fixture_dir() / "README.md"
++    match = SAVED_REPLAY_SOURCE_BLOCK.search(readme_path.read_text(encoding="utf-8"))
++    if match is None:
++        raise AssertionError("Task6 README is missing the source-records JSON block")
++    records = json.loads(match.group(1))
++    if not isinstance(records, list) or not records:
++        raise AssertionError("Task6 README source-records block must be a non-empty list")
++    return records
++
++
++def _require_saved_replay_sources(repo_root: Path) -> dict[str, Path]:
++    source_paths = _saved_replay_source_paths(repo_root)
++    missing = [relative for relative, path in source_paths.items() if not path.is_file()]
++    if missing:
++        pytest.skip(f"saved full-market T1 replay sources are unavailable: {', '.join(missing)}")
++    return source_paths
++
++
++def _verify_saved_replay_source_hashes(repo_root: Path) -> dict[str, Path]:
++    source_paths = _require_saved_replay_sources(repo_root)
++    expected_records = _load_saved_replay_source_records()
++    expected_by_path = {
++        str(record["path"]): record
++        for record in expected_records
++        if isinstance(record, dict) and isinstance(record.get("path"), str)
++    }
++    assert set(expected_by_path) == set(source_paths)
++    for relative, path in source_paths.items():
++        payload = path.read_bytes()
++        record = expected_by_path[relative]
++        assert record["bytes"] == len(payload)
++        assert record["sha256"] == hashlib.sha256(payload).hexdigest()
++    return source_paths
++
++
++def _replay_saved_full_market_t1_inputs(tmp_path: Path) -> tuple[dict[str, object], dict[str, Path]]:
++    repo_root = _saved_replay_repo_root()
++    source_paths = _verify_saved_replay_source_hashes(repo_root)
++    frame = pd.read_csv(source_paths["data/cache/fast/scan_result_20260903_1353.csv"])
++    candidate_union = build_candidate_union(
++        frame,
++        trade_date=SAVED_REPLAY_TRADE_DATE,
++        observed_at=SAVED_REPLAY_OBSERVED_AT,
++        market_rows=SAVED_REPLAY_MARKET_ROWS,
++        funnel={
++            "initial": SAVED_REPLAY_MARKET_ROWS,
++            "fast_scan_candidates": len(frame),
++            "candidates": len(frame),
++        },
++    )
++    candidate_union_path = tmp_path / "candidate_union.json"
++    candidate_union_path.write_text(json.dumps(candidate_union, ensure_ascii=False, indent=2), encoding="utf-8")
++    latest_payload = {
++        "schema_version": 1,
++        "generated_at": SAVED_REPLAY_GENERATED_AT,
++        "market_snapshot_path": str(source_paths[f"data/daily_runs/{SAVED_REPLAY_TRADE_DATE}/134656_intraday_1300_objective_data/market_snapshot.json"].resolve()),
++        "daily_indicators_path": str(source_paths[f"data/daily_runs/{SAVED_REPLAY_TRADE_DATE}/134656_intraday_1300_objective_data/daily_indicators.csv"].resolve()),
++        "classification_map_path": str(source_paths[f"data/daily_runs/{SAVED_REPLAY_TRADE_DATE}/134656_intraday_1300_objective_data/classification_map.csv"].resolve()),
++        "industry_agg_path": str(source_paths[f"data/daily_runs/{SAVED_REPLAY_TRADE_DATE}/134656_intraday_1300_objective_data/industry_agg.csv"].resolve()),
++        "market_breadth_path": str(source_paths[f"data/daily_runs/{SAVED_REPLAY_TRADE_DATE}/134656_intraday_1300_objective_data/market_breadth.json"].resolve()),
++        "intraday_minutes_path": str(source_paths[f"data/daily_runs/{SAVED_REPLAY_TRADE_DATE}/134656_intraday_1300_objective_data/intraday_minutes.parquet"].resolve()),
++        "data_audit_path": str(source_paths[f"data/daily_runs/{SAVED_REPLAY_TRADE_DATE}/134656_intraday_1300_objective_data/data_audit.json"].resolve()),
++    }
++    (tmp_path / "latest_codex_input.json").write_text(
++        json.dumps(latest_payload, ensure_ascii=False, indent=2),
++        encoding="utf-8",
++    )
++    decision = orchestrate_full_market_t1(
++        data_root=tmp_path,
++        candidate_union_path=candidate_union_path,
++        decision_at=datetime(2026, 9, 3, 13, 53, tzinfo=TZ_SHANGHAI),
++        output_path=tmp_path / "decision.json",
++    )
++    return decision, source_paths
++
++
++def _assert_reason_codes_present(rows: list[dict[str, object]]) -> None:
++    for row in rows:
++        assert row["reason_codes"], f"{row['code']} missing reason codes for {row['decision']}"
+ 
+ 
+ def _base_snapshot(**overrides):
+     payload = {
+         "code": "1234",
+         "price": 10.0,
+         "change_pct": 3.2,
+         "turnover_rate": 4.8,
+         "low": 9.7,
+         "high": 10.8,
+     }
+     payload.update(overrides)
+     return payload
+ 
+ 
+ def _base_daily(**overrides):
+     payload = {
+         "ma5": 9.9,
+         "ma10": 9.8,
+     }
+     payload.update(overrides)
+     return payload
+ 
+ 
+ def _base_industry(**overrides):
+     payload = {"industry": "bank", "advance_ratio": 0.62, "industry_sync": True}
+     payload.update(overrides)
+     return payload
+ 
+ 
+ def _base_minute(**overrides):
+     payload = {
+         "vwap": 10.05,
+         "afternoon_vwap": 10.08,
+         "named_pivot": 10.02,
+     }
+     payload.update(overrides)
+     return payload
+ 
+ 
+ def _base_executability(**overrides):
+     payload = {
+         "dist_vwap_pct": 3.0,
+         "change_pct": 9.0,
+         "turnover_rate": 12.0,
+         "from_low_pct": 8.0,
+         "dist_high_pct": -4.0,
+         "amplitude_pct": 9.0,
+         "buy_low": 50.0,
+         "buy_high": 55.0,
+         "no_chase_price": 54.5,
+         "protection_constructible": True,
+         "is_untradable": False,
+         "fee_adjusted_rr": 1.8,
+     }
+     payload.update(overrides)
+     return payload
+ 
+ 
+ def _candidate(**overrides):
+     payload = {
+         "code": "600000",
+         "name": "浦发银行",
+         "market": "sh",
+         "price": 52.0,
+         "amount": 80_000_000,
+         "opportunity_score": 70.0,
+         "price_band": "production",
+         "candidate_reason": ["trend_full"],
+     }
+@@ -1378,70 +1497,104 @@ def test_orchestrate_full_market_t1_rejects_invalid_only_choose_one_codes(
+ ):
+     candidate = {
+         "code": "000001",
+         "name": "平安银行",
+         "market": "sz",
+         "price": 45.0,
+         "amount": 55_000_000,
+         "opportunity_score": 90.0,
+         "price_band": "shadow_40_50",
+         "candidate_reason": ["shadow_watch"],
+         "buy_low": 44.5,
+         "buy_high": 45.2,
+         "chase_line": 45.3,
+         "protect": 43.8,
+         "protection_constructible": True,
+         "fee_adjusted_rr": 1.8,
+         "named_pivot": 44.8,
+     }
+     fixture = _write_full_market_inputs(tmp_path, candidates=[candidate])
+     output_path = tmp_path / "decision.json"
+     ledger_path = fixture["data_root"] / "shadow" / "full_market_t1_shadow.jsonl"
+     payload = _valid_decision_payload_for_validation()
+     payload["only_choose_one"] = only_choose_one
+     monkeypatch.setattr(full_market_t1, "build_full_market_decision", lambda *args, **kwargs: payload)
+ 
+     with pytest.raises(ValueError, match="only_choose_one"):
+         orchestrate_full_market_t1(
+             data_root=fixture["data_root"],
+             candidate_union_path=fixture["candidate_union_path"],
+             decision_at=datetime(2026, 9, 3, 13, 45, tzinfo=TZ_SHANGHAI),
+             output_path=output_path,
+         )
+ 
+     assert not output_path.exists()
+     assert not output_path.with_suffix(".tmp").exists()
+     assert not ledger_path.exists()
+ 
+ 
+ def test_orchestrate_full_market_t1_accepts_valid_only_choose_one_winner(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+     candidate = {
+         "code": "000001",
+         "name": "平安银行",
+         "market": "sz",
+         "price": 45.0,
+         "amount": 55_000_000,
+         "opportunity_score": 90.0,
+         "price_band": "shadow_40_50",
+         "candidate_reason": ["shadow_watch"],
+         "buy_low": 44.5,
+         "buy_high": 45.2,
+         "chase_line": 45.3,
+         "protect": 43.8,
+         "protection_constructible": True,
+         "fee_adjusted_rr": 1.8,
+         "named_pivot": 44.8,
+     }
+     fixture = _write_full_market_inputs(tmp_path, candidates=[candidate])
+     output_path = tmp_path / "decision.json"
+     payload = _valid_decision_payload_for_validation()
+     monkeypatch.setattr(full_market_t1, "build_full_market_decision", lambda *args, **kwargs: payload)
+ 
+     decision = orchestrate_full_market_t1(
+         data_root=fixture["data_root"],
+         candidate_union_path=fixture["candidate_union_path"],
+         decision_at=datetime(2026, 9, 3, 13, 45, tzinfo=TZ_SHANGHAI),
+         output_path=output_path,
+     )
+ 
+     assert decision["only_choose_one"] == "600001"
+     assert output_path.exists()
++
++
++def test_orchestrate_full_market_t1_replays_saved_2026_09_03_inputs(tmp_path: Path):
++    expected_summary = _saved_replay_expected_summary()
++    decision, source_paths = _replay_saved_full_market_t1_inputs(tmp_path)
++
++    data_audit = json.loads(
++        source_paths[f"data/daily_runs/{SAVED_REPLAY_TRADE_DATE}/134656_intraday_1300_objective_data/data_audit.json"].read_text(
++            encoding="utf-8"
++        )
++    )
++    assert decision["trade_date"] == expected_summary["trade_date"]
++    assert decision["global_status"] == expected_summary["global_status"]
++    assert decision["only_choose_one"] == expected_summary["only_choose_one"]
++    assert data_audit["quality_status"] == "partial"
++    assert decision["summary"] == {
++        "executable": expected_summary["executable"],
++        "executable_exposed": expected_summary["executable_exposed"],
++        "watch": expected_summary["watch"],
++        "rejected": expected_summary["rejected"],
++        "shadow_count": expected_summary["shadow_count"],
++        "evaluated": expected_summary["evaluated"],
++    }
++    assert decision["market"]["full_market"]["total"] == expected_summary["market_rows"]
++    assert decision["market"]["critical_ready"] is True
++    assert decision["shadow"] and [row["code"] for row in decision["shadow"]] == expected_summary["shadow_codes"]
++    assert all(row["production_buyable"] is False for row in decision["shadow"])
++    assert all(row["buyable"] is False for row in decision["shadow"])
++    assert all(row["only_choose_one_eligible"] is False for row in decision["shadow"])
++    _assert_reason_codes_present(decision["watch"])
++    _assert_reason_codes_present(decision["rejected"])
++    _assert_reason_codes_present(
++        [row for row in decision["audit_rows"] if row["decision"] not in {"executable_candidate"}]
++    )
+

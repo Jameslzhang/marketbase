@@ -148,6 +148,74 @@ def test_collect_uses_reference_fallback_and_preserves_refreshed_bse_source(
     assert result.report["reference_source"] == "em_datacenter+tencent_bse"
 
 
+def test_collect_default_primary_falls_back_when_sina_is_empty(monkeypatch, tmp_path):
+    calls: list[tuple[list[str], dict[str, object]]] = []
+    fallback_frame = _live_quotes(include_bj=False)
+    fallback_frame.attrs["snapshot_source"] = "efinance"
+
+    def fallback(sources, **kwargs):
+        calls.append((sources, kwargs))
+        return fallback_frame
+
+    monkeypatch.setattr(
+        "marketbase.market_collector.fetch_snapshot_with_fallback",
+        fallback,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "marketbase.market_collector.fetch_reference_snapshot_with_bse_fallback",
+        lambda _cached: _reference_quotes(),
+    )
+    monkeypatch.setattr(
+        "marketbase.market_collector.collect_bse_snapshot",
+        lambda **_kwargs: (pd.DataFrame(), {"bj_actual": 0, "bj_expected": 0, "bj_missing": 0, "source": "", "errors": []}),
+    )
+
+    result = collect_market_snapshot(
+        cache_path=tmp_path / "market.json",
+        now=OBSERVED_AT,
+        min_rows=1,
+    )
+
+    assert calls == [(["sina", "efinance", "akshare_em"], {"required_columns": ["code", "name", "price", "volume", "amount"]})]
+    assert result.report["primary_source"] == "efinance"
+
+
+def test_collect_default_primary_falls_back_to_tencent_after_public_sources_fail(monkeypatch, tmp_path):
+    cache_path = tmp_path / "market.json"
+    cache_path.write_text(
+        json.dumps({"rows": _live_quotes().to_dict(orient="records")}),
+        encoding="utf-8",
+    )
+    tencent_frame = _live_quotes(include_bj=False)
+    tencent_frame["source"] = "tencent"
+    requested: list[str] = []
+
+    monkeypatch.setattr(
+        "marketbase.market_collector.fetch_snapshot_with_fallback",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("public sources unavailable")),
+    )
+    monkeypatch.setattr(
+        "marketbase.market_collector.fetch_tencent_quotes",
+        lambda codes, **_kwargs: (requested.extend(codes) or tencent_frame, []),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "marketbase.market_collector.fetch_reference_snapshot_with_bse_fallback",
+        lambda _cached: _reference_quotes(),
+    )
+    monkeypatch.setattr(
+        "marketbase.market_collector.collect_bse_snapshot",
+        lambda **_kwargs: (pd.DataFrame(), {"bj_actual": 0, "bj_expected": 0, "bj_missing": 0, "source": "", "errors": []}),
+    )
+
+    result = collect_market_snapshot(cache_path=cache_path, now=OBSERVED_AT, min_rows=1)
+
+    assert requested == ["600002", "000002", "430001"]
+    assert result.report["primary_source"] == "tencent"
+    assert any("public sources unavailable" in value for value in result.audit["provider_errors"])
+
+
 def test_collect_returns_auditable_mainland_rows_when_bse_reference_fails(tmp_path):
     result = collect_market_snapshot(
         cache_path=tmp_path / "market.json",

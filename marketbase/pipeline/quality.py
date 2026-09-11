@@ -63,10 +63,7 @@ def _quality_status(
     'data_not_ready' means critical data is missing and no strategy should
     consume this collection.
     """
-    if phase == "lunch_break":
-        return "data_not_ready", ["session_not_tradable"]
-
-    _valid_phases = {"post_close", "intraday_1300", "intraday_1400", "intraday_1430"}
+    _valid_phases = {"lunch_break", "post_close", "intraday_1300", "intraday_1400", "intraday_1430"}
     if phase not in _valid_phases:
         return "data_not_ready", ["invalid_phase"]
 
@@ -78,7 +75,7 @@ def _quality_status(
         return "data_not_ready", ["minute_failed"]
 
     # 静态数据不足标记：继续检查 market/daily/classification，不提前返回
-    minute_static_only = (minute_quality == "static_only")
+    minute_static_only = minute_quality in {"static_only", "not_requested"}
 
     audit_status = market_audit.get("status", "")
     if audit_status == "partial":

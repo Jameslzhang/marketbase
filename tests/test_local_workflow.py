@@ -204,8 +204,9 @@ def test_run_collection_collects_every_market_code_and_writes_only_protocol_file
             "run_status.json",
             "workflow.log",
             "FIELDS.md",
-            "intraday_minutes.parquet",
-        }
+                "intraday_minutes.parquet",
+                "performance_timings.json",
+            }
     assert summary["market_rows"] == 3
     assert summary["daily_success"] == 0  # 2 stale（latest_date 2026-03-17 ≠ trade_date 2026-07-21）
     assert summary["daily_failure"] == 1
@@ -638,7 +639,7 @@ def test_vscode_launch_configuration_uses_objective_collection_without_args():
     ]
 
 
-def test_lunch_break_is_not_labeled_post_close_or_data_ready():
+def test_lunch_break_with_complete_static_data_is_static_only():
     observed_at = datetime(2026, 8, 5, 11, 33, tzinfo=timezone(timedelta(hours=8)))
 
     phase = _detect_session_slug(observed_at, phase="post_close")
@@ -656,8 +657,8 @@ def test_lunch_break_is_not_labeled_post_close_or_data_ready():
     )
 
     assert phase == "lunch_break"
-    assert quality == "data_not_ready"
-    assert reasons == ["session_not_tradable"]
+    assert quality == "data_ready_static_only"
+    assert reasons == ["minute_insufficient"]
 
 
 def test_stale_or_unknown_quote_is_marked_untradable_in_legacy_field():
@@ -925,7 +926,7 @@ def _write_full_market_cli_fixture(
         },
     )
     pd.DataFrame(
-        [{"code": chosen["code"], "ma5": chosen["price"] - 0.2, "ma10": chosen["price"] - 0.4, "ma20": chosen["price"] - 0.6, "turnover_rate": 3.0}]
+        [{"code": chosen["code"], "last_trade_date": "2026-09-02", "ma5": chosen["price"] - 0.2, "ma10": chosen["price"] - 0.4, "ma20": chosen["price"] - 0.6, "turnover_rate": 3.0}]
     ).to_csv(run_dir / "daily_indicators.csv", index=False, encoding="utf-8")
     pd.DataFrame(
         [{"code": chosen["code"], "industry": "银行", "concepts": "国企改革", "supply_chain": "金融"}]
@@ -960,7 +961,7 @@ def _write_full_market_cli_fixture(
     return data_root, candidate_union_path
 
 
-def test_full_market_t1_cli_writes_atomic_decision_and_shadow_ledger(tmp_path):
+def test_full_market_t1_cli_writes_atomic_decision_and_shadow_ledger(tmp_path, capsys):
     data_root, candidate_union_path = _write_full_market_cli_fixture(tmp_path)
     output_path = tmp_path / "decision.json"
 
@@ -975,6 +976,11 @@ def test_full_market_t1_cli_writes_atomic_decision_and_shadow_ledger(tmp_path):
     )
 
     assert rc == 0
+    stdout = capsys.readouterr().out
+    assert "研究首选：" in stdout
+    assert "执行首选：" in stdout
+    assert "结果正文开始" in stdout
+    assert "预埋参考区" in stdout
     payload = json.loads(output_path.read_text(encoding="utf-8"))
     assert payload["only_choose_one"] is None
     assert not output_path.with_suffix(".tmp").exists()

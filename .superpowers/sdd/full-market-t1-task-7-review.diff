@@ -1,0 +1,157 @@
+# Task 7A Report: frozen rule V2 repository document
+
+## Scope
+
+- Repository: `D:\Environment\marketbase`
+- Source V1: `D:\Codex\02_正式交付区\V09011153_A股T1四轮定时任务冻结总规则.md`
+- Repository V2: `docs/strategy/a-share-t1-four-run-frozen-rules-v2.md`
+- Commit created: `a06e29213285c708c468ae3d813a7ee74a8c3489`
+- Formal delivery copy: not created
+- Automations: not modified
+
+## SHA-256
+
+- V1: `1E741462B3D999223B2A666C50692592FA82AD7033D717D29A875781C3A8BF11`
+- V2: `35F644AD391DF9170BB67DB521587771B6A7D11A10BEC57043ADB130A4979E38`
+
+## Governed Diff Summary
+
+Word diff and manual review confirmed changes are confined to the requested governance areas plus the minute-audit clarification:
+
+- §3.1 added the production `full-market-t1` command, `--candidate-union` input contract, same-run objective handoff requirement, and versioned decision artifact contract.
+- §3.3 clarified that minute audit uses current run-local `intraday_minutes.parquet` with deduplicated actual minutes and dynamic expected minutes; shared cache is history only.
+- §3.4 split market-wide `data_not_ready` from per-candidate `data_insufficient`, and kept classification coverage insufficiency as warning-only when candidate industry evidence exists.
+- §4.2 froze the production minimum at `50.00`, defined `40.00`-`49.99` as shadow-only with `production_buyable=false`, `buyable=false`, `only_choose_one_eligible=false`, and excluded below `40.00`.
+- §6 froze `execution_rule_version=1.0.0`, retained opportunity `65` and execution `68`, forbade substituting one score for the other, and preserved hard-gate vetoes.
+- §12 made 11:30, 13:45, and 14:40 consume the versioned decision artifact; 11:30 remains conditional-only when continuous-minute evidence is insufficient; 09:45 remains historical replay/audit only.
+- §13 required at least `3` trading days and at least `20` scored, execution-evaluated samples per channel before any shadow rule promotion proposal, with no automatic production threshold changes.
+
+## Verification
+
+- Verified V1 still exists at the original path.
+- Recomputed V1 SHA-256 after the edit/commit flow; no byte change observed.
+- Verified V2 explicitly contains: `full-market-t1`, `data_not_ready`, `data_insufficient`, `intraday_minutes.parquet`, `40.00`, `49.99`, `50.00`, opportunity `65`, execution `68`, `execution_rule_version=1.0.0`, `production_buyable=false`, `buyable=false`, `only_choose_one_eligible=false`, `3`, and `20`.
+- `git diff --no-index --word-diff=plain --unified=0` between V1 and V2 showed edits only in the expected sections.
+
+## Concerns
+
+- Git emitted LF/CRLF normalization warnings for the new repository Markdown file during diff/add/commit. The commit succeeded and content verification passed.
+- The report file is intentionally left uncommitted per task instructions.
+
+a06e292 docs: freeze full-market T1 rules v2
+ .../a-share-t1-four-run-frozen-rules-v2.md         | 315 +++++++++++++++++++++
+ 1 file changed, 315 insertions(+)
+warning: in the working copy of 'D:\Codex\02_正式交付区\V09011153_A股T1四轮定时任务冻结总规则.md', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'docs\strategy\a-share-t1-four-run-frozen-rules-v2.md', LF will be replaced by CRLF the next time Git touches it
+diff --git "a/D:\\Codex\\02_\346\255\243\345\274\217\344\272\244\344\273\230\345\214\272\\V09011153_A\350\202\241T1\345\233\233\350\275\256\345\256\232\346\227\266\344\273\273\345\212\241\345\206\273\347\273\223\346\200\273\350\247\204\345\210\231.md" "b/docs\\strategy\\a-share-t1-four-run-frozen-rules-v2.md"
+index 58b7672..2522fd6 100644
+--- "a/D:\\Codex\\02_\346\255\243\345\274\217\344\272\244\344\273\230\345\214\272\\V09011153_A\350\202\241T1\345\233\233\350\275\256\345\256\232\346\227\266\344\273\273\345\212\241\345\206\273\347\273\223\346\200\273\350\247\204\345\210\231.md"
++++ "b/docs\\strategy\\a-share-t1-four-run-frozen-rules-v2.md"
+@@ -45,7 +45,16 @@
+.venv\Scripts\python.exe local_workflow.py
+```
+
+{+- 全市场生产决策命令：+}
+
+{+```powershell+}
+{+.venv\Scripts\python.exe local_workflow.py full-market-t1 --candidate-union <候选联合JSON绝对路径> --decision-at <ISO8601时间> --output <决策JSON绝对路径>+}
+{+```+}
+
+- 客观数据交接文件：`D:\Environment\marketbase\data\daily_runs\latest_codex_input.json`。
+{+- `--candidate-union` 输入必须来自与本轮 `latest_codex_input.json` 同交易日、同目标轮次的动态候选联合，不得复用旧自选池、固定 Top-N 或跨轮价格。+}
+{+- 正式生产决策必须完成同轮次客观数据交接：候选联合中的 `trade_date`、`observed_at` 与本轮客观数据交接时间必须一致或处于允许窗口内，不一致时按数据合同失败处理。+}
+{+- 版本化决策产物由 `--output` 指定，至少包含 `schema_version`、`decision_rule_version`、`execution_rule_version`、完整市场覆盖、市场环境、`only_choose_one`、可执行/观察/拒绝/影子分组及候选门禁证据。+}
+- 不得使用不存在的 `D:\Environment\alphasift-main` 作为数据入口。
+
+### 3.2 运行权限
+@@ -67,11 +76,15 @@
+- 盘中执行结论所需的分钟/VWAP证据是否存在；
+- 筛选前候选池和筛选漏斗可追溯。
+
+{+- 分钟审计必须以当前 run-local `intraday_minutes.parquet` 为准，使用去重后的实际交易分钟数和随时段变化的动态应有分钟数核验连续性与覆盖；共享缓存只作历史留存，不得替代本轮分钟质量判断。+}
+
+候选必须从完整市场动态生成，不得从固定自选池、熟悉股票、少量公开报价或固定 Top-N 开始。
+
+### 3.4 [-`data_not_ready`-]{+`data_not_ready`、`data_insufficient`+} 与无候选
+
+- [-文件缺失、数据过期、接口中断、覆盖异常、时间不符或关键字段不足：输出-]{+文件缺失、数据过期、接口中断、覆盖异常、时间不符、候选联合与客观交接不一致、当前 run-local `intraday_minutes.parquet` 缺失或关键字段不足：输出全局+} `data_not_ready`，列出缺失项。
+{+- 单只候选缺行业、分钟、VWAP、日线或可执行性字段时，只将该候选标记为 `data_insufficient`，不得把单票缺口放大全市场无效。+}
+{+- 全市场分类覆盖不足时，如候选自身行业证据已存在，只记覆盖警告，不直接把该候选或全市场改判为 `data_not_ready`；只有候选自身行业证据缺失时，该候选才记为 `data_insufficient`。+}
+- `data_not_ready` 不等于“没有候选”，不得推断全市场无机会。
+- 只有完整市场扫描成功且全部候选被正常策略门禁否决，才允许输出“全市场无合规新开仓标的”。
+- 即使没有可执行候选，也要汇总市场强势但被否决的主要原因及数量。
+@@ -90,13 +103,18 @@
+- 沪深主板；
+- 代码不以 `300`、`301`、`688` 开头；
+- 不属于北交所；
+- 快照现价不低于 [-50-]{+`50.00`+} 元；
+- 非 ST、*ST、退市风险、停牌、一字板、封死涨停；
+- 流动性和成交额满足正常执行要求。
+
+{+同时固定以下价格带治理：+}
+
+{+- `40.00`—`49.99` 元标的仅可进入影子审计或覆盖复盘，不得进入正式候选和观察名单，且必须固定 `production_buyable=false`、`buyable=false`、`only_choose_one_eligible=false`。+}
+{+- 低于 `40.00` 元的标的直接排除，不进入正式候选、观察名单或影子晋升结论。+}
+
+回复必须分别报告：
+
+- 因价格低于 [-50 元剔除的数量；-]{+`50.00` 元离开生产范围的数量，并能区分 `40.00`—`49.99` 元影子审计数量与低于 `40.00` 元直接排除数量；+}
+- 因创业板、科创板或北交所权限剔除的数量；
+- 其他主要风险否决数量。
+
+@@ -122,7 +140,11 @@
+
+- `机会分`：日线趋势、行业相对强度、量比、RSI、动量和结构质量。
+- `执行分`：VWAP、涨跌幅、距日高回撤、振幅、换手、关键位、买点和追高风险。
+{+- 执行层冻结版本固定为 `execution_rule_version=1.0.0`，必须与其他研究版、开发版或排序版分开记录，不得自动漂移。+}
+{+- 正式生产判定中，`机会分` 达标阈值固定为 `65`，`执行分` 达标阈值固定为 `68`。+}
+- 不同历史版本的单一总分不得混用。每次必须同时展示机会分、执行分及主要加减分依据。
+{+- `机会分` 与 `执行分` 不得互相替代或抵消；一项未达阈值时，另一项再高也不能补足。+}
+{+- VWAP、连续分钟、买区、禁追、保护、行业同步、市场宽度、可交易性和费后风险收益等硬门禁继续保留否决权。+}
+
+机会分参考层级：
+
+@@ -230,6 +252,7 @@
+
+- 验证交易日。
+- 读取上一交易日可追溯候选及当时预测时间。
+{+- 09:45 只允许读取上一交易日已落盘的历史候选、决策和审计产物做回放验证；不得生成或替代当日 `full-market-t1` 生产决策。+}
+- 买点触发只能使用“昨日预测时间至昨日收盘”的分钟数据。
+- 结果验证使用“今日开盘至09:45”的数据。
+- 禁止用今日低点反推昨日可以买到。
+@@ -242,8 +265,9 @@
+
+- 在 `D:\Environment\marketbase` 强制获取当前全市场快照。
+- 核验完整市场覆盖、快照时间、市场宽度、行业和筛选漏斗。
+- [-动态生成候选池，输出最多5只正式/条件重点股票。-]{+动态生成候选池，并基于同轮次客观交接和候选联合生成或读取版本化决策产物作为午间输出依据。+}
+- [-没有连续分钟证据时，股票只能是条件观察，不能写“已确认买入”。-]{+输出最多5只正式/条件重点股票。+}
+{+- 连续分钟证据不足时，相关股票只能是条件观察；11:30 不得把分钟未确认标的写成可执行候选或“已确认买入”。+}
+- 全盘失败或覆盖不完整时输出 `data_not_ready`。
+- 对持仓和比亚迪只做午间预览，不能假设成交或收盘。
+
+@@ -251,6 +275,7 @@
+
+- 重新获取13:45附近全市场快照，不沿用11:30价格和排序。
+- 完成市场模式、动态候选池、通道分类、机会分、执行分、风险收益和一手经济性复核。
+{+- 13:45 必须消费同交易日、同轮次的候选联合与版本化决策产物，并完成完整执行评估，不得跳过执行层门禁。+}
+- 输出最多3只正式候选，并给最终排序和“只选一只”。
+- `only_choose_one` 只能选择 `buyable=true`；没有合格股票时为 `null`。
+- 单次快照不足以确认连续分钟条件时，降级为条件观察。
+@@ -259,6 +284,7 @@
+### 12.4 14:40｜尾盘复核与次日清单
+
+- 获取14:40附近最新市场、候选、持仓和比亚迪数据，标注“尾盘快照，非正式收盘”。
+{+- 14:40 必须消费同交易日、同轮次的候选联合与版本化决策产物，完成完整执行评估并据此生成次日待验证清单。+}
+- 复核买区、确认位、VWAP、禁追线、保护位、行业和市场模式。
+- 跌破保护、低于 VWAP 且板块走弱、或已经越过禁追线时，取消当日介入。
+- 本日候选池不可追溯时重新全盘快扫；失败则输出 `data_not_ready`。
+@@ -268,7 +294,8 @@
+## 13. 模型审计与参数治理
+
+- 日常审计可以提出问题，但不能自动修改本文件、技能或参数。
+- [-同类问题必须跨至少3个交易日重复，且同通道累计至少20个可执行、可评分样本，才允许提出参数上线。-]{+任何影子规则、影子价格带或挑战通道的晋升提案，必须跨至少 `3` 个交易日重复，且同通道累计至少 `20` 个可评分且完成执行评估的样本；不足时只能继续影子审计，不得提请上线。+}
+{+- 晋升到正式生产仍需治理评审，不得因为影子结果达标就自动修改正式价格带、正式阈值或其他生产门禁。+}
+- 一次只调整一个参数组。
+- 必须记录旧值、新值、样本量、费后期望、Brier分数、止损率、预期影响和回滚条件。
+- 挑战模型未改善费后收益与概率校准，或显著提高止损率，不得上线。
+

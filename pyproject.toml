@@ -18,7 +18,7 @@ dependencies = [
 
 [project.optional-dependencies]
 local = ["pyarrow>=15"]
-window = ["pypinyin>=0.49"]
+window = ["pypinyin>=0.49", "pywebview>=5.0"]
 data-cn = [
     "efinance>=0.4",
     "akshare>=1.10",

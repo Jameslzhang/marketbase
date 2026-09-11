@@ -64,6 +64,14 @@ def compute_volume_ratios_batch(
     elapsed = elapsed_trade_minutes(observed_at)
     method = "full_day_vs_prev_5d" if elapsed >= _CN_TRADING_MINUTES else "intraday_pace_vs_prev_5d"
 
+    # 日线缓存读取是每只股票一次的 I/O 操作；先按去重后的代码预加载，
+    # 避免对同一代码的重复行反复解析 JSON。
+    avg_volume_by_code: dict[str, float | None] = {}
+    for code in result["code"].astype(str).str.strip().unique():
+        avg_volume_by_code[code] = _avg_5d_volume(
+            code, daily_cache_root, observed_at=observed_at
+        )
+
     ratios: list[float | None] = []
     for _, row in result.iterrows():
         code = str(row["code"]).strip()
@@ -71,7 +79,7 @@ def compute_volume_ratios_batch(
         if vol is None or vol <= 0:
             ratios.append(None)
             continue
-        avg_5d = _avg_5d_volume(code, daily_cache_root, observed_at=observed_at)
+        avg_5d = avg_volume_by_code.get(code)
         if avg_5d is None or avg_5d <= 0:
             ratios.append(None)
             continue

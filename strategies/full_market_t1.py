@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 import math
@@ -20,7 +20,7 @@ SHADOW_MIN_PRICE = 40.0
 RESTRICTED_PREFIXES = ("300", "301", "688")
 SCHEMA_VERSION = "1.0.0"
 EXECUTION_RULE_VERSION = "1.0.0"
-DECISION_RULE_VERSION = "1.0.0"
+DECISION_RULE_VERSION = "1.2.0"
 CHANNEL_MAPPING_VERSION = "frozen_v2_to_lifecycle_v1"
 ATR14_PCT_INPUT_UNIT = "percent_points"
 ATR14_PCT_LIFECYCLE_UNIT = "decimal_ratio"
@@ -516,17 +516,23 @@ def _file_metadata(path: Path) -> dict[str, str]:
     }
 
 
-def _load_handoff_manifest(data_root: str | Path) -> tuple[dict[str, object], dict[str, dict[str, str]]]:
+def _load_handoff_manifest(data_root: str | Path, handoff_path: str | Path | None = None) -> tuple[dict[str, object], dict[str, dict[str, str]]]:
     root = Path(data_root).expanduser().resolve()
-    manifest_path = root / "latest_codex_input.json"
+    manifest_path = Path(handoff_path).expanduser().resolve() if handoff_path is not None else root / "latest_codex_input.json"
     manifest = _read_json(manifest_path)
-    metadata: dict[str, dict[str, str]] = {}
+    metadata: dict[str, dict[str, str]] = {"handoff_manifest": _file_metadata(manifest_path)}
     for key in REQUIRED_HANDOFF_INPUT_KEYS:
         value = manifest.get(key)
+        if key == "intraday_minutes_path" and value is None:
+            manifest["_minute_input_issue"] = "minute_path_null"
+            continue
         if not isinstance(value, str) or not value.strip():
             raise ValueError(f"handoff manifest missing required path: {key}")
         declared_path = Path(value).expanduser().resolve()
         if not declared_path.is_file():
+            if key == "intraday_minutes_path":
+                manifest["_minute_input_issue"] = "minute_file_missing"
+                continue
             raise ValueError(f"handoff manifest declared path missing: {key}")
         metadata[key] = _file_metadata(declared_path)
 
@@ -707,7 +713,9 @@ def _build_market_context(market_breadth: Mapping[str, object], data_audit: Mapp
         **payload,
         "full_market": full_market,
         "advance_ratio": advance_ratio,
-        "critical_ready": quality_status not in {"data_not_ready", ""},
+        "critical_ready": quality_status not in {"data_not_ready", "data_ready_static_only", ""},
+        "static_ready": quality_status in {"data_ready", "data_ready_static_only", "partial"},
+        "quality_status": quality_status,
         "trade_date": data_audit.get("trade_date"),
         "observed_at": handoff_observed_at.isoformat(),
     }
@@ -727,12 +735,32 @@ def _prepare_handoff(
     classification_by_code = _index_frame_by_code(classification_frame)
     industry_path_key = next(key for key in input_metadata if key in INDUSTRY_INPUT_KEYS)
     industry_frame = pd.read_csv(Path(input_metadata[industry_path_key]["path"]))
-    minute_frame = pd.read_parquet(Path(input_metadata["intraday_minutes_path"]["path"]))
+    minute_frame = (pd.read_parquet(Path(input_metadata["intraday_minutes_path"]["path"]))
+                    if "intraday_minutes_path" in input_metadata else pd.DataFrame())
     minute_frame = _normalize_frame_code_column(minute_frame)
     market_breadth = _read_json(Path(input_metadata["market_breadth_path"]["path"]))
     data_audit = _read_json(Path(input_metadata["data_audit_path"]["path"]))
     handoff_observed_at = _resolve_handoff_observed_at(manifest)
     market = _build_market_context(market_breadth, data_audit, handoff_observed_at)
+    market["session_phase"] = data_audit.get("session_phase")
+    # Read the cached exchange calendar without a weekday fallback or network call.
+    calendar_path = Path(__file__).resolve().parents[1] / "data/daily_runs/cache/trade_calendar.csv"
+    trade_date = str(candidate_union.get("trade_date", ""))
+    previous_date = None
+    if calendar_path.is_file():
+        calendar_dates = pd.read_csv(calendar_path, dtype=str)["trade_date"].dropna().tolist()
+        earlier = [value for value in calendar_dates if value < trade_date]
+        if trade_date in calendar_dates and earlier:
+            previous_date = max(earlier)
+    valid_daily_dates = {previous_date} if previous_date else set()
+    if handoff_observed_at.astimezone(timezone(timedelta(hours=8))).hour >= 15:
+        valid_daily_dates.add(trade_date)
+    market["previous_trading_date"] = previous_date
+    market["daily_input_issues"] = {}
+    if "intraday_minutes_path" not in input_metadata:
+        market["critical_ready"] = False
+        market["minute_input_issue"] = manifest.get("_minute_input_issue", "minute_path_null")
+        market["declared_minute_path"] = manifest.get("intraday_minutes_path")
     objective_by_code: dict[str, CandidateObjectiveData] = {}
     for raw_candidate in _to_native(candidate_union.get("candidates", [])) or []:
         candidate = _native_mapping(raw_candidate)
@@ -760,9 +788,23 @@ def _prepare_handoff(
         industry = _industry_evidence_for_code(code, classification_by_code, industry_frame)
         snapshot = snapshot_by_code.get(code, {})
         executability = _build_executability(candidate, snapshot, minute_evidence)
+        daily = daily_by_code.get(code, {})
+        daily_date = daily.get("last_trade_date", daily.get("last_date"))
+        if daily_date not in valid_daily_dates:
+            market["daily_input_issues"][code] = "daily_date_invalid"
+            daily = {}
+        stale_audit = _native_mapping(data_audit.get("daily_staleness"))
+        if (daily and daily_date == previous_date
+                and code in stale_audit.get("stale_codes", [])
+                and "failed_codes" in stale_audit and "unknown_quote_time_codes" in stale_audit
+                and not stale_audit.get("unknown_quote_time_codes_truncated", False)
+                and code not in stale_audit["failed_codes"]
+                and code not in stale_audit["unknown_quote_time_codes"]):
+            # This exemption is research-only. Original execution flags stay intact.
+            daily = {**daily, "research_t_minus_one_cache": True}
         objective_by_code[code] = CandidateObjectiveData(
             snapshot=snapshot,
-            daily=daily_by_code.get(code, {}),
+            daily=daily,
             industry=industry,
             minute=last_completed,
             minute_evidence=minute_evidence,
@@ -788,6 +830,24 @@ def _prepare_handoff(
 
 
 def _validate_decision_payload(decision: Mapping[str, object]) -> None:
+    research = decision.get("research_choices", [])
+    if not isinstance(research, list) or len(research) > 3:
+        raise ValueError("research choices must be a list of at most three")
+    research_codes = []
+    audited_codes = {row.get("code") for row in decision.get("audit_rows", []) if isinstance(row, Mapping)}
+    for row in research:
+        if (not isinstance(row, Mapping) or row.get("buyable") is not False
+                or row.get("research_only") is not True or row.get("code") not in audited_codes):
+            raise ValueError("research choices must remain non-buyable and traceable")
+        if row.get("code") in research_codes or not str(row.get("code", "")).startswith(("60", "00")):
+            raise ValueError("research choices must have unique mainboard codes")
+        if (_coerce_float(row.get("price")) or 0) < PRODUCTION_MIN_PRICE:
+            raise ValueError("research choices must respect production price range")
+        if any(key in row for key in ("buy_low", "buy_high", "only_choose_one_eligible")):
+            raise ValueError("research choices cannot carry an executable buy plan")
+        research_codes.append(row["code"])
+    if decision.get("research_first_choice") != (research_codes[0] if research_codes else None):
+        raise ValueError("research first choice must match ranked research choices")
     required_keys = (
         "schema_version",
         "decision_rule_version",
@@ -1053,6 +1113,7 @@ def orchestrate_full_market_t1(
     candidate_union_path: str | Path,
     decision_at: datetime,
     output_path: str | Path,
+    handoff_path: str | Path | None = None,
 ) -> dict[str, object]:
     if decision_at.tzinfo is None:
         raise ValueError("decision_at must be timezone-aware")
@@ -1061,7 +1122,7 @@ def orchestrate_full_market_t1(
         raise ValueError("candidate union path does not exist")
     candidate_union = _read_json(candidate_path)
     candidate_union["__path__"] = str(candidate_path)
-    manifest, input_metadata = _load_handoff_manifest(data_root)
+    manifest, input_metadata = _load_handoff_manifest(data_root, handoff_path)
     _validate_contract(candidate_union, manifest)
     handoff = _prepare_handoff(
         candidate_union=candidate_union,
@@ -1583,6 +1644,56 @@ def choose_one(rows: Sequence[Mapping]) -> str | None:
     return _normalize_code(ranked[0].get("code", ""))
 
 
+def build_research_choices(rows, objectives, *, static_ready):
+    """Rank static research separately; missing minutes never become an entry plan."""
+    if not static_ready:
+        return []
+    choices = []
+    for row in sorted(rows, key=lambda r: (
+            r.get("buyable") is True, r.get("decision") == "conditional_watch",
+            _coerce_float(r.get("opportunity_score")) or 0,
+            _coerce_float(r.get("execution_score")) or 0, str(r.get("code", ""))), reverse=True):
+        code = _normalize_code(row.get("code", ""))
+        objective = _coerce_objective(objectives.get(code, {}))
+        snapshot, daily = objective.snapshot, objective.daily
+        if not snapshot or not daily or not objective.industry:
+            continue
+        price = _coerce_float(snapshot.get("price"))
+        if price is None or classify_price_band(code, str(row.get("market", "")), price) != "production":
+            continue
+        if not code.startswith(("60", "00")) or (_coerce_float(row.get("opportunity_score")) or 0) < 55:
+            continue
+        if any(_coerce_float(daily.get(field)) is None for field in ("ma20", "rsi14", "rps20", "return_20d")):
+            continue
+        name = str(row.get("name", ""))
+        if "ST" in name.upper() or "退" in name:
+            continue
+        if any(snapshot.get(flag) is True for flag in ("is_st", "is_suspended", "delist_risk")):
+            continue
+        if ((snapshot.get("is_untradable") is True
+             or _native_mapping(row.get("executability")).get("is_untradable") is True)
+                and daily.get("research_t_minus_one_cache") is not True):
+            continue
+        if _coerce_float(snapshot.get("change_pct")) is None or abs(float(snapshot["change_pct"])) >= 9.9:
+            continue
+        choices.append({
+            "rank": len(choices) + 1, "code": code, "name": name, "price": price,
+            "industry": objective.industry.get("industry", row.get("industry")),
+            "research_channels": row.get("research_channels", []),
+            "opportunity_score": row.get("opportunity_score"),
+            "execution_score": row.get("execution_score"),
+            "execution_status": row.get("decision"),
+            "reason_codes": row.get("reason_codes", []),
+            "candidate_reason": row.get("candidate_reason", []),
+            "daily_reference_date": daily.get("last_trade_date", daily.get("last_date")),
+            "research_t_minus_one_cache": daily.get("research_t_minus_one_cache", False),
+            "research_only": True, "buyable": False,
+        })
+        if len(choices) == 3:
+            break
+    return choices
+
+
 def build_full_market_decision(candidate_union: Mapping, handoff: Mapping, *, decision_at: datetime) -> dict[str, object]:
     candidate_union_row = _native_mapping(candidate_union)
     handoff_row = _native_mapping(handoff)
@@ -1595,7 +1706,16 @@ def build_full_market_decision(candidate_union: Mapping, handoff: Mapping, *, de
     effective_critical_ready = not (
         handoff_row.get("critical_ready") is False or market.get("critical_ready") is False
     )
-    lifecycle_market = {**market, "critical_ready": effective_critical_ready}
+    static_ready = market.get("static_ready", effective_critical_ready) is True
+    local_decision_at = decision_at.astimezone(timezone(timedelta(hours=8)))
+    closed_session = local_decision_at.hour >= 15 or market.get("session_phase") == "post_close"
+    observations = [candidate_union_row.get("observed_at"), handoff_row.get("observed_at")]
+    snapshot_ages = [(decision_at - _parse_iso8601(value, label="observed_at")).total_seconds()
+                     for value in observations if value]
+    stale_snapshot = not snapshot_ages or any(age > 120 or age < -30 for age in snapshot_ages)
+    if closed_session or stale_snapshot:
+        effective_critical_ready = False
+    lifecycle_market = {**market, "critical_ready": effective_critical_ready, "static_ready": static_ready}
 
     evaluated: list[dict[str, object]] = []
     for raw_candidate in _to_native(candidate_union_row.get("candidates", [])) or []:
@@ -1621,6 +1741,10 @@ def build_full_market_decision(candidate_union: Mapping, handoff: Mapping, *, de
             row["buyable"] = False
             row["only_choose_one_eligible"] = False
             _append_unique(row["reason_codes"], "global_data_not_ready")
+            if closed_session:
+                _append_unique(row["reason_codes"], "closed_session")
+            elif stale_snapshot:
+                _append_unique(row["reason_codes"], "stale_snapshot")
             if row.get("decision") == "executable_candidate":
                 row["decision"] = "data_insufficient"
 
@@ -1635,6 +1759,8 @@ def build_full_market_decision(candidate_union: Mapping, handoff: Mapping, *, de
     executable = executable_all[:3]
 
     only_choose_one_code = choose_one(evaluated)
+    research_choices = build_research_choices(evaluated, objective_by_code_source,
+        static_ready=lifecycle_market.get("static_ready", effective_critical_ready) is True)
 
     return {
         "schema_version": candidate_union_row.get("schema_version", SCHEMA_VERSION),
@@ -1645,7 +1771,15 @@ def build_full_market_decision(candidate_union: Mapping, handoff: Mapping, *, de
         "observed_at": candidate_union_row.get("observed_at") or handoff_row.get("observed_at"),
         "market": lifecycle_market,
         "global_status": global_status,
+        "research_status": "ready" if static_ready else "data_not_ready",
+        "execution_status": "closed_session" if closed_session else ("stale_snapshot" if stale_snapshot else (
+            "evaluated" if effective_critical_ready else "data_insufficient")),
+        "snapshot_age_seconds": max(snapshot_ages) if snapshot_ages else None,
+        "pipeline_status": "completed",
         "only_choose_one": only_choose_one_code,
+        "research_first_choice": research_choices[0]["code"] if research_choices else None,
+        "research_choices": research_choices,
+        "research_shortfall": max(0, 3 - len(research_choices)),
         "input_metadata": _native_mapping(handoff_row.get("input_metadata")),
         "score_versions": _native_mapping(handoff_row.get("score_versions")),
         "summary": {

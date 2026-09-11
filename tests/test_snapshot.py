@@ -94,6 +94,26 @@ def test_normalize_sina_maps_valuation_and_turnover_fields():
     assert normalized.attrs["snapshot_source"] == "sina"
 
 
+def test_fetch_sina_uses_snapshot_timeout_wrapper(monkeypatch):
+    expected = pd.DataFrame([{"code": "000001", "name": "受保护来源", "price": 10.0}])
+    calls = []
+
+    def unexpected_direct_sina_call():
+        raise AssertionError("Sina must be invoked through the timeout wrapper")
+
+    def wrapped(fetcher, *, source):
+        calls.append((fetcher, source))
+        return expected
+
+    monkeypatch.setattr("marketbase.snapshot._fetch_sina", unexpected_direct_sina_call)
+    monkeypatch.setattr("marketbase.snapshot._call_snapshot_wrapper", wrapped)
+
+    result = fetch_cn_snapshot("sina")
+
+    assert result is expected
+    assert calls == [(unexpected_direct_sina_call, "sina")]
+
+
 def test_fetch_sina_paginates_and_normalizes_market_cap_units(monkeypatch):
     calls = []
 
@@ -170,6 +190,34 @@ def test_fetch_sina_does_not_treat_a_short_page_as_end_of_market(monkeypatch):
     normalized = _fetch_sina()
 
     assert normalized["code"].tolist() == ["000001", "000002"]
+
+
+def test_fetch_sina_stops_after_an_empty_probe_batch(monkeypatch):
+    """Empty pages after the first probe batch must not trigger needless tail requests."""
+    calls = []
+
+    class FakeResponse:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self._payload
+
+    def fake_get(url, **kwargs):
+        calls.append((kwargs["params"]["node"], kwargs["params"]["page"]))
+        if kwargs["params"]["node"] == "sh_a" and kwargs["params"]["page"] == 1:
+            return FakeResponse([{"code": "600001", "name": "样例", "trade": "10"}])
+        return FakeResponse([])
+
+    monkeypatch.setattr("marketbase.snapshot._get_http_session", lambda: _fake_session(fake_get))
+
+    normalized = _fetch_sina()
+
+    assert normalized["code"].tolist() == ["600001"]
+    assert max(page for _node, page in calls) == 32
 
 
 def test_fetch_sina_retries_failed_page_inside_nonempty_range(monkeypatch):

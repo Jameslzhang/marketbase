@@ -42,6 +42,56 @@ def test_load_bse_codes_from_local_universe(tmp_path: Path):
     assert fast_t1_scan.load_bse_codes(tmp_path) == ["430001", "830001"]
 
 
+def test_indicator_cache_reuses_same_trading_day_results(tmp_path: Path, monkeypatch):
+    universe = pd.DataFrame({"code": ["000001", "600000"]})
+    calls = []
+
+    def compute(frame, daily_root, today_str, workers):
+        calls.append(frame["code"].tolist())
+        return pd.DataFrame(
+            [
+                {"code": "000001", "ma5": 1.0, "avg5d": 10.0},
+                {"code": "600000", "ma5": 2.0, "avg5d": 20.0},
+            ]
+        )
+
+    monkeypatch.setattr(fast_t1_scan, "compute_indicators_parallel", compute)
+
+    first = fast_t1_scan.load_or_compute_indicators(
+        universe, tmp_path / "daily", "2026-09-01", 4, tmp_path / "fast"
+    )
+    second = fast_t1_scan.load_or_compute_indicators(
+        universe, tmp_path / "daily", "2026-09-01", 4, tmp_path / "fast"
+    )
+
+    assert calls == [["000001", "600000"]]
+    assert first["code"].tolist() == ["000001", "600000"]
+    assert second["ma5"].tolist() == [1.0, 2.0]
+
+
+def test_indicator_cache_only_computes_codes_missing_from_cache(tmp_path: Path, monkeypatch):
+    universe = pd.DataFrame({"code": ["000001", "600000"]})
+    fast_dir = tmp_path / "fast"
+    fast_dir.mkdir()
+    pd.DataFrame([{"code": "000001", "ma5": 1.0, "avg5d": 10.0}]).to_csv(
+        fast_dir / "indicators_2026-09-01.csv", index=False
+    )
+    calls = []
+
+    def compute(frame, daily_root, today_str, workers):
+        calls.append(frame["code"].tolist())
+        return pd.DataFrame([{"code": "600000", "ma5": 2.0, "avg5d": 20.0}])
+
+    monkeypatch.setattr(fast_t1_scan, "compute_indicators_parallel", compute)
+
+    result = fast_t1_scan.load_or_compute_indicators(
+        universe, tmp_path / "daily", "2026-09-01", 4, fast_dir
+    )
+
+    assert calls == [["600000"]]
+    assert result["code"].tolist() == ["000001", "600000"]
+
+
 def _sina_snapshot() -> pd.DataFrame:
     return pd.DataFrame(
         [

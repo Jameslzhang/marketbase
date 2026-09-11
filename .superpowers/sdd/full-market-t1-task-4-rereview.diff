@@ -1,0 +1,1031 @@
+# Task 4 Report: Mutually exclusive T+1 decisions and only-choose-one
+
+## RED
+
+- Added failing contract tests in `tests/test_full_market_t1.py` for executable decisions, per-gate vetoes, `data_insufficient`, shadow non-selection, deterministic `choose_one`, and capped mutually exclusive decision groups.
+- Verified RED with `.venv\Scripts\python.exe -m pytest tests\test_full_market_t1.py -q`.
+- Observed expected failure mode: missing `evaluate_candidate`, `choose_one`, and `build_full_market_decision`.
+
+## GREEN
+
+- Implemented `evaluate_candidate(candidate, objective, market)`, `choose_one(rows)`, and `build_full_market_decision(candidate_union, handoff, *, decision_at)` in `strategies/full_market_t1.py`.
+- Reused Task 3 `compute_execution_score` and failed closed to `data_insufficient` when execution evidence is incomplete.
+- Enforced the production hard gates, canonicalized `no_chase_price` with `chase_line` alias support, kept shadow candidates permanently non-buyable, and capped exposed executable rows at three while preserving overflow as audited rejected rows.
+- Verified GREEN with `.venv\Scripts\python.exe -m pytest tests\test_full_market_t1.py -q` -> `40 passed`.
+
+## Commit
+
+- Commit: `aa1fc95`
+- Message: `feat: decide full-market T1 candidates`
+
+## Staged Scope
+
+- `strategies/full_market_t1.py`
+- `tests/test_full_market_t1.py`
+
+## Concerns
+
+- The capped executable overflow is currently preserved by reclassifying rows into the rejected audit group with reason code `execution_group_capped`; if Task 5 expects a separate overflow bucket, that contract will need to be tightened there.
+- `build_full_market_decision` accepts a deliberately small `handoff` shape (`objective_by_code` and `market`) to stay aligned with the Task 4 brief; any richer persisted fixture should preserve those keys.
+
+## Review Fixes
+
+- Added RED tests for explicit executability-field missing reasons, explicit `industry_sync` boolean evidence, and truth-preserving `audit_rows` with exposed executable cap only.
+- Tightened candidate evaluation to fail closed when `buy_low`/`buy_high`, `no_chase_price` or `chase_line`, `protection_constructible`, `is_untradable`, or `fee_adjusted_rr` are missing or unusable.
+- Removed the `advance_ratio` fallback for `industry_sync`; missing or non-boolean evidence now returns `data_insufficient`, while explicit `False` remains `industry_sync_pending`.
+- Preserved real executable classification in `audit_rows`, kept `only_choose_one` based on the full executable set, and changed summary accounting to separate true executable count from exposed count.
+- Re-verified with `.venv\Scripts\python.exe -m pytest tests\test_full_market_t1.py -q` -> `49 passed`.
+
+d09c420 fix: preserve full-market T1 decision truth
+ strategies/full_market_t1.py | 93 +++++++++++++++++++++++++++++++-------------
+ tests/test_full_market_t1.py | 78 ++++++++++++++++++++++++++++++++++---
+ 2 files changed, 140 insertions(+), 31 deletions(-)
+diff --git a/strategies/full_market_t1.py b/strategies/full_market_t1.py
+index 70f7874..40c5f8c 100644
+--- a/strategies/full_market_t1.py
++++ b/strategies/full_market_t1.py
+@@ -1,78 +1,78 @@
+ from __future__ import annotations
+ 
+ from dataclasses import dataclass
+ from datetime import datetime
+ import json
+ import os
+ from pathlib import Path
+-from typing import Mapping
++from typing import Mapping, Sequence
+ 
+ import pandas as pd
+ 
+ PRODUCTION_MIN_PRICE = 50.0
+ SHADOW_MIN_PRICE = 40.0
+ RESTRICTED_PREFIXES = ("300", "301", "688")
+ SCHEMA_VERSION = "1.0.0"
+ EXECUTION_RULE_VERSION = "1.0.0"
+ REQUIRED_EXECUTION_FIELDS = (
+     "dist_vwap_pct",
+     "change_pct",
+     "turnover_rate",
+     "from_low_pct",
+     "dist_high_pct",
+     "amplitude_pct",
+ )
+ READINESS_MINUTE_REASONS = ("minute_missing", "vwap_missing")
+ 
+ 
+ @dataclass(frozen=True)
+ class CandidateObjectiveData:
+     snapshot: Mapping
+     daily: Mapping
+     industry: Mapping | None
+     minute: Mapping | None
+     minute_evidence: Mapping
+     executability: Mapping
+ 
+ 
+ def classify_price_band(code: str, market: str, price: float) -> str:
+     normalized = str(code).zfill(6)
+     if market == "bj" or normalized.startswith(RESTRICTED_PREFIXES):
+         return "excluded"
+     if price >= PRODUCTION_MIN_PRICE:
+         return "production"
+     if price >= SHADOW_MIN_PRICE:
+         return "shadow_40_50"
+     return "excluded"
+ 
+ 
+ def _to_native(value):
+     if isinstance(value, list):
+         return [_to_native(item) for item in value]
+     if isinstance(value, dict):
+         return {str(key): _to_native(item) for key, item in value.items()}
+     if pd.isna(value):
+         return None
+     if hasattr(value, "item"):
+         try:
+             return value.item()
+         except (ValueError, TypeError):
+             return value
+     return value
+ 
+ 
+ def _normalize_candidate_reason(value) -> list[object]:
+     native = _to_native(value)
+     if native is None:
+         return []
+     if isinstance(native, list):
+         return [item for item in native if item not in (None, "")]
+     if isinstance(native, str):
+         text = native.strip()
+         if not text:
+             return []
+         if "|" in text:
+             return [part for part in (item.strip() for item in text.split("|")) if part]
+         return [text]
+     return [native]
+ 
+@@ -269,70 +269,406 @@ def compute_execution_score(evidence: Mapping[str, float]) -> float:
+     if missing:
+         raise ValueError(f"missing execution evidence: {missing[0]}")
+ 
+     score = 50.0
+     dist_vwap_pct = float(evidence["dist_vwap_pct"])
+     change_pct = float(evidence["change_pct"])
+     turnover_rate = float(evidence["turnover_rate"])
+     from_low_pct = float(evidence["from_low_pct"])
+     dist_high_pct = float(evidence["dist_high_pct"])
+     amplitude_pct = float(evidence["amplitude_pct"])
+ 
+     score += _clamp(dist_vwap_pct * 8.0, -18.0, 18.0)
+     score += _clamp(change_pct * 1.8, -16.0, 16.0)
+     score += _clamp(turnover_rate * 1.2, 0.0, 10.0)
+     score += _clamp(from_low_pct * 1.5, 0.0, 10.0)
+     score += _clamp(dist_high_pct * 3.0, -14.0, 0.0)
+     if amplitude_pct > 8.0 and dist_high_pct < -3.0:
+         score -= 8.0
+     return round(_clamp(score, 0.0, 100.0), 2)
+ 
+ 
+ def build_candidate_union(
+     frame: pd.DataFrame,
+     *,
+     trade_date: str,
+     observed_at: str,
+     market_rows: int,
+     funnel: dict[str, int],
+ ) -> dict[str, object]:
+     candidates: list[dict[str, object]] = []
+     normalized = frame.copy()
+     if "code" in normalized.columns:
+         normalized["code"] = normalized["code"].astype(str).str.strip().str.zfill(6)
+     if "market" not in normalized.columns:
+         normalized["market"] = ""
+ 
+     for row in normalized.to_dict("records"):
+         candidate = {str(key): _to_native(value) for key, value in row.items()}
+         code = str(candidate.get("code", "")).zfill(6)
+         market = str(candidate.get("market", "") or "").strip()
+         price_value = pd.to_numeric(candidate.get("price"), errors="coerce")
+         price = float(price_value) if pd.notna(price_value) else float("nan")
+         candidate["code"] = code
+         candidate["market"] = market
+         candidate["candidate_reason"] = _normalize_candidate_reason(candidate.get("opportunity_tags"))
+         candidate["price_band"] = classify_price_band(code, market, price)
+         candidate["production_buyable"] = False
+         candidate["buyable"] = False
+         candidate["only_choose_one_eligible"] = False
+         candidates.append(candidate)
+ 
+     return {
+         "schema_version": SCHEMA_VERSION,
+         "trade_date": trade_date,
+         "observed_at": observed_at,
+         "market_rows": int(market_rows),
+         "funnel": {str(key): int(value) for key, value in funnel.items()},
+         "candidates": candidates,
+     }
+ 
+ 
+ def write_candidate_union(payload: dict[str, object], path: Path) -> Path:
+     path.parent.mkdir(parents=True, exist_ok=True)
+     tmp_path = path.with_suffix(".tmp")
+     tmp_path.write_text(
+         json.dumps(payload, ensure_ascii=False, indent=2),
+         encoding="utf-8",
+     )
+     os.replace(tmp_path, path)
+     return path
++
++
++def _native_mapping(value) -> dict[str, object]:
++    native = _to_native(value)
++    if isinstance(native, Mapping):
++        return {str(key): item for key, item in native.items()}
++    return {}
++
++
++def _coerce_float(value) -> float | None:
++    if value is None or pd.isna(value):
++        return None
++    try:
++        return float(value)
++    except (TypeError, ValueError):
++        return None
++
++
++def _coerce_objective(value) -> CandidateObjectiveData:
++    if isinstance(value, CandidateObjectiveData):
++        return value
++    mapping = _native_mapping(value)
++    return CandidateObjectiveData(
++        snapshot=_native_mapping(mapping.get("snapshot")),
++        daily=_native_mapping(mapping.get("daily")),
++        industry=_native_mapping(mapping.get("industry")) or None,
++        minute=_native_mapping(mapping.get("minute")) or None,
++        minute_evidence=_native_mapping(mapping.get("minute_evidence")),
++        executability=_native_mapping(mapping.get("executability")),
++    )
++
++
++def _build_execution_evidence(objective: CandidateObjectiveData) -> tuple[dict[str, float] | None, list[str]]:
++    evidence: dict[str, float] = {}
++    missing: list[str] = []
++    sources = (
++        _native_mapping(objective.executability),
++        _native_mapping(objective.snapshot),
++        _native_mapping(objective.daily),
++        _native_mapping(objective.minute),
++        _native_mapping(objective.minute_evidence),
++    )
++
++    for field in REQUIRED_EXECUTION_FIELDS:
++        value = None
++        for source in sources:
++            if field in source and source[field] is not None:
++                value = _coerce_float(source[field])
++                break
++        if value is None:
++            missing.append(field)
++        else:
++            evidence[field] = value
++
++    if missing:
++        return None, ["execution_score_data_missing"]
++    return evidence, []
++
++
++def _industry_sync(industry: Mapping | None) -> bool | None:
++    industry_mapping = _native_mapping(industry)
++    if "industry_sync" in industry_mapping:
++        value = industry_mapping.get("industry_sync")
++        if isinstance(value, bool):
++            return value
++        return None
++    return None
++
++
++def _watch_reason(reason: str) -> bool:
++    return reason in {
++        "opportunity_score_below_threshold",
++        "execution_score_below_threshold",
++        "minute_confirmation_pending",
++        "buy_zone_not_ready",
++        "above_no_chase_price",
++        "industry_sync_pending",
++        "market_breadth_below_threshold",
++        "protection_not_constructible",
++        "fee_adjusted_rr_below_threshold",
++    }
++
++
++def _sort_key(row: Mapping) -> tuple[float, float, float, float]:
++    return (
++        float(row.get("execution_score") or 0.0),
++        float(row.get("opportunity_score") or 0.0),
++        float(row.get("fee_adjusted_rr") or 0.0),
++        float(row.get("amount") or 0.0),
++    )
++
++
++def _validate_executability_fields(executability: Mapping) -> tuple[dict[str, object], list[str]]:
++    normalized = dict(executability)
++    reasons: list[str] = []
++
++    buy_low = _coerce_float(normalized.get("buy_low"))
++    buy_high = _coerce_float(normalized.get("buy_high"))
++    if buy_low is None or buy_high is None:
++        _append_unique(reasons, "buy_zone_missing")
++
++    no_chase_price = _coerce_float(normalized.get("no_chase_price"))
++    if no_chase_price is None:
++        no_chase_price = _coerce_float(normalized.get("chase_line"))
++    if no_chase_price is None:
++        _append_unique(reasons, "no_chase_missing")
++
++    protection_constructible = normalized.get("protection_constructible")
++    if not isinstance(protection_constructible, bool):
++        _append_unique(reasons, "protection_constructibility_missing")
++
++    is_untradable = normalized.get("is_untradable")
++    if not isinstance(is_untradable, bool):
++        _append_unique(reasons, "executability_status_missing")
++
++    fee_adjusted_rr = _coerce_float(normalized.get("fee_adjusted_rr"))
++    if fee_adjusted_rr is None:
++        _append_unique(reasons, "fee_adjusted_rr_missing")
++
++    normalized["buy_low"] = buy_low
++    normalized["buy_high"] = buy_high
++    normalized["no_chase_price"] = no_chase_price
++    normalized["protection_constructible"] = protection_constructible if isinstance(protection_constructible, bool) else None
++    normalized["is_untradable"] = is_untradable if isinstance(is_untradable, bool) else None
++    normalized["fee_adjusted_rr"] = fee_adjusted_rr
++    return normalized, reasons
++
++
++def evaluate_candidate(candidate: Mapping, objective: CandidateObjectiveData, market: Mapping) -> dict[str, object]:
++    candidate_row = _native_mapping(candidate)
++    objective_row = _coerce_objective(objective)
++    market_row = _native_mapping(market)
++    minute_evidence = _native_mapping(objective_row.minute_evidence)
++    industry = _native_mapping(objective_row.industry)
++    executability = _native_mapping(objective_row.executability)
++
++    code = _normalize_code(candidate_row.get("code", ""))
++    price_band = str(candidate_row.get("price_band", "") or "")
++    price = _coerce_float(candidate_row.get("price")) or 0.0
++    opportunity_score = _coerce_float(candidate_row.get("opportunity_score")) or 0.0
++    candidate_status, reason_codes = candidate_data_status(
++        objective_row.snapshot,
++        objective_row.daily,
++        objective_row.industry,
++        objective_row.minute,
++    )
++    if (
++        objective_row.minute is None
++        and minute_evidence.get("vwap") is None
++        and "vwap_missing" not in reason_codes
++    ):
++        reason_codes.append("vwap_missing")
++
++    execution_evidence, execution_missing_reasons = _build_execution_evidence(objective_row)
++    execution_score = None
++    if execution_evidence is None:
++        candidate_status = "data_insufficient"
++        for reason in execution_missing_reasons:
++            _append_unique(reason_codes, reason)
++    else:
++        execution_score = compute_execution_score(execution_evidence)
++
++    industry_sync = _industry_sync(industry)
++    if objective_row.industry is not None and industry_sync is None:
++        candidate_status = "data_insufficient"
++        _append_unique(reason_codes, "industry_sync_missing")
++
++    executability, executability_missing_reasons = _validate_executability_fields(executability)
++    if executability_missing_reasons:
++        candidate_status = "data_insufficient"
++        for reason in executability_missing_reasons:
++            _append_unique(reason_codes, reason)
++
++    buy_low = executability.get("buy_low")
++    buy_high = executability.get("buy_high")
++    no_chase_price = executability.get("no_chase_price")
++    protection_constructible = executability.get("protection_constructible")
++    is_untradable = executability.get("is_untradable")
++    fee_adjusted_rr = executability.get("fee_adjusted_rr")
++    market_advance_ratio = _coerce_float(market_row.get("advance_ratio")) or 0.0
++
++    row = {
++        **candidate_row,
++        "code": code,
++        "price_band": price_band,
++        "price": price,
++        "opportunity_score": round(opportunity_score, 2),
++        "execution_score": execution_score,
++        "candidate_data_status": candidate_status,
++        "market_advance_ratio": market_advance_ratio,
++        "minute_evidence": minute_evidence,
++        "industry_evidence": industry,
++        "executability": {
++            **executability,
++            "buy_low": buy_low,
++            "buy_high": buy_high,
++            "no_chase_price": no_chase_price,
++            "fee_adjusted_rr": fee_adjusted_rr,
++            "protection_constructible": protection_constructible,
++            "is_untradable": is_untradable,
++        },
++        "fee_adjusted_rr": fee_adjusted_rr,
++        "production_buyable": False,
++        "buyable": False,
++        "only_choose_one_eligible": False,
++        "reason_codes": [],
++        "decision": "reject",
++    }
++
++    if candidate_status != "ready":
++        row["decision"] = "data_insufficient"
++        row["reason_codes"] = reason_codes
++        return row
++
++    if price_band == "excluded":
++        row["reason_codes"] = ["price_band_excluded"]
++        return row
++
++    gate_failures: list[str] = []
++    if opportunity_score < 65.0:
++        gate_failures.append("opportunity_score_below_threshold")
++    if execution_score is None or execution_score < 68.0:
++        gate_failures.append("execution_score_below_threshold")
++    if minute_evidence.get("confirmed") is not True:
++        gate_failures.append("minute_confirmation_pending")
++    if buy_low is None or buy_high is None or not (buy_low <= price <= buy_high):
++        gate_failures.append("buy_zone_not_ready")
++    if no_chase_price is None or price > no_chase_price:
++        gate_failures.append("above_no_chase_price")
++    if industry_sync is False:
++        gate_failures.append("industry_sync_pending")
++    if market_advance_ratio < 0.35:
++        gate_failures.append("market_breadth_below_threshold")
++    if protection_constructible is False:
++        gate_failures.append("protection_not_constructible")
++    if is_untradable is True:
++        gate_failures.append("candidate_untradable")
++    if fee_adjusted_rr is None or fee_adjusted_rr < 1.5:
++        gate_failures.append("fee_adjusted_rr_below_threshold")
++
++    if price_band == "shadow_40_50":
++        row["reason_codes"] = ["shadow_price_band", *gate_failures]
++        row["decision"] = "shadow_watch" if opportunity_score >= 55.0 else "shadow_reject"
++        return row
++
++    row["reason_codes"] = gate_failures
++    if not gate_failures:
++        row["production_buyable"] = True
++        row["buyable"] = True
++        row["only_choose_one_eligible"] = True
++        row["decision"] = "executable_candidate"
++        return row
++
++    if opportunity_score >= 55.0 and all(_watch_reason(reason) for reason in gate_failures):
++        row["decision"] = "conditional_watch"
++        return row
++
++    row["decision"] = "reject"
++    return row
++
++
++def choose_one(rows: Sequence[Mapping]) -> str | None:
++    eligible = [
++        row
++        for row in rows
++        if row.get("price_band") == "production"
++        and row.get("buyable") is True
++        and row.get("only_choose_one_eligible") is True
++    ]
++    if not eligible:
++        return None
++    ranked = sorted(eligible, key=_sort_key, reverse=True)
++    return _normalize_code(ranked[0].get("code", ""))
++
++
++def build_full_market_decision(candidate_union: Mapping, handoff: Mapping, *, decision_at: datetime) -> dict[str, object]:
++    candidate_union_row = _native_mapping(candidate_union)
++    handoff_row = _native_mapping(handoff)
++    market = _native_mapping(handoff_row.get("market")) or _native_mapping(candidate_union_row.get("market"))
++    objective_by_code_source = (
++        _native_mapping(handoff_row.get("objective_by_code"))
++        or _native_mapping(candidate_union_row.get("objective_by_code"))
++    )
++
++    evaluated: list[dict[str, object]] = []
++    for raw_candidate in _to_native(candidate_union_row.get("candidates", [])) or []:
++        candidate_row = _native_mapping(raw_candidate)
++        code = _normalize_code(candidate_row.get("code", ""))
++        objective = objective_by_code_source.get(code)
++        if objective is None:
++            objective = CandidateObjectiveData(
++                snapshot={},
++                daily={},
++                industry=None,
++                minute=None,
++                minute_evidence={},
++                executability={},
++            )
++        row = evaluate_candidate(candidate_row, objective, market)
++        evaluated.append(row)
++
++    executable_all = sorted(
++        [row for row in evaluated if row.get("decision") == "executable_candidate"],
++        key=_sort_key,
++        reverse=True,
++    )
++    watch = [row for row in evaluated if row.get("decision") == "conditional_watch"]
++    shadow = [row for row in evaluated if str(row.get("decision", "")).startswith("shadow_")]
++    rejected = [row for row in evaluated if row.get("decision") in {"reject", "data_insufficient"}]
++    executable = executable_all[:3]
++
++    only_choose_one_code = choose_one(evaluated)
++
++    global_status = "data_not_ready" if handoff_row.get("critical_ready") is False or market.get("critical_ready") is False else "decision_ready"
++    return {
++        "schema_version": candidate_union_row.get("schema_version", SCHEMA_VERSION),
++        "decision_at": decision_at.isoformat(),
++        "trade_date": candidate_union_row.get("trade_date") or handoff_row.get("trade_date"),
++        "observed_at": candidate_union_row.get("observed_at") or handoff_row.get("observed_at"),
++        "market": market,
++        "global_status": global_status,
++        "only_choose_one": only_choose_one_code,
++        "summary": {
++            "executable": len(executable_all),
++            "executable_exposed": len(executable),
++            "watch": len(watch),
++            "rejected": len(rejected),
++            "shadow_count": len(shadow),
++            "evaluated": len(evaluated),
++        },
++        "executable": executable,
++        "watch": watch,
++        "rejected": rejected,
++        "shadow": shadow,
++        "audit_rows": evaluated,
++    }
+diff --git a/tests/test_full_market_t1.py b/tests/test_full_market_t1.py
+index c68a754..a8f721a 100644
+--- a/tests/test_full_market_t1.py
++++ b/tests/test_full_market_t1.py
+@@ -1,133 +1,220 @@
+ from __future__ import annotations
+ 
+ from dataclasses import FrozenInstanceError
+ from datetime import datetime, timedelta, timezone
+ import json
+ import os
+ from pathlib import Path
+ 
+ import pandas as pd
+ import pytest
+ 
++import strategies.full_market_t1 as full_market_t1
+ from strategies.full_market_t1 import (
+     CandidateObjectiveData,
+     build_candidate_union,
+     build_minute_evidence,
+     candidate_data_status,
+     classify_price_band,
+     compute_execution_score,
+     write_candidate_union,
+ )
+ 
+ 
+ TZ_SHANGHAI = timezone(timedelta(hours=8))
+ 
+ 
+ def _base_snapshot(**overrides):
+     payload = {
+         "code": "1234",
+         "price": 10.0,
+         "change_pct": 3.2,
+         "turnover_rate": 4.8,
+         "low": 9.7,
+         "high": 10.8,
+     }
+     payload.update(overrides)
+     return payload
+ 
+ 
+ def _base_daily(**overrides):
+     payload = {
+         "ma5": 9.9,
+         "ma10": 9.8,
+     }
+     payload.update(overrides)
+     return payload
+ 
+ 
+ def _base_industry(**overrides):
+-    payload = {"industry": "bank", "advance_ratio": 0.62}
++    payload = {"industry": "bank", "advance_ratio": 0.62, "industry_sync": True}
+     payload.update(overrides)
+     return payload
+ 
+ 
+ def _base_minute(**overrides):
+     payload = {
+         "vwap": 10.05,
+         "afternoon_vwap": 10.08,
+         "named_pivot": 10.02,
+     }
+     payload.update(overrides)
+     return payload
+ 
+ 
++def _base_executability(**overrides):
++    payload = {
++        "dist_vwap_pct": 3.0,
++        "change_pct": 9.0,
++        "turnover_rate": 12.0,
++        "from_low_pct": 8.0,
++        "dist_high_pct": -4.0,
++        "amplitude_pct": 9.0,
++        "buy_low": 50.0,
++        "buy_high": 55.0,
++        "no_chase_price": 54.5,
++        "protection_constructible": True,
++        "is_untradable": False,
++        "fee_adjusted_rr": 1.8,
++    }
++    payload.update(overrides)
++    return payload
++
++
++def _candidate(**overrides):
++    payload = {
++        "code": "600000",
++        "name": "浦发银行",
++        "market": "sh",
++        "price": 52.0,
++        "amount": 80_000_000,
++        "opportunity_score": 70.0,
++        "price_band": "production",
++        "candidate_reason": ["trend_full"],
++    }
++    payload.update(overrides)
++    return payload
++
++
++def _objective(
++    *,
++    snapshot_overrides=None,
++    daily_overrides=None,
++    industry_overrides=None,
++    minute_overrides=None,
++    minute_evidence_overrides=None,
++    executability_overrides=None,
++):
++    minute = _base_minute(**(minute_overrides or {}))
++    minute_evidence = {
++        "confirmed": True,
++        "vwap": minute["vwap"],
++        "afternoon_vwap": minute["afternoon_vwap"],
++        "named_pivot": minute["named_pivot"],
++        "reason_codes": [],
++    }
++    minute_evidence.update(minute_evidence_overrides or {})
++    return CandidateObjectiveData(
++        snapshot=_base_snapshot(**(snapshot_overrides or {})),
++        daily=_base_daily(**(daily_overrides or {})),
++        industry=_base_industry(**(industry_overrides or {})),
++        minute=minute,
++        minute_evidence=minute_evidence,
++        executability=_base_executability(**(executability_overrides or {})),
++    )
++
++
++def _market(**overrides):
++    payload = {
++        "trade_date": "2026-09-03",
++        "advance_ratio": 0.62,
++        "quality_status": "ready",
++        "warnings": [],
++    }
++    payload.update(overrides)
++    return payload
++
++
++def _handoff(candidates, objectives, *, market=None):
++    return {
++        "schema_version": "1.0.0",
++        "trade_date": "2026-09-03",
++        "observed_at": "2026-09-03T13:45:00+08:00",
++        "market_rows": 5546,
++        "funnel": {"initial": 5546, "candidates": len(candidates)},
++        "candidates": candidates,
++        "objective_by_code": objectives,
++        "market": market or _market(),
++    }
++
++
+ def _minute_rows():
+     return pd.DataFrame(
+         [
+             {"time": "13:39", "close": 10.00, "volume": 100.0, "amount": 1000.0, "named_pivot": 10.02},
+             {"time": "13:40", "close": 10.01, "volume": 100.0, "amount": 1001.0, "named_pivot": 10.02},
+             {"time": "13:41", "close": 10.02, "volume": 100.0, "amount": 1002.0, "named_pivot": 10.02},
+             {"time": "13:42", "close": 10.11, "volume": 90.0, "amount": 909.9, "named_pivot": 10.02},
+             {"time": "13:43", "close": 10.13, "volume": 85.0, "amount": 861.05, "named_pivot": 10.02},
+             {"time": "13:44", "close": 10.15, "volume": 85.0, "amount": 862.75, "named_pivot": 10.02},
+             {"time": "13:45", "close": 9.80, "volume": 500.0, "amount": 4900.0, "named_pivot": 10.50},
+         ]
+     )
+ 
+ 
+ @pytest.mark.parametrize(
+     ("price", "expected"),
+     [
+         (39.99, "excluded"),
+         (40.00, "shadow_40_50"),
+         (49.99, "shadow_40_50"),
+         (50.00, "production"),
+     ],
+ )
+ def test_classify_price_band_boundaries(price, expected):
+     assert classify_price_band("600000", "sh", price) == expected
+ 
+ 
+ def test_non_main_board_is_excluded_at_any_price():
+     assert classify_price_band("300001", "sz", 80.0) == "excluded"
+     assert classify_price_band("301001", "sz", 80.0) == "excluded"
+     assert classify_price_band("688001", "sh", 80.0) == "excluded"
+     assert classify_price_band("920001", "bj", 80.0) == "excluded"
+ 
+ 
+ def test_build_candidate_union_preserves_metadata_and_normalizes_reasons():
+     frame = pd.DataFrame(
+         [
+             {
+                 "code": "600000",
+                 "market": "sh",
+                 "name": "浦发银行",
+                 "price": 52.0,
+                 "amount": 80_000_000,
+                 "opportunity_tags": "trend_full|vr_good(2.0)",
+             },
+             {
+                 "code": "000001",
+                 "market": "sz",
+                 "name": "平安银行",
+                 "price": 45.0,
+                 "amount": 60_000_000,
+                 "opportunity_tags": ["shadow_watch"],
+             },
+             {
+                 "code": "600519",
+                 "market": "sh",
+                 "name": "贵州茅台",
+                 "price": 1800.0,
+                 "amount": 90_000_000,
+             },
+         ]
+     )
+ 
+     payload = build_candidate_union(
+         frame,
+         trade_date="2026-09-03",
+         observed_at="2026-09-03T13:45:00+08:00",
+         market_rows=5546,
+         funnel={"initial": 5546, "after_hard": 812, "candidates": 37, "official": 3},
+     )
+@@ -300,70 +387,270 @@ def test_candidate_data_status_only_merges_data_readiness_reasons_from_minute_pa
+         _base_snapshot(),
+         _base_daily(),
+         _base_industry(),
+         {
+             "vwap": None,
+             "reason_codes": [
+                 "activity_contracting",
+                 "minute_missing",
+                 "vwap_missing",
+                 "vwap_missing",
+                 "hold_below_vwap",
+             ],
+         },
+     )
+ 
+     assert status == "data_insufficient"
+     assert reasons == ["minute_missing", "vwap_missing"]
+ 
+ 
+ def test_compute_execution_score_uses_versioned_formula_and_penalty():
+     evidence = {
+         "dist_vwap_pct": 3.0,
+         "change_pct": 9.0,
+         "turnover_rate": 12.0,
+         "from_low_pct": 8.0,
+         "dist_high_pct": -4.0,
+         "amplitude_pct": 9.0,
+     }
+ 
+     assert compute_execution_score(evidence) == 84.0
+ 
+ 
+ def test_compute_execution_score_clamps_inputs_and_score():
+     evidence = {
+         "dist_vwap_pct": -100.0,
+         "change_pct": -100.0,
+         "turnover_rate": 100.0,
+         "from_low_pct": 100.0,
+         "dist_high_pct": 100.0,
+         "amplitude_pct": 1.0,
+     }
+ 
+     assert compute_execution_score(evidence) == 36.0
+ 
+ 
+ def test_compute_execution_score_fails_closed_when_inputs_are_missing():
+     with pytest.raises(ValueError, match="missing execution evidence: dist_high_pct"):
+         compute_execution_score(
+             {
+                 "dist_vwap_pct": 1.0,
+                 "change_pct": 2.0,
+                 "turnover_rate": 3.0,
+                 "from_low_pct": 4.0,
+                 "amplitude_pct": 5.0,
+             }
+         )
+ 
+ 
+ def test_candidate_objective_data_is_frozen():
+     candidate = CandidateObjectiveData(
+         snapshot=_base_snapshot(),
+         daily=_base_daily(),
+         industry=_base_industry(),
+         minute=_base_minute(),
+         minute_evidence={"confirmed": True},
+         executability={"execution_rule_version": "1.0.0"},
+     )
+ 
+     with pytest.raises(FrozenInstanceError):
+         candidate.snapshot = {}
++
++
++def test_buyable_requires_both_scores_and_all_hard_gates():
++    row = full_market_t1.evaluate_candidate(
++        _candidate(opportunity_score=70.0, price_band="production"),
++        _objective(),
++        _market(),
++    )
++
++    assert row["execution_score"] == 84.0
++    assert row["production_buyable"] is True
++    assert row["buyable"] is True
++    assert row["only_choose_one_eligible"] is True
++    assert row["decision"] == "executable_candidate"
++    assert row["reason_codes"] == []
++
++
++@pytest.mark.parametrize(
++    ("field_overrides", "objective_kwargs", "market_overrides", "expected_reason", "expected_decision"),
++    [
++        ({"price_band": "excluded"}, {}, {}, "price_band_excluded", "reject"),
++        ({"price_band": "shadow_40_50"}, {}, {}, "shadow_price_band", "shadow_watch"),
++        ({"opportunity_score": 64.9}, {}, {}, "opportunity_score_below_threshold", "conditional_watch"),
++        ({}, {"minute_evidence_overrides": {"confirmed": False}}, {}, "minute_confirmation_pending", "conditional_watch"),
++        ({}, {"executability_overrides": {"buy_low": 52.5}}, {}, "buy_zone_not_ready", "conditional_watch"),
++        ({}, {"executability_overrides": {"no_chase_price": 51.0}}, {}, "above_no_chase_price", "conditional_watch"),
++        ({}, {"industry_overrides": {"industry_sync": False}}, {}, "industry_sync_pending", "conditional_watch"),
++        ({}, {}, {"advance_ratio": 0.34}, "market_breadth_below_threshold", "conditional_watch"),
++        ({}, {"executability_overrides": {"protection_constructible": False}}, {}, "protection_not_constructible", "conditional_watch"),
++        ({}, {"executability_overrides": {"is_untradable": True}}, {}, "candidate_untradable", "reject"),
++        ({}, {"executability_overrides": {"fee_adjusted_rr": 1.49}}, {}, "fee_adjusted_rr_below_threshold", "conditional_watch"),
++        ({}, {"executability_overrides": {"dist_vwap_pct": None}}, {}, "execution_score_data_missing", "data_insufficient"),
++    ],
++)
++def test_single_failed_hard_gate_vetoes_buyable(field_overrides, objective_kwargs, market_overrides, expected_reason, expected_decision):
++    row = full_market_t1.evaluate_candidate(
++        _candidate(**field_overrides),
++        _objective(**objective_kwargs),
++        _market(**market_overrides),
++    )
++
++    assert row["buyable"] is False
++    assert row["production_buyable"] is False
++    assert row["only_choose_one_eligible"] is False
++    assert row["decision"] == expected_decision
++    assert expected_reason in row["reason_codes"]
++
++
++@pytest.mark.parametrize(
++    ("executability_overrides", "expected_reason"),
++    [
++        ({"buy_low": None}, "buy_zone_missing"),
++        ({"buy_high": None}, "buy_zone_missing"),
++        ({"no_chase_price": None, "chase_line": None}, "no_chase_missing"),
++        ({"protection_constructible": None}, "protection_constructibility_missing"),
++        ({"is_untradable": None}, "executability_status_missing"),
++        ({"fee_adjusted_rr": None}, "fee_adjusted_rr_missing"),
++    ],
++)
++def test_missing_executability_fields_fail_closed(executability_overrides, expected_reason):
++    base = _base_executability()
++    if "no_chase_price" not in executability_overrides and expected_reason != "no_chase_missing":
++        base["no_chase_price"] = 54.5
++    base.update(executability_overrides)
++
++    row = full_market_t1.evaluate_candidate(
++        _candidate(),
++        _objective(executability_overrides=base),
++        _market(),
++    )
++
++    assert row["decision"] == "data_insufficient"
++    assert row["production_buyable"] is False
++    assert row["buyable"] is False
++    assert row["only_choose_one_eligible"] is False
++    assert expected_reason in row["reason_codes"]
++
++
++def test_missing_data_produces_data_insufficient_without_exception():
++    row = full_market_t1.evaluate_candidate(
++        _candidate(),
++        CandidateObjectiveData(
++            snapshot=_base_snapshot(),
++            daily=_base_daily(),
++            industry=None,
++            minute=None,
++            minute_evidence={"confirmed": False, "reason_codes": ["minute_missing"]},
++            executability=_base_executability(),
++        ),
++        _market(),
++    )
++
++    assert row["decision"] == "data_insufficient"
++    assert row["buyable"] is False
++    assert row["reason_codes"] == ["industry_missing", "minute_missing", "vwap_missing"]
++
++
++@pytest.mark.parametrize(
++    ("industry_value", "expected_reason", "expected_decision"),
++    [
++        ({"industry": "bank", "advance_ratio": 0.62}, "industry_sync_missing", "data_insufficient"),
++        ({"industry_sync": None}, "industry_sync_missing", "data_insufficient"),
++        ({"industry_sync": False}, "industry_sync_pending", "conditional_watch"),
++    ],
++)
++def test_industry_sync_requires_explicit_boolean_evidence(industry_value, expected_reason, expected_decision):
++    row = full_market_t1.evaluate_candidate(
++        _candidate(),
++        CandidateObjectiveData(
++            snapshot=_base_snapshot(),
++            daily=_base_daily(),
++            industry=industry_value,
++            minute=_base_minute(),
++            minute_evidence={
++                "confirmed": True,
++                "vwap": 10.05,
++                "afternoon_vwap": 10.08,
++                "named_pivot": 10.02,
++                "reason_codes": [],
++            },
++            executability=_base_executability(),
++        ),
++        _market(),
++    )
++
++    assert row["decision"] == expected_decision
++    assert expected_reason in row["reason_codes"]
++
++
++def test_shadow_candidate_can_never_be_selected():
++    shadow = full_market_t1.evaluate_candidate(
++        _candidate(code="000001", market="sz", price=45.0, amount=60_000_000, opportunity_score=90.0, price_band="shadow_40_50"),
++        _objective(),
++        _market(),
++    )
++
++    assert shadow["decision"] == "shadow_watch"
++    assert shadow["production_buyable"] is False
++    assert shadow["buyable"] is False
++    assert shadow["only_choose_one_eligible"] is False
++    assert full_market_t1.choose_one([shadow]) is None
++
++
++def test_choose_one_uses_exact_tiebreak_order():
++    rows = [
++        {"code": "600001", "price_band": "production", "buyable": True, "only_choose_one_eligible": True, "execution_score": 82.0, "opportunity_score": 70.0, "fee_adjusted_rr": 1.8, "amount": 50_000_000},
++        {"code": "600002", "price_band": "production", "buyable": True, "only_choose_one_eligible": True, "execution_score": 83.0, "opportunity_score": 65.0, "fee_adjusted_rr": 1.7, "amount": 40_000_000},
++        {"code": "600003", "price_band": "production", "buyable": True, "only_choose_one_eligible": True, "execution_score": 83.0, "opportunity_score": 66.0, "fee_adjusted_rr": 1.7, "amount": 39_000_000},
++        {"code": "600004", "price_band": "production", "buyable": True, "only_choose_one_eligible": True, "execution_score": 83.0, "opportunity_score": 66.0, "fee_adjusted_rr": 1.9, "amount": 10_000_000},
++        {"code": "600005", "price_band": "production", "buyable": False, "only_choose_one_eligible": False, "execution_score": 99.0, "opportunity_score": 99.0, "fee_adjusted_rr": 9.9, "amount": 99_000_000},
++    ]
++
++    assert full_market_t1.choose_one(rows) == "600004"
++
++
++def test_build_full_market_decision_groups_are_mutually_exclusive_and_executable_is_capped():
++    candidates = [
++        _candidate(code="600001", amount=91_000_000, opportunity_score=71.0),
++        _candidate(code="600002", amount=88_000_000, opportunity_score=72.0),
++        _candidate(code="600003", amount=86_000_000, opportunity_score=73.0),
++        _candidate(code="600004", amount=84_000_000, opportunity_score=74.0),
++        _candidate(code="600005", opportunity_score=70.0),
++        _candidate(code="000001", market="sz", price=45.0, amount=60_000_000, opportunity_score=90.0, price_band="shadow_40_50"),
++    ]
++    objectives = {
++        "600001": _objective(executability_overrides={"change_pct": 9.0}),
++        "600002": _objective(executability_overrides={"change_pct": 8.5}),
++        "600003": _objective(executability_overrides={"change_pct": 8.0}),
++        "600004": _objective(executability_overrides={"change_pct": 7.5}),
++        "600005": _objective(minute_evidence_overrides={"confirmed": False}),
++        "000001": _objective(),
++    }
++
++    decision = full_market_t1.build_full_market_decision(
++        _handoff(candidates, objectives, market=_market(warnings=["industry_classification_partial"])),
++        {"objective_by_code": objectives, "market": _market(warnings=["industry_classification_partial"])},
++        decision_at=datetime(2026, 9, 3, 13, 45, tzinfo=TZ_SHANGHAI),
++    )
++
++    assert decision["schema_version"] == "1.0.0"
++    assert decision["global_status"] == "decision_ready"
++    assert decision["only_choose_one"] == "600001"
++    assert decision["summary"] == {
++        "executable": 4,
++        "executable_exposed": 3,
++        "watch": 1,
++        "rejected": 0,
++        "shadow_count": 1,
++        "evaluated": 6,
++    }
++    assert [row["code"] for row in decision["executable"]] == ["600001", "600002", "600003"]
++    assert [row["code"] for row in decision["watch"]] == ["600005"]
++    assert [row["code"] for row in decision["shadow"]] == ["000001"]
++    assert decision["rejected"] == []
++    assert len(decision["audit_rows"]) == 6
++    fourth = next(row for row in decision["audit_rows"] if row["code"] == "600004")
++    assert fourth["decision"] == "executable_candidate"
++    assert fourth["buyable"] is True
++    assert fourth["production_buyable"] is True
++    assert fourth["only_choose_one_eligible"] is True
+

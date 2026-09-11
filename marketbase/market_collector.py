@@ -21,7 +21,8 @@ from marketbase.live_workflow import (
     collect_bse_snapshot,
     fetch_reference_snapshot_with_bse_fallback,
 )
-from marketbase.snapshot import fetch_cn_snapshot
+from marketbase.realtime_window import fetch_tencent_quotes
+from marketbase.snapshot import fetch_snapshot_with_fallback
 
 
 OUTPUT_FIELDS = (
@@ -103,7 +104,20 @@ def collect_market_snapshot(
 
     # --- SH/SZ primary + reference (existing pipeline without BSE) ---
     def load_primary() -> pd.DataFrame:
-        frame = primary_fetcher() if primary_fetcher is not None else fetch_cn_snapshot("sina")
+        if primary_fetcher is not None:
+            frame = primary_fetcher()
+        else:
+            try:
+                frame = fetch_snapshot_with_fallback(
+                    ["sina", "efinance", "akshare_em"],
+                    required_columns=["code", "name", "price", "volume", "amount"],
+                )
+            except RuntimeError as public_error:
+                frame = _fetch_tencent_primary_snapshot(
+                    cached_reference,
+                    min_rows=min_rows,
+                    public_error=public_error,
+                )
         captured["primary"] = frame
         return frame
 
@@ -240,6 +254,35 @@ def collect_market_snapshot(
         report=report,
         cache_path=destination,
     )
+
+
+def _fetch_tencent_primary_snapshot(
+    cached_reference: pd.DataFrame,
+    *,
+    min_rows: int,
+    public_error: Exception,
+) -> pd.DataFrame:
+    """Refresh the cached full-market code universe through Tencent quotes."""
+    if cached_reference.empty or "code" not in cached_reference.columns:
+        raise RuntimeError("Tencent full-market fallback requires a cached code universe") from public_error
+    codes = list(dict.fromkeys(
+        _codes(cached_reference).loc[
+            lambda values: values.str.fullmatch(r"\d{6}", na=False)
+        ].tolist()
+    ))
+    if len(codes) < min_rows:
+        raise RuntimeError(
+            f"Tencent full-market fallback cached codes={len(codes)} required={min_rows}"
+        ) from public_error
+    frame, errors = fetch_tencent_quotes(codes)
+    if len(frame) < min_rows:
+        details = "; ".join(errors) or "no usable Tencent quote rows"
+        raise RuntimeError(
+            f"Tencent full-market fallback rows={len(frame)} required={min_rows}: {details}"
+        ) from public_error
+    frame.attrs["snapshot_source"] = "tencent"
+    frame.attrs["source_errors"] = [str(public_error), *errors]
+    return frame
 
 
 def _normalize_output(

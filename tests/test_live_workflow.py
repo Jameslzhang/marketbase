@@ -75,6 +75,20 @@ def test_acquire_live_snapshot_retries_partial_primary():
     assert len(report["primary_errors"]) == 1
 
 
+def test_acquire_live_snapshot_reports_the_actual_primary_source():
+    primary = _quotes()
+    primary.attrs["snapshot_source"] = "efinance"
+
+    _result, report = live.acquire_live_snapshot(
+        primary_fetcher=lambda: primary,
+        reference_fetcher=pd.DataFrame,
+        now=NOW,
+        min_rows=3,
+    )
+
+    assert report["primary_source"] == "efinance"
+
+
 def test_acquire_live_snapshot_rejects_missing_required_market():
     with pytest.raises(ValueError, match="missing required markets"):
         live.acquire_live_snapshot(

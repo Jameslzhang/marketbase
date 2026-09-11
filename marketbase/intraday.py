@@ -548,44 +548,48 @@ def compute_minute_facts(
 
     # 3. 近 N 分钟成交额与变化率
     if time_col in minute_df.columns and amount_col in minute_df.columns and "code" in minute_df.columns:
-        minute_sorted = minute_df.sort_values([time_col])
-        for code, group in minute_sorted.groupby("code"):
-            group = group.sort_values(time_col).reset_index(drop=True)
-            amt = pd.to_numeric(group[amount_col], errors="coerce").fillna(0.0)
-            mask = result["code"] == code
-            if len(amt) >= 3:
-                result.loc[mask, "vol_last_3m"] = float(amt.iloc[-3:].sum())
-                if len(amt) >= 6:
-                    prev_3m = float(amt.iloc[-6:-3].sum())
-                    if prev_3m > 0:
-                        result.loc[mask, "vol_change_3m_pct"] = round(
-                            (float(amt.iloc[-3:].sum()) - prev_3m) / prev_3m * 100, 2
-                        )
-            if len(amt) >= 5:
-                result.loc[mask, "vol_last_5m"] = float(amt.iloc[-5:].sum())
+        minute_sorted = minute_df.sort_values(["code", time_col]).copy()
+        minute_sorted[amount_col] = pd.to_numeric(
+            minute_sorted[amount_col], errors="coerce"
+        ).fillna(0.0)
+        grouped_amount = minute_sorted.groupby("code", sort=False)[amount_col]
+        rolling = grouped_amount.rolling(window=6, min_periods=1).sum()
+        rolling = rolling.rename("_amount_rolling").reset_index()
+        latest = rolling.groupby("code", sort=False).tail(1).set_index("code")
+        latest5 = grouped_amount.rolling(window=5, min_periods=5).sum().rename("_last5")
+        latest5 = latest5.reset_index().groupby("code", sort=False).tail(1).set_index("code")
+        latest3 = grouped_amount.rolling(window=3, min_periods=3).sum().rename("_last3")
+        latest3 = latest3.reset_index().groupby("code", sort=False).tail(1).set_index("code")
+        result["vol_last_3m"] = result["code"].map(latest3["_last3"])
+        result["vol_last_5m"] = result["code"].map(latest5["_last5"])
+        # rolling(6) 的最新值减去 rolling(3) 最新值即为前 3 分钟成交额。
+        if not latest.empty:
+            last6 = result["code"].map(latest["_amount_rolling"])
+            last3 = result["code"].map(latest3["_last3"])
+            prev3 = last6 - last3
+            result["vol_change_3m_pct"] = (
+                (last3 - prev3).div(prev3.where(prev3 > 0)).mul(100).round(2)
+            )
 
     # 4. 涨跌停触及（盘中任一分钟触及，非当前快照状态）
     if "pre_close" in result.columns:
         result["is_limit_touched"] = False
         # 优先使用 minute_df 中的 high/low 判断盘中是否曾触及
         if "high" in minute_df.columns and "low" in minute_df.columns and "code" in minute_df.columns:
-            for code in result["code"].unique():
-                mask = result["code"] == code
-                pc = pd.to_numeric(result.loc[mask, "pre_close"], errors="coerce").values
-                if len(pc) == 0 or pd.isna(pc[0]) or pc[0] <= 0:
-                    continue
-                limit_up = float(pc[0]) * 1.10
-                limit_down = float(pc[0]) * 0.90
-                code_minute = minute_df[minute_df["code"] == code]
-                if code_minute.empty:
-                    continue
-                code_high = pd.to_numeric(code_minute["high"], errors="coerce")
-                code_low = pd.to_numeric(code_minute["low"], errors="coerce")
-                touched = bool(
-                    (code_high >= limit_up).any() or (code_low <= limit_down).any()
-                )
-                if touched:
-                    result.loc[mask, "is_limit_touched"] = True
+            minute_extrema = minute_df.assign(
+                _high=pd.to_numeric(minute_df["high"], errors="coerce"),
+                _low=pd.to_numeric(minute_df["low"], errors="coerce"),
+            ).groupby("code", sort=False).agg(
+                _high=("_high", "max"), _low=("_low", "min")
+            )
+            pre_close = result.set_index("code")["pre_close"]
+            limit_up = pre_close * 1.10
+            limit_down = pre_close * 0.90
+            touched_codes = minute_extrema.index[
+                (minute_extrema["_high"] >= limit_up.reindex(minute_extrema.index))
+                | (minute_extrema["_low"] <= limit_down.reindex(minute_extrema.index))
+            ]
+            result.loc[result["code"].isin(touched_codes), "is_limit_touched"] = True
         # 回退：用当前快照涨跌停状态
         elif "is_limit_up" in result.columns and "is_limit_down" in result.columns:
             result["is_limit_touched"] = (

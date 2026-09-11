@@ -3,8 +3,8 @@
 r"""实时行情窗口本地服务（指定股票实时行情查看）。
 
 用法：
-    .venv\Scripts\python.exe realtime_quote_server.py            # 默认 127.0.0.1:8765
-    .venv\Scripts\python.exe realtime_quote_server.py --open     # 启动并打开浏览器
+    .venv\Scripts\python.exe realtime_quote_server.py            # 默认启动原生桌面小窗
+    .venv\Scripts\python.exe realtime_quote_server.py --browser  # 浏览器兜底模式
     .venv\Scripts\python.exe realtime_quote_server.py --port 8899
 
 接口：
@@ -47,6 +47,75 @@ def _session_info() -> dict:
 def _master_info(data_root: Path) -> dict:
     _frame, meta = rw.load_master(data_root)
     return meta
+
+
+def build_parser() -> argparse.ArgumentParser:
+    """构建命令行参数；默认使用无地址栏的原生桌面小窗。"""
+    parser = argparse.ArgumentParser(description="MarketBase 实时行情窗口服务")
+    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--port", type=int, default=8765)
+    parser.add_argument(
+        "--browser",
+        "--open",
+        dest="browser",
+        action="store_true",
+        help="使用浏览器打开页面（排障兜底；--open 为兼容别名）",
+    )
+    parser.add_argument("--data-root", type=Path, default=MB_ROOT / "data")
+    return parser
+
+
+class DesktopWindowApi:
+    """供页面标题栏调用的原生窗口控制接口。"""
+
+    def __init__(self, native_window=None) -> None:
+        self.native_window = native_window
+
+    def window_action(self, action: str) -> None:
+        if self.native_window is None:
+            return
+        if action == "minimize":
+            self.native_window.minimize()
+        elif action == "close":
+            self.native_window.destroy()
+        else:
+            raise ValueError(f"不支持的窗口操作: {action}")
+
+
+def launch_desktop_window(url: str, *, webview_module=None) -> None:
+    """用 pywebview 承载本地页面，呈现为独立的行情小窗。"""
+    if webview_module is None:
+        try:
+            import webview as webview_module  # type: ignore[import-not-found]
+        except ImportError as exc:
+            raise RuntimeError(
+                "未安装桌面窗口依赖。请运行：.venv\\Scripts\\python.exe -m pip install pywebview"
+            ) from exc
+    api = DesktopWindowApi()
+    api.native_window = webview_module.create_window(
+        "MarketBase 实时行情",
+        url,
+        width=520,
+        height=760,
+        min_size=(420, 560),
+        resizable=True,
+        frameless=True,
+        easy_drag=True,
+        js_api=api,
+    )
+    webview_module.start()
+
+
+def run_desktop_window(http_server, url: str, *, webview_module=None) -> None:
+    """后台运行本地 HTTP 服务；桌面窗口关闭后同步停止服务。"""
+    worker = threading.Thread(target=http_server.serve_forever, daemon=True)
+    worker.start()
+    try:
+        launch_desktop_window(url, webview_module=webview_module)
+    finally:
+        http_server.shutdown()
+        http_server.server_close()
+        worker.join(timeout=3)
 
 
 class WindowHandler(BaseHTTPRequestHandler):
@@ -154,25 +223,30 @@ class WindowHandler(BaseHTTPRequestHandler):
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="MarketBase 实时行情窗口服务")
-    parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=8765)
-    parser.add_argument("--open", action="store_true", help="启动后自动打开浏览器")
-    parser.add_argument("--data-root", type=Path, default=MB_ROOT / "data")
-    args = parser.parse_args()
+    args = build_parser().parse_args()
 
     WindowHandler.data_root = args.data_root
     server = ThreadingHTTPServer((args.host, args.port), WindowHandler)
     url = f"http://{args.host}:{args.port}/"
-    print(f"实时行情窗口服务已启动: {url}（版本 {WINDOW_VERSION}，Ctrl+C 退出）")
-    if args.open:
+    if args.browser:
+        print(f"实时行情窗口浏览器模式已启动: {url}（版本 {WINDOW_VERSION}，Ctrl+C 退出）")
         webbrowser.open(url)
+        try:
+            server.serve_forever()
+        except KeyboardInterrupt:
+            print("\n服务已停止")
+        finally:
+            server.server_close()
+        return 0
+
+    print(f"实时行情桌面小窗正在启动（版本 {WINDOW_VERSION}）")
     try:
-        server.serve_forever()
+        run_desktop_window(server, url)
     except KeyboardInterrupt:
         print("\n服务已停止")
-    finally:
-        server.server_close()
+    except RuntimeError as exc:
+        print(f"桌面小窗无法启动：{exc}", file=sys.stderr)
+        return 2
     return 0
 
 

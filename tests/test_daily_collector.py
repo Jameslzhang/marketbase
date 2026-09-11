@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import json
 from pathlib import Path
 
@@ -104,6 +104,39 @@ def test_first_success_writes_normalized_cache_and_checkpoint(tmp_path):
     }
     assert checkpoint["completed_codes"] == ["000001"]
     assert checkpoint["failed_codes"] == []
+
+
+def test_intraday_collection_excludes_unsettled_current_day_bar(tmp_path):
+    cache_root, checkpoint_path = _paths(tmp_path)
+    observed_at = datetime(2026, 9, 3, 11, 30, tzinfo=timezone(timedelta(hours=8)))
+
+    def fetcher(code, **kwargs):
+        result = pd.DataFrame(
+            {
+                "日期": ["2026-09-01", "2026-09-02", "2026-09-03"],
+                "开盘": [10.0, 11.0, 12.0],
+                "最高": [10.5, 11.5, 12.5],
+                "最低": [9.5, 10.5, 11.5],
+                "收盘": [10.2, 11.2, 12.2],
+                "成交量": [1000, 1001, 1002],
+                "成交额": [10000, 10001, 10002],
+            }
+        )
+        result.attrs["daily_source"] = "fixture"
+        return result
+
+    report = collect_daily_universe(
+        ["000001"],
+        cache_root=cache_root,
+        checkpoint_path=checkpoint_path,
+        fetcher=fetcher,
+        now=observed_at,
+    )
+
+    frame, metadata = read_daily_cache(cache_root / "000001.json")
+    assert frame["date"].tolist() == ["2026-09-01", "2026-09-02"]
+    assert metadata["latest_date"] == "2026-09-02"
+    assert report.latest_date_by_code["000001"] == "2026-09-02"
 
 
 def test_runtime_timestamps_are_not_frozen_to_the_collection_baseline(tmp_path, monkeypatch):

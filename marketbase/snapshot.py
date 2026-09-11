@@ -77,7 +77,7 @@ def fetch_cn_snapshot(source: str = "efinance") -> pd.DataFrame:
     Raises RuntimeError if the source is unavailable.
     """
     if source == "sina":
-        return _fetch_sina()
+        return _call_snapshot_wrapper(_fetch_sina, source=source)
     elif source == "efinance":
         return _call_snapshot_wrapper(_fetch_efinance, source=source)
     elif source == "akshare_em":
@@ -354,19 +354,34 @@ def _fetch_sina() -> pd.DataFrame:
     nodes = ("sh_a", "sz_a")
     pages: dict[tuple[str, int], list[object]] = {}
     page_errors: dict[tuple[str, int], str] = {}
-    with ThreadPoolExecutor(max_workers=8) as pool:
-        futures = {
-            pool.submit(fetch_page, node, page): (node, page)
+    probe_pages = 32
+    active_nodes = nodes
+    for first_page in range(1, max_pages_per_node + 1, probe_pages):
+        if not active_nodes:
+            break
+        last_probe_page = min(first_page + probe_pages - 1, max_pages_per_node)
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            futures = {
+                pool.submit(fetch_page, node, page): (node, page)
+                for node in active_nodes
+                for page in range(first_page, last_probe_page + 1)
+            }
+            for future in as_completed(futures):
+                key = futures[future]
+                try:
+                    node, page, items = future.result()
+                    pages[(node, page)] = items
+                except Exception as exc:  # noqa: BLE001 - retry relevant pages below.
+                    page_errors[key] = str(exc)
+        # Sina pages are contiguous; only extend a market when the final probe
+        # page has data (or failed and therefore still needs validation).
+        active_nodes = tuple(
+            node
             for node in nodes
-            for page in range(1, max_pages_per_node + 1)
-        }
-        for future in as_completed(futures):
-            key = futures[future]
-            try:
-                node, page, items = future.result()
-                pages[(node, page)] = items
-            except Exception as exc:  # noqa: BLE001 - retry relevant pages below.
-                page_errors[key] = str(exc)
+            if node in active_nodes
+            if pages.get((node, last_probe_page))
+            or (node, last_probe_page) in page_errors
+        )
 
     all_items: list[object] = []
     for node in nodes:

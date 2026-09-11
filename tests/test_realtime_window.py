@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from pathlib import Path
 
 import pandas as pd
 import pytest
@@ -201,3 +202,22 @@ def test_market_session_non_trading_day(monkeypatch):
     session = rw.market_session(datetime(2026, 8, 22, 10, 47))
     assert session["phase"] == "休市"
     assert session["trading_day"] is False
+
+
+def test_window_html_explains_realtime_source_and_supports_narrow_viewports():
+    html = (Path(__file__).parents[1] / "tools" / "realtime_quote_window.html").read_text(
+        encoding="utf-8"
+    )
+    assert 'id="dataSource"' in html
+    assert "独立实时行情链路" in html
+    assert 'aria-live="polite"' in html
+    assert "@media (max-width:" in html
+
+
+def test_window_html_uses_native_window_controls_when_embedded():
+    html = (Path(__file__).parents[1] / "tools" / "realtime_quote_window.html").read_text(
+        encoding="utf-8"
+    )
+    assert "window.pywebview" in html
+    assert 'desktopWindowAction("minimize")' in html
+    assert 'desktopWindowAction("close")' in html

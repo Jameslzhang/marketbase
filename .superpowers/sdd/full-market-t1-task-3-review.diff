@@ -1,0 +1,709 @@
+# Task 3 Report
+
+- status: `DONE`
+- commit: `af097631f6df7d2a7962b9cc933bac9421454202`
+- commit_message: `feat: score dynamic T1 execution evidence`
+- files_changed:
+  - `strategies/full_market_t1.py`
+  - `tests/test_full_market_t1.py`
+
+## RED
+
+- command: `.venv\Scripts\python.exe -m pytest tests\test_full_market_t1.py -q`
+- observed_failure: `ImportError: cannot import name 'CandidateObjectiveData' from 'strategies.full_market_t1'`
+- reason: Task 3 interfaces were absent before implementation, so the new regression tests failed during collection for the expected missing API surface.
+
+## GREEN
+
+- command: `.venv\Scripts\python.exe -m pytest tests\test_full_market_t1.py -q`
+- result: `21 passed in 0.63s`
+
+## Selective Staging Evidence
+
+- `git diff --name-only HEAD~1 HEAD` returned only:
+  - `strategies/full_market_t1.py`
+  - `tests/test_full_market_t1.py`
+- `git status --short` after commit still shows the pre-existing unrelated dirty files unstaged in the working tree.
+
+## Self Review
+
+- Added a frozen `CandidateObjectiveData` dataclass with the exact mapping field names required by the brief.
+- Added candidate readiness checks that stay candidate-scoped and fail closed on missing snapshot, daily, industry, minute, or VWAP evidence.
+- Added completed-minute evidence construction that normalizes codes, excludes the unfinished current minute, requires six completed rows for confirmation, computes full-day and afternoon VWAP from completed rows only, and emits explicit reason codes.
+- Added the exact `execution_rule_version="1.0.0"` execution score formula, including clamp boundaries, the high-amplitude penalty, and fail-closed behavior for missing inputs.
+
+## Concerns
+
+- No additional concerns from the targeted Task 3 scope.
+
+af09763 feat: score dynamic T1 execution evidence
+ strategies/full_market_t1.py | 223 +++++++++++++++++++++++++++++++++++++++++++
+ tests/test_full_market_t1.py | 186 ++++++++++++++++++++++++++++++++++++
+ 2 files changed, 409 insertions(+)
+diff --git a/strategies/full_market_t1.py b/strategies/full_market_t1.py
+index a121637..fbe4742 100644
+--- a/strategies/full_market_t1.py
++++ b/strategies/full_market_t1.py
+@@ -1,105 +1,328 @@
+ from __future__ import annotations
+ 
++from dataclasses import dataclass
++from datetime import datetime
+ import json
+ import os
+ from pathlib import Path
++from typing import Mapping
+ 
+ import pandas as pd
+ 
+ PRODUCTION_MIN_PRICE = 50.0
+ SHADOW_MIN_PRICE = 40.0
+ RESTRICTED_PREFIXES = ("300", "301", "688")
+ SCHEMA_VERSION = "1.0.0"
++EXECUTION_RULE_VERSION = "1.0.0"
++REQUIRED_EXECUTION_FIELDS = (
++    "dist_vwap_pct",
++    "change_pct",
++    "turnover_rate",
++    "from_low_pct",
++    "dist_high_pct",
++    "amplitude_pct",
++)
++
++
++@dataclass(frozen=True)
++class CandidateObjectiveData:
++    snapshot: Mapping
++    daily: Mapping
++    industry: Mapping | None
++    minute: Mapping | None
++    minute_evidence: Mapping
++    executability: Mapping
+ 
+ 
+ def classify_price_band(code: str, market: str, price: float) -> str:
+     normalized = str(code).zfill(6)
+     if market == "bj" or normalized.startswith(RESTRICTED_PREFIXES):
+         return "excluded"
+     if price >= PRODUCTION_MIN_PRICE:
+         return "production"
+     if price >= SHADOW_MIN_PRICE:
+         return "shadow_40_50"
+     return "excluded"
+ 
+ 
+ def _to_native(value):
+     if isinstance(value, list):
+         return [_to_native(item) for item in value]
+     if isinstance(value, dict):
+         return {str(key): _to_native(item) for key, item in value.items()}
+     if pd.isna(value):
+         return None
+     if hasattr(value, "item"):
+         try:
+             return value.item()
+         except (ValueError, TypeError):
+             return value
+     return value
+ 
+ 
+ def _normalize_candidate_reason(value) -> list[object]:
+     native = _to_native(value)
+     if native is None:
+         return []
+     if isinstance(native, list):
+         return [item for item in native if item not in (None, "")]
+     if isinstance(native, str):
+         text = native.strip()
+         if not text:
+             return []
+         if "|" in text:
+             return [part for part in (item.strip() for item in text.split("|")) if part]
+         return [text]
+     return [native]
+ 
+ 
++def _normalize_code(code: str) -> str:
++    return str(code).strip().zfill(6)
++
++
++def _clamp(value: float, lower: float, upper: float) -> float:
++    return max(lower, min(upper, value))
++
++
++def _normalize_time_label(value) -> str | None:
++    if value is None or pd.isna(value):
++        return None
++    if isinstance(value, str):
++        text = value.strip()
++        if not text:
++            return None
++        if "T" in text:
++            return datetime.fromisoformat(text).strftime("%H:%M")
++        if len(text) == 4 and text.isdigit():
++            return f"{text[:2]}:{text[2:]}"
++        if len(text) >= 5 and text[2] == ":":
++            return text[:5]
++        return text
++    if hasattr(value, "strftime"):
++        return value.strftime("%H:%M")
++    return None
++
++
++def build_minute_evidence(minutes: pd.DataFrame, code: str, observed_at: datetime) -> dict[str, object]:
++    normalized_code = _normalize_code(code)
++    reason_codes: list[str] = []
++
++    if minutes is None or minutes.empty:
++        return {
++            "code": normalized_code,
++            "hold_minutes": [],
++            "activity_non_contracting": False,
++            "confirmed": False,
++            "last_completed_minute": None,
++            "vwap": None,
++            "afternoon_vwap": None,
++            "pivot": None,
++            "named_pivot": None,
++            "execution_rule_version": EXECUTION_RULE_VERSION,
++            "reason_codes": ["minute_missing", "vwap_missing", "insufficient_completed_minutes"],
++        }
++
++    frame = minutes.copy()
++    if "code" in frame.columns:
++        frame["code"] = frame["code"].astype(str).str.strip().str.zfill(6)
++        frame = frame[frame["code"] == normalized_code]
++
++    time_column = "time"
++    if "time" not in frame.columns:
++        if "minute" in frame.columns:
++            time_column = "minute"
++        elif "timestamp" in frame.columns:
++            time_column = "timestamp"
++        else:
++            raise ValueError("minute rows must include time, minute, or timestamp")
++
++    frame = frame.assign(_time_label=frame[time_column].map(_normalize_time_label))
++    frame = frame[frame["_time_label"].notna()].copy()
++    frame["_close"] = pd.to_numeric(frame.get("close"), errors="coerce")
++    frame["_volume"] = pd.to_numeric(frame.get("volume"), errors="coerce")
++    frame["_amount"] = pd.to_numeric(frame.get("amount"), errors="coerce")
++    frame = frame.dropna(subset=["_close", "_volume", "_amount"])
++    frame = frame.sort_values("_time_label")
++
++    current_minute = observed_at.strftime("%H:%M")
++    completed = frame[frame["_time_label"] < current_minute].copy()
++    if completed.empty:
++        return {
++            "code": normalized_code,
++            "hold_minutes": [],
++            "activity_non_contracting": False,
++            "confirmed": False,
++            "last_completed_minute": None,
++            "vwap": None,
++            "afternoon_vwap": None,
++            "pivot": None,
++            "named_pivot": None,
++            "execution_rule_version": EXECUTION_RULE_VERSION,
++            "reason_codes": ["minute_missing", "vwap_missing", "insufficient_completed_minutes"],
++        }
++
++    total_volume = float(completed["_volume"].sum())
++    vwap = None if total_volume <= 0 else round(float(completed["_amount"].sum() / total_volume), 4)
++    afternoon = completed[completed["_time_label"] >= "13:00"]
++    afternoon_volume = float(afternoon["_volume"].sum())
++    afternoon_vwap = None if afternoon_volume <= 0 else round(float(afternoon["_amount"].sum() / afternoon_volume), 4)
++    if vwap is None:
++        reason_codes.append("vwap_missing")
++
++    last_six = completed.tail(6).copy()
++    hold = last_six.tail(3).copy()
++    baseline = last_six.head(3).copy()
++
++    named_pivot = None
++    for field in ("named_pivot", "pivot"):
++        if field in hold.columns:
++            pivot_series = pd.to_numeric(hold[field], errors="coerce").dropna()
++            if not pivot_series.empty:
++                named_pivot = float(pivot_series.iloc[-1])
++                break
++    if named_pivot is None:
++        reason_codes.append("named_pivot_missing")
++
++    confirmed = False
++    if len(completed) < 6:
++        reason_codes.append("insufficient_completed_minutes")
++    elif vwap is not None and named_pivot is not None:
++        hold_closes = hold["_close"]
++        previous3_volume = float(baseline["_volume"].sum())
++        last3_volume = float(hold["_volume"].sum())
++        activity_non_contracting = last3_volume >= previous3_volume * 0.85
++        holds_above_references = bool(((hold_closes > vwap) & (hold_closes > named_pivot)).all())
++        confirmed = activity_non_contracting and holds_above_references
++    else:
++        activity_non_contracting = False
++
++    if len(completed) >= 6:
++        previous3_volume = float(baseline["_volume"].sum())
++        last3_volume = float(hold["_volume"].sum())
++        activity_non_contracting = last3_volume >= previous3_volume * 0.85
++    else:
++        previous3_volume = float(baseline["_volume"].sum())
++        last3_volume = float(hold["_volume"].sum())
++        activity_non_contracting = False
++
++    if len(completed) >= 6 and not activity_non_contracting:
++        reason_codes.append("activity_contracting")
++    if len(completed) >= 6 and vwap is not None and named_pivot is not None and not confirmed:
++        if not bool((hold["_close"] > vwap).all()):
++            reason_codes.append("hold_below_vwap")
++        if not bool((hold["_close"] > named_pivot).all()):
++            reason_codes.append("hold_below_pivot")
++
++    return {
++        "code": normalized_code,
++        "hold_minutes": hold["_time_label"].tolist(),
++        "activity_non_contracting": activity_non_contracting,
++        "confirmed": confirmed,
++        "last_completed_minute": completed["_time_label"].iloc[-1],
++        "last3_volume": round(last3_volume, 4),
++        "previous3_volume": round(previous3_volume, 4),
++        "vwap": vwap,
++        "afternoon_vwap": afternoon_vwap,
++        "pivot": named_pivot,
++        "named_pivot": named_pivot,
++        "execution_rule_version": EXECUTION_RULE_VERSION,
++        "reason_codes": reason_codes,
++    }
++
++
++def candidate_data_status(
++    snapshot: Mapping,
++    daily: Mapping,
++    industry: Mapping | None,
++    minute: Mapping | None,
++) -> tuple[str, list[str]]:
++    reasons: list[str] = []
++    if not snapshot:
++        reasons.append("snapshot_missing")
++    if not daily:
++        reasons.append("daily_missing")
++    if not industry:
++        reasons.append("industry_missing")
++    if not minute:
++        reasons.append("minute_missing")
++    else:
++        vwap = minute.get("vwap")
++        if vwap is None and minute.get("full_day_vwap") is None:
++            reasons.append("vwap_missing")
++    if reasons:
++        return "data_insufficient", reasons
++    return "ready", []
++
++
++def compute_execution_score(evidence: Mapping[str, float]) -> float:
++    missing = [field for field in REQUIRED_EXECUTION_FIELDS if field not in evidence or evidence[field] is None]
++    if missing:
++        raise ValueError(f"missing execution evidence: {missing[0]}")
++
++    score = 50.0
++    dist_vwap_pct = float(evidence["dist_vwap_pct"])
++    change_pct = float(evidence["change_pct"])
++    turnover_rate = float(evidence["turnover_rate"])
++    from_low_pct = float(evidence["from_low_pct"])
++    dist_high_pct = float(evidence["dist_high_pct"])
++    amplitude_pct = float(evidence["amplitude_pct"])
++
++    score += _clamp(dist_vwap_pct * 8.0, -18.0, 18.0)
++    score += _clamp(change_pct * 1.8, -16.0, 16.0)
++    score += _clamp(turnover_rate * 1.2, 0.0, 10.0)
++    score += _clamp(from_low_pct * 1.5, 0.0, 10.0)
++    score += _clamp(dist_high_pct * 3.0, -14.0, 0.0)
++    if amplitude_pct > 8.0 and dist_high_pct < -3.0:
++        score -= 8.0
++    return round(_clamp(score, 0.0, 100.0), 2)
++
++
+ def build_candidate_union(
+     frame: pd.DataFrame,
+     *,
+     trade_date: str,
+     observed_at: str,
+     market_rows: int,
+     funnel: dict[str, int],
+ ) -> dict[str, object]:
+     candidates: list[dict[str, object]] = []
+     normalized = frame.copy()
+     if "code" in normalized.columns:
+         normalized["code"] = normalized["code"].astype(str).str.strip().str.zfill(6)
+     if "market" not in normalized.columns:
+         normalized["market"] = ""
+ 
+     for row in normalized.to_dict("records"):
+         candidate = {str(key): _to_native(value) for key, value in row.items()}
+         code = str(candidate.get("code", "")).zfill(6)
+         market = str(candidate.get("market", "") or "").strip()
+         price_value = pd.to_numeric(candidate.get("price"), errors="coerce")
+         price = float(price_value) if pd.notna(price_value) else float("nan")
+         candidate["code"] = code
+         candidate["market"] = market
+         candidate["candidate_reason"] = _normalize_candidate_reason(candidate.get("opportunity_tags"))
+         candidate["price_band"] = classify_price_band(code, market, price)
+         candidate["production_buyable"] = False
+         candidate["buyable"] = False
+         candidate["only_choose_one_eligible"] = False
+         candidates.append(candidate)
+ 
+     return {
+         "schema_version": SCHEMA_VERSION,
+         "trade_date": trade_date,
+         "observed_at": observed_at,
+         "market_rows": int(market_rows),
+         "funnel": {str(key): int(value) for key, value in funnel.items()},
+         "candidates": candidates,
+     }
+ 
+ 
+ def write_candidate_union(payload: dict[str, object], path: Path) -> Path:
+     path.parent.mkdir(parents=True, exist_ok=True)
+     tmp_path = path.with_suffix(".tmp")
+     tmp_path.write_text(
+         json.dumps(payload, ensure_ascii=False, indent=2),
+         encoding="utf-8",
+     )
+     os.replace(tmp_path, path)
+     return path
+diff --git a/tests/test_full_market_t1.py b/tests/test_full_market_t1.py
+index 3509e4c..e724dc2 100644
+--- a/tests/test_full_market_t1.py
++++ b/tests/test_full_market_t1.py
+@@ -1,142 +1,328 @@
+ from __future__ import annotations
+ 
++from dataclasses import FrozenInstanceError
++from datetime import datetime, timedelta, timezone
+ import json
+ import os
+ from pathlib import Path
+ 
+ import pandas as pd
+ import pytest
+ 
+ from strategies.full_market_t1 import (
++    CandidateObjectiveData,
+     build_candidate_union,
++    build_minute_evidence,
++    candidate_data_status,
+     classify_price_band,
++    compute_execution_score,
+     write_candidate_union,
+ )
+ 
+ 
++TZ_SHANGHAI = timezone(timedelta(hours=8))
++
++
++def _base_snapshot(**overrides):
++    payload = {
++        "code": "1234",
++        "price": 10.0,
++        "change_pct": 3.2,
++        "turnover_rate": 4.8,
++        "low": 9.7,
++        "high": 10.8,
++    }
++    payload.update(overrides)
++    return payload
++
++
++def _base_daily(**overrides):
++    payload = {
++        "ma5": 9.9,
++        "ma10": 9.8,
++    }
++    payload.update(overrides)
++    return payload
++
++
++def _base_industry(**overrides):
++    payload = {"industry": "bank", "advance_ratio": 0.62}
++    payload.update(overrides)
++    return payload
++
++
++def _base_minute(**overrides):
++    payload = {
++        "vwap": 10.05,
++        "afternoon_vwap": 10.08,
++        "named_pivot": 10.02,
++    }
++    payload.update(overrides)
++    return payload
++
++
++def _minute_rows():
++    return pd.DataFrame(
++        [
++            {"time": "13:39", "close": 10.00, "volume": 100.0, "amount": 1000.0, "named_pivot": 10.02},
++            {"time": "13:40", "close": 10.01, "volume": 100.0, "amount": 1001.0, "named_pivot": 10.02},
++            {"time": "13:41", "close": 10.02, "volume": 100.0, "amount": 1002.0, "named_pivot": 10.02},
++            {"time": "13:42", "close": 10.11, "volume": 90.0, "amount": 909.9, "named_pivot": 10.02},
++            {"time": "13:43", "close": 10.13, "volume": 85.0, "amount": 861.05, "named_pivot": 10.02},
++            {"time": "13:44", "close": 10.15, "volume": 85.0, "amount": 862.75, "named_pivot": 10.02},
++            {"time": "13:45", "close": 9.80, "volume": 500.0, "amount": 4900.0, "named_pivot": 10.50},
++        ]
++    )
++
++
+ @pytest.mark.parametrize(
+     ("price", "expected"),
+     [
+         (39.99, "excluded"),
+         (40.00, "shadow_40_50"),
+         (49.99, "shadow_40_50"),
+         (50.00, "production"),
+     ],
+ )
+ def test_classify_price_band_boundaries(price, expected):
+     assert classify_price_band("600000", "sh", price) == expected
+ 
+ 
+ def test_non_main_board_is_excluded_at_any_price():
+     assert classify_price_band("300001", "sz", 80.0) == "excluded"
+     assert classify_price_band("301001", "sz", 80.0) == "excluded"
+     assert classify_price_band("688001", "sh", 80.0) == "excluded"
+     assert classify_price_band("920001", "bj", 80.0) == "excluded"
+ 
+ 
+ def test_build_candidate_union_preserves_metadata_and_normalizes_reasons():
+     frame = pd.DataFrame(
+         [
+             {
+                 "code": "600000",
+                 "market": "sh",
+                 "name": "浦发银行",
+                 "price": 52.0,
+                 "amount": 80_000_000,
+                 "opportunity_tags": "trend_full|vr_good(2.0)",
+             },
+             {
+                 "code": "000001",
+                 "market": "sz",
+                 "name": "平安银行",
+                 "price": 45.0,
+                 "amount": 60_000_000,
+                 "opportunity_tags": ["shadow_watch"],
+             },
+             {
+                 "code": "600519",
+                 "market": "sh",
+                 "name": "贵州茅台",
+                 "price": 1800.0,
+                 "amount": 90_000_000,
+             },
+         ]
+     )
+ 
+     payload = build_candidate_union(
+         frame,
+         trade_date="2026-09-03",
+         observed_at="2026-09-03T13:45:00+08:00",
+         market_rows=5546,
+         funnel={"initial": 5546, "after_hard": 812, "candidates": 37, "official": 3},
+     )
+ 
+     assert payload["schema_version"] == "1.0.0"
+     assert payload["trade_date"] == "2026-09-03"
+     assert payload["observed_at"] == "2026-09-03T13:45:00+08:00"
+     assert payload["market_rows"] == 5546
+     assert payload["funnel"] == {
+         "initial": 5546,
+         "after_hard": 812,
+         "candidates": 37,
+         "official": 3,
+     }
+     assert [row["code"] for row in payload["candidates"]] == ["600000", "000001", "600519"]
+     assert payload["candidates"][0]["candidate_reason"] == ["trend_full", "vr_good(2.0)"]
+     assert payload["candidates"][0]["price_band"] == "production"
+     assert payload["candidates"][1]["candidate_reason"] == ["shadow_watch"]
+     assert payload["candidates"][1]["price_band"] == "shadow_40_50"
+     assert payload["candidates"][2]["candidate_reason"] == []
+     assert payload["candidates"][2]["amount"] == 90_000_000
+ 
+ 
+ def test_candidate_union_is_never_buyable_at_generation_time():
+     frame = pd.DataFrame(
+         [
+             {"code": "600000", "market": "sh", "price": 52.0, "opportunity_tags": ["trend_full"]},
+             {"code": "000001", "market": "sz", "price": 45.0, "opportunity_tags": ["shadow_watch"]},
+         ]
+     )
+ 
+     payload = build_candidate_union(
+         frame,
+         trade_date="2026-09-03",
+         observed_at="2026-09-03T13:45:00+08:00",
+         market_rows=5546,
+         funnel={"initial": 5546},
+     )
+ 
+     assert all(row["production_buyable"] is False for row in payload["candidates"])
+     assert all(row["buyable"] is False for row in payload["candidates"])
+     assert all(row["only_choose_one_eligible"] is False for row in payload["candidates"])
+ 
+ 
+ def test_write_candidate_union_writes_utf8_json_atomically(tmp_path: Path, monkeypatch):
+     target = tmp_path / "candidate_union.json"
+     target.write_text('{"old": true}', encoding="utf-8")
+     payload = {
+         "schema_version": "1.0.0",
+         "trade_date": "2026-09-03",
+         "observed_at": "2026-09-03T13:45:00+08:00",
+         "market_rows": 1,
+         "funnel": {"initial": 1},
+         "candidates": [{"code": "600000", "name": "浦发银行"}],
+     }
+     replace_calls: list[tuple[Path, Path]] = []
+     original_replace = os.replace
+ 
+     def record_replace(source: str | os.PathLike[str], destination: str | os.PathLike[str]) -> None:
+         src_path = Path(source)
+         dst_path = Path(destination)
+         replace_calls.append((src_path, dst_path))
+         assert src_path.exists()
+         original_replace(src_path, dst_path)
+ 
+     monkeypatch.setattr("strategies.full_market_t1.os.replace", record_replace)
+ 
+     result = write_candidate_union(payload, target)
+ 
+     assert result == target
+     assert replace_calls == [(target.with_suffix(".tmp"), target)]
+     assert not target.with_suffix(".tmp").exists()
+     assert json.loads(target.read_text(encoding="utf-8")) == payload
++
++
++def test_candidate_data_status_is_ready_when_required_evidence_exists():
++    status, reasons = candidate_data_status(
++        _base_snapshot(),
++        _base_daily(),
++        _base_industry(),
++        _base_minute(),
++    )
++
++    assert status == "ready"
++    assert reasons == []
++
++
++@pytest.mark.parametrize(
++    ("snapshot", "daily", "industry", "minute", "expected_reason"),
++    [
++        (None, _base_daily(), _base_industry(), _base_minute(), "snapshot_missing"),
++        (_base_snapshot(), None, _base_industry(), _base_minute(), "daily_missing"),
++        (_base_snapshot(), _base_daily(), None, _base_minute(), "industry_missing"),
++        (_base_snapshot(), _base_daily(), _base_industry(), None, "minute_missing"),
++        (_base_snapshot(), _base_daily(), _base_industry(), {"named_pivot": 10.02}, "vwap_missing"),
++    ],
++)
++def test_candidate_data_status_reports_exact_missing_reason(snapshot, daily, industry, minute, expected_reason):
++    status, reasons = candidate_data_status(snapshot, daily, industry, minute)
++
++    assert status == "data_insufficient"
++    assert reasons == [expected_reason]
++
++
++def test_build_minute_evidence_confirms_with_completed_minutes_only():
++    evidence = build_minute_evidence(
++        _minute_rows(),
++        code="1234",
++        observed_at=datetime(2026, 9, 3, 13, 45, 30, tzinfo=TZ_SHANGHAI),
++    )
++
++    assert evidence["code"] == "001234"
++    assert evidence["confirmed"] is True
++    assert evidence["hold_minutes"] == ["13:42", "13:43", "13:44"]
++    assert evidence["last_completed_minute"] == "13:44"
++    assert evidence["activity_non_contracting"] is True
++    assert evidence["reason_codes"] == []
++    assert evidence["named_pivot"] == pytest.approx(10.02)
++    assert evidence["vwap"] == pytest.approx(round((5636.7 / 560.0), 4))
++    assert evidence["afternoon_vwap"] == pytest.approx(round((5636.7 / 560.0), 4))
++
++
++def test_build_minute_evidence_excludes_current_unfinished_minute():
++    evidence = build_minute_evidence(
++        _minute_rows(),
++        code="1234",
++        observed_at=datetime(2026, 9, 3, 13, 45, 30, tzinfo=TZ_SHANGHAI),
++    )
++
++    assert evidence["last_completed_minute"] == "13:44"
++    assert evidence["hold_minutes"][-1] == "13:44"
++    assert "13:45" not in evidence["hold_minutes"]
++    assert evidence["named_pivot"] == pytest.approx(10.02)
++
++
++def test_build_minute_evidence_requires_six_completed_rows_to_confirm():
++    evidence = build_minute_evidence(
++        _minute_rows().iloc[:5],
++        code="1234",
++        observed_at=datetime(2026, 9, 3, 13, 44, 30, tzinfo=TZ_SHANGHAI),
++    )
++
++    assert evidence["confirmed"] is False
++    assert evidence["reason_codes"] == ["insufficient_completed_minutes"]
++    assert evidence["last_completed_minute"] == "13:43"
++
++
++def test_compute_execution_score_uses_versioned_formula_and_penalty():
++    evidence = {
++        "dist_vwap_pct": 3.0,
++        "change_pct": 9.0,
++        "turnover_rate": 12.0,
++        "from_low_pct": 8.0,
++        "dist_high_pct": -4.0,
++        "amplitude_pct": 9.0,
++    }
++
++    assert compute_execution_score(evidence) == 84.0
++
++
++def test_compute_execution_score_clamps_inputs_and_score():
++    evidence = {
++        "dist_vwap_pct": -100.0,
++        "change_pct": -100.0,
++        "turnover_rate": 100.0,
++        "from_low_pct": 100.0,
++        "dist_high_pct": 100.0,
++        "amplitude_pct": 1.0,
++    }
++
++    assert compute_execution_score(evidence) == 36.0
++
++
++def test_compute_execution_score_fails_closed_when_inputs_are_missing():
++    with pytest.raises(ValueError, match="missing execution evidence: dist_high_pct"):
++        compute_execution_score(
++            {
++                "dist_vwap_pct": 1.0,
++                "change_pct": 2.0,
++                "turnover_rate": 3.0,
++                "from_low_pct": 4.0,
++                "amplitude_pct": 5.0,
++            }
++        )
++
++
++def test_candidate_objective_data_is_frozen():
++    candidate = CandidateObjectiveData(
++        snapshot=_base_snapshot(),
++        daily=_base_daily(),
++        industry=_base_industry(),
++        minute=_base_minute(),
++        minute_evidence={"confirmed": True},
++        executability={"execution_rule_version": "1.0.0"},
++    )
++
++    with pytest.raises(FrozenInstanceError):
++        candidate.snapshot = {}
+

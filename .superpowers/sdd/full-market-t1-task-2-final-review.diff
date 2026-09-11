@@ -1,0 +1,1072 @@
+# Task 2 Report: Versioned dynamic candidate union and price bands
+
+## Status
+
+- DONE
+
+## Commits
+
+- `3ab245598a44a3ebe880bc76d451a74fa10831c0` `feat: emit dynamic T1 candidate union`
+
+## Changed Files
+
+- `fast_t1_scan.py`
+- `strategies/full_market_t1.py`
+- `tests/test_fast_t1_scan.py`
+- `tests/test_full_market_t1.py`
+
+## RED
+
+- Command: `.venv\Scripts\python.exe -m pytest tests/test_full_market_t1.py -q`
+- Result: `ModuleNotFoundError: No module named 'strategies.full_market_t1'`
+
+## GREEN
+
+- Command: `.venv\Scripts\python.exe -m pytest tests/test_full_market_t1.py -q`
+- Result: `8 passed in 0.69s`
+- Command: `.venv\Scripts\python.exe -m pytest tests/test_fast_t1_scan.py -q`
+- Result: `8 passed in 1.03s`
+- Command: `.venv\Scripts\python.exe -m pytest tests/test_full_market_t1.py tests/test_fast_t1_scan.py -q`
+- Result: `16 passed in 0.81s`
+
+## Selective Staging Evidence
+
+- Pre-commit `git diff --cached --stat` showed exactly four staged files: `fast_t1_scan.py`, `strategies/full_market_t1.py`, `tests/test_fast_t1_scan.py`, `tests/test_full_market_t1.py`.
+- Pre-commit `git status --short` showed `MM fast_t1_scan.py` and `MM tests/test_fast_t1_scan.py`, confirming unrelated user changes remained unstaged while Task 2 hunks were committed from the index only.
+- Post-commit `git status --short -- fast_t1_scan.py tests/test_fast_t1_scan.py strategies/full_market_t1.py tests/test_full_market_t1.py` returned only:
+  - ` M fast_t1_scan.py`
+  - ` M tests/test_fast_t1_scan.py`
+- This confirms the commit consumed only Task 2 staged hunks and left pre-existing worktree edits untouched.
+
+## Self-Review
+
+- Added `strategies/full_market_t1.py` with the required constants, boundary classification, candidate union payload builder, and atomic JSON writer.
+- Normalized `opportunity_tags` into `candidate_reason` lists without inventing evidence and forced all generated rows to `production_buyable=false`, `buyable=false`, `only_choose_one_eligible=false`.
+- Integrated `fast_t1_scan.main` to emit `candidate_union_YYYYMMDD_HHMM.json` from the same snapshot observation time used by the scan and log/print the output path.
+- Added a focused fast-scan integration test proving `main` passes `trade_date`, `observed_at`, `market_rows`, and `funnel` into candidate-union generation without hitting live providers.
+
+## Concerns
+
+- `fast_t1_scan.py` and `tests/test_fast_t1_scan.py` still contain unrelated unstaged changes from outside Task 2 by design; they were not reverted or included in the commit.
+
+## Review Fix 1
+
+- Review result: Needs fixes
+- Issue: `fast_t1_scan.py` passed `out_df` into `build_candidate_union`, so the candidate union dropped complete scan evidence that existed on `candidates`.
+- Commit: `0d0adad76c57b28228869fa159a1252c040a793b` `fix: preserve full candidate evidence in union`
+
+### RED
+
+- Command: `.venv\Scripts\python.exe -m pytest tests/test_fast_t1_scan.py::test_main_writes_candidate_union_with_scan_metadata -q`
+- Result: `AssertionError` because `captured["frame"].columns` did not include `ma10`, `ma20`, `return_10d`, or `elapsed_trade_minutes`.
+
+### GREEN
+
+- Command: `.venv\Scripts\python.exe -m pytest tests/test_fast_t1_scan.py::test_main_writes_candidate_union_with_scan_metadata -q`
+- Result: `1 passed in 1.77s`
+- Command: `.venv\Scripts\python.exe -m pytest tests/test_full_market_t1.py tests/test_fast_t1_scan.py -q`
+- Result: `16 passed in 1.40s`
+
+### Selective Staging Evidence
+
+- `git diff --cached -- fast_t1_scan.py tests/test_fast_t1_scan.py` showed only two staged hunks:
+  - `build_candidate_union(out_df, ...)` -> `build_candidate_union(candidates.copy(), ...)`
+  - the new integration assertion requiring `ma10`, `ma20`, `return_10d`, and `elapsed_trade_minutes`
+- Post-commit `git status --short -- fast_t1_scan.py tests/test_fast_t1_scan.py` returned only:
+  - ` M fast_t1_scan.py`
+  - ` M tests/test_fast_t1_scan.py`
+- This confirms pre-existing dirty hunks remained unstaged and were not included in the fix commit.
+
+## Review Fix 2
+
+- Review result: Needs fixes
+- Issue: the regression test patched `load_or_compute_indicators`, which existed only in the dirty worktree and not in the exact reviewed commit, causing an isolated checkout to fail before reaching the candidate-union path.
+- Commit: `e46d30d8db9fb53bd1692b7655e40174d1b511d1` `fix: stabilize task2 candidate union regression test`
+- Fix: always patch the committed `compute_indicators_parallel` interface and conditionally patch `load_or_compute_indicators` only when the working tree exposes it.
+
+### Verification
+
+- Current authorized dirty workspace: `.venv\\Scripts\\python.exe -m pytest tests\\test_full_market_t1.py tests\\test_fast_t1_scan.py -q` -> `16 passed in 0.93s`.
+- Detached clean worktree at exact `e46d30d8db9fb53bd1692b7655e40174d1b511d1`: `D:\\Environment\\marketbase\\.venv\\Scripts\\python.exe -m pytest tests\\test_full_market_t1.py tests\\test_fast_t1_scan.py -q` -> `14 passed in 1.42s`.
+- The clean checkout has two fewer pre-existing dirty-worktree tests, but all committed Task 2 tests pass with zero failures.
+
+e46d30d fix: stabilize task2 candidate union regression test
+ tests/test_fast_t1_scan.py | 18 ++++++++++++++++--
+ 1 file changed, 16 insertions(+), 2 deletions(-)
+diff --git a/fast_t1_scan.py b/fast_t1_scan.py
+index 853f5f1..36658a9 100644
+--- a/fast_t1_scan.py
++++ b/fast_t1_scan.py
+@@ -1,142 +1,143 @@
+ # -*- coding: utf-8 -*-
+ r"""
+ fast_t1_scan.py — 全盘 T+1 策略快速扫描（一键）
+ 
+ 设计目标：绕开官方管道的审计/分类/分钟数据等重步骤，
+ 只做扫描真正需要的三件事：快照 → 指标（同遍量比） → 评分出报告。
+ 
+ 提速要点（v3，2026-08-12）：
+   1. 快照单源快速模式：sina 主源一次采集，跳过参考源分页抓取
+      （扫描所需的量/额/换手/市值字段 sina 已齐备，行业字段由
+      ensure_industry 从最近官方 run 回补），实测约省 30 秒
+   2. 快照新鲜度复用：同日快照若 < --fresh 分钟直接复用，否则实时采集
+   3. 量比并入指标单遍：5 日均量在指标计算读取同一份日线 JSON 时顺带
+      算出（口径与 marketbase.volume_ratio._avg_5d_volume 完全一致），
+      不再有独立的量比阶段，省去数千次重复 JSON 读取
+   4. 指标并行计算：只对流动性过滤后的候选并行读取日线缓存并现算指标，
+      线程池 48、chunksize 16；且用快照最新价补丁当日 bar
+      （收盘后运行即为收盘口径）
+   5. 全程无网络依赖的审计/分类步骤，不会被挂起阻塞
+ 
+ 用法：
+     python fast_t1_scan.py                     # 默认：快照 15 分钟内复用，否则新采
+     python fast_t1_scan.py --fresh 0           # 强制重新采集快照
+     python fast_t1_scan.py --workers 32        # 并行线程数（默认 24，指标池提升至 48）
+     python fast_t1_scan.py --html D:\x\y.html  # 指定报告输出路径
+ 
+ 输出：
+     {项目根}\data\cache\fast\scan_result_{日期}_{时分}.csv   候选明细
+     HTML 报告（默认写入 {项目根}\reports\，可用 --html 覆盖）
+ 
+ 依赖：本脚本须放在 marketbase 项目根目录（与 local_workflow.py 同级），
+ 通过 __file__ 自动定位项目根，无硬编码绝对路径，可随项目整体迁移。
+ 
+ 策略口径与 full_market_scan_v2_intraday.py 完全一致：
+     硬过滤 → 市场环境 → 流动性 → 趋势(MA5>MA10>MA20) → 双轴评分
+     → 买卖区(含禁追线 0.5% 容差) → 行业同步过滤 → 正式候选/观察池
+ """
+ from __future__ import annotations
+ 
+ import argparse
+ import json
+ import sys
+ import time
+ import warnings
+ from concurrent.futures import ThreadPoolExecutor
+ from datetime import datetime, timedelta, timezone
+ from pathlib import Path
+ 
+ import numpy as np
+ import pandas as pd
+ 
+ warnings.filterwarnings("ignore", category=FutureWarning)
+ 
+ MB_ROOT = Path(__file__).resolve().parent  # 脚本位于 marketbase 项目根目录
+ if str(MB_ROOT) not in sys.path:
+     sys.path.insert(0, str(MB_ROOT))
+ 
+ from marketbase.market_collector import collect_market_snapshot  # noqa: E402
+ from marketbase.indicators import compute_daily_indicators  # noqa: E402
+ from marketbase.volume_ratio import elapsed_trade_minutes  # noqa: E402
+ from marketbase.snapshot import fetch_cn_snapshot  # noqa: E402
+ from marketbase.realtime_window import fetch_tencent_quotes  # noqa: E402
++from strategies.full_market_t1 import build_candidate_union, write_candidate_union  # noqa: E402
+ 
+ REPORT_DIR = MB_ROOT / "reports"  # HTML 报告默认输出目录（可用 --html 覆盖）
+ 
+ IND_FIELDS = ["ma5", "ma10", "ma20", "ma60", "rsi14", "atr14", "atr14_pct",
+               "boll_upper", "boll_middle", "boll_lower", "boll_position",
+               "return_5d", "return_10d", "return_20d",
+               "upper_shadow_ratio", "lower_shadow_ratio", "input_rows"]
+ 
+ CN_TZ = timezone(timedelta(hours=8))
+ 
+ 
+ def log(msg: str) -> None:
+     print(f"[{datetime.now(CN_TZ).strftime('%H:%M:%S')}] {msg}", flush=True)
+ 
+ 
+ def parse_realtime_codes(value: str) -> list[str]:
+     """解析实时查询代码，兼容逗号、分号和空格，去重并保持用户输入顺序。"""
+     import re
+ 
+     codes: list[str] = []
+     seen: set[str] = set()
+     for item in re.split(r"[,;\s]+", value.strip()):
+         if item.isdigit() and len(item) <= 6:
+             code = item.zfill(6)
+             if code not in seen:
+                 seen.add(code)
+                 codes.append(code)
+     return codes
+ 
+ 
+ def filter_realtime_quotes(codes: list[str], quotes: pd.DataFrame) -> pd.DataFrame:
+     """按请求顺序返回实时行情；缺失代码明确标记，避免静默漏股。"""
+     frame = quotes.copy()
+     if "code" not in frame.columns:
+         frame["code"] = ""
+     frame["code"] = frame["code"].astype(str).str.strip().str.zfill(6)
+     frame = frame.drop_duplicates("code", keep="last").set_index("code")
+     rows: list[dict[str, object]] = []
+     for code in codes:
+         if code in frame.index:
+             row = frame.loc[code].to_dict()
+             row["code"] = code
+             row["realtime_status"] = "已获取"
+         else:
+             row = {"code": code, "realtime_status": "未找到"}
+         rows.append(row)
+     return pd.DataFrame(rows)
+ 
+ 
+ def load_bse_codes(data_root: Path) -> list[str]:
+     """从本地最近的完整快照读取北交所证券主表，不依赖慢参考源。"""
+     paths = [
+         data_root / "daily_runs" / "cache" / "market_snapshot.json",
+         data_root / "cache" / "market_snapshot.json",
+     ]
+     for path in paths:
+         try:
+             payload = json.loads(path.read_text(encoding="utf-8"))
+             rows = payload.get("rows", [])
+             codes = {
+                 str(row.get("code", "")).strip().zfill(6)
+                 for row in rows
+                 if isinstance(row, dict)
+             }
+             result = sorted(code for code in codes if code[:1] in {"4", "8", "9"})
+             if result:
+                 return result
+         except (OSError, ValueError, TypeError):
+             continue
+     return []
+ 
+ 
+ def _market_of(code: str) -> str:
+     if code.startswith("6"):
+         return "sh"
+     if code.startswith(("0", "3")):
+         return "sz"
+     if code.startswith(("4", "8", "9")):
+         return "bj"
+     return ""
+@@ -523,160 +524,167 @@ def render_html(ctx: dict) -> str:
+     ind_bottom = "".join(f"<li>{name} <b>{v:+.2f}%</b></li>" for name, v in ctx["ind_bottom"])
+     byd_cls = "bad" if ctx["byd"]["triggered"] else "ok"
+     bse = ctx.get("bse") or {}
+     bse_text = (
+         f" ｜ 北交所覆盖 {bse.get('bj_actual', 0)}/{bse.get('bj_expected', 0)}"
+         f"（缺失 {bse.get('bj_missing', 0)}，来源 {bse.get('source', '未知')}）"
+         if bse
+         else " ｜ 北交所覆盖：无本次采集审计"
+     )
+     return f"""<!DOCTYPE html>
+ <html lang="zh-CN"><head><meta charset="utf-8">
+ <title>全盘T1策略扫描报告 {ctx['date']} {ctx['phase']}</title>
+ <style>
+ body{{font-family:"Microsoft YaHei","Noto Sans CJK SC",sans-serif;background:#f6f7f9;color:#222;margin:0;padding:24px}}
+ .wrap{{max-width:1200px;margin:0 auto}}
+ h1{{font-size:22px;margin:0 0 4px}} h2{{font-size:17px;margin:26px 0 10px;border-left:4px solid #2b6cb0;padding-left:8px}}
+ .meta{{color:#666;font-size:13px;margin-bottom:16px}}
+ .cards{{display:flex;gap:12px;flex-wrap:wrap}}
+ .card{{background:#fff;border-radius:10px;padding:14px 18px;flex:1;min-width:220px;box-shadow:0 1px 3px rgba(0,0,0,.06)}}
+ .card .k{{font-size:12px;color:#888}} .card .v{{font-size:20px;font-weight:700;margin-top:4px}}
+ .ok{{color:#1a7f37}} .bad{{color:#c62828}} .warn{{color:#b26a00}}
+ table{{width:100%;border-collapse:collapse;background:#fff;border-radius:8px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.06);font-size:13px}}
+ th,td{{padding:7px 8px;text-align:left;border-bottom:1px solid #eef0f2;white-space:nowrap}}
+ th{{background:#2b6cb0;color:#fff;font-weight:600}}
+ tr:hover{{background:#f2f7fc}}
+ .tag{{display:inline-block;background:#e8f0fe;color:#2b6cb0;border-radius:4px;padding:1px 6px;font-size:11px;margin:1px 2px 1px 0}}
+ .tag.fast{{background:#c62828;color:#fff}}
+ .small{{font-size:11px;color:#555}}
+ ul{{margin:6px 0;padding-left:18px;font-size:13px}}
+ .grid2{{display:grid;grid-template-columns:1fr 1fr;gap:12px}}
+ .note{{background:#fff8e6;border:1px solid #f0dca0;border-radius:8px;padding:10px 14px;font-size:13px;margin-top:8px}}
+ footer{{color:#999;font-size:12px;margin-top:28px}}
+ </style></head><body><div class="wrap">
+ <h1>全盘 T+1 策略扫描报告 · {ctx['date']} · {ctx['phase']}</h1>
+ <div class="meta">生成时间 {ctx['generated_at']} ｜ 快照 {ctx['snap_source']}（{ctx['snap_obs']}）{bse_text} ｜ 全流程耗时 <b>{ctx['total_sec']:.0f} 秒</b>
+ （快照 {ctx['t_snap']:.0f}s / 指标+量比 {ctx['t_ind']:.0f}s）｜ 快速扫描模式 v3（单源快照 + 指标量比同遍，无审计网络步骤）</div>
+ 
+ <h2>市场环境</h2>
+ <div class="cards">
+ <div class="card"><div class="k">上涨占比</div><div class="v">{ctx['advance_ratio']:.1%}</div></div>
+ <div class="card"><div class="k">涨跌幅中位数</div><div class="v">{ctx['median']:+.2f}%</div></div>
+ <div class="card"><div class="k">市场模式</div><div class="v">{ctx['mode']}</div></div>
+ <div class="card"><div class="k">漏斗</div><div class="v" style="font-size:14px">{ctx['funnel']}</div></div>
+ </div>
+ <div class="grid2" style="margin-top:12px">
+ <div class="card"><div class="k">领涨行业</div><ul>{ind_top}</ul></div>
+ <div class="card"><div class="k">领跌行业</div><ul>{ind_bottom}</ul></div>
+ </div>
+ 
+ <h2>BYD-半导体轮动信号</h2>
+ <div class="cards"><div class="card" style="flex:2">
+ <div class="k">比亚迪（002594）今日涨跌</div>
+ <div class="v {byd_cls}">{ctx['byd']['chg']:+.2f}%（{ctx['byd']['price']:.2f} 元）</div>
+ <div style="font-size:13px;margin-top:6px">{ctx['byd']['text']}</div>
+ </div></div>
+ 
+ <h2>TOP 5 精选（含买卖区）</h2>
+ <table><tr><th>代码</th><th>名称</th><th>现价</th><th>涨跌</th><th>评分</th><th>RR</th><th>买区</th><th>保护位</th><th>禁追线</th><th>卖一</th><th>行业</th><th>标签</th></tr>
+ {top5_rows}</table>
+ 
+ <h2>正式候选（{ctx['n_official']} 只）</h2>
+ <table><tr><th>代码</th><th>名称</th><th>现价</th><th>涨跌</th><th>评分</th><th>RR</th><th>买区</th><th>保护位</th><th>禁追线</th><th>卖一</th><th>行业</th><th>尾部风险</th></tr>
+ {official_rows}</table>
+ 
+ <h2>条件观察（{ctx['n_watch']} 只）</h2>
+ <table><tr><th>代码</th><th>名称</th><th>现价</th><th>涨跌</th><th>评分</th><th>风险项</th><th>RR</th><th>行业</th></tr>
+ {watch_rows}</table>
+ 
+ <h2>执行纪律</h2>
+ <div class="note">
+ ① 仅在价格回踩<b>买区</b>时挂限价单介入，<b>禁追线</b>为硬边界，突破不追；
+ ② 评分 ≥85 标记"快速介入"的标的可不等深度回踩（仍不超过禁追线）；
+ ③ 尾盘 14:50 仍未进入买区则放弃当日该标的；
+ ④ 单只仓位 ≤8%，组合合计 ≤30%；跌破保护位无条件离场（T+1 次日执行）；
+ ⑤ 本报告为量化筛选结果，不构成投资建议。
+ </div>
+ <footer>MarketBase 快速扫描 · fast_t1_scan.py · {ctx['generated_at']}</footer>
+ </div></body></html>"""
+ 
+ 
++def _snapshot_observed_iso8601(value: object) -> str:
++    observed = pd.to_datetime(value)
++    if observed.tzinfo is None:
++        observed = observed.tz_localize(CN_TZ)
++    return observed.isoformat()
++
++
+ # ────────────────────────── 主流程 ──────────────────────────
+ 
+ def main() -> int:
+     parser = argparse.ArgumentParser(description="全盘 T+1 策略快速扫描")
+     parser.add_argument("--data-root", type=Path, default=MB_ROOT / "data")
+     parser.add_argument("--fresh", type=int, default=15, help="快照复用新鲜度（分钟），0=强制新采")
+     parser.add_argument("--workers", type=int, default=24, help="并行线程数")
+     parser.add_argument("--html", type=Path, default=None, help="HTML 报告输出路径")
+     parser.add_argument("--realtime", type=str, default=None, help="仅查询指定股票实时行情，代码用逗号或空格分隔")
+     args = parser.parse_args()
+ 
+     if args.realtime is not None:
+         codes = parse_realtime_codes(args.realtime)
+         if not codes:
+             parser.error("--realtime 未解析出有效的 6 位股票代码")
+         try:
+             realtime = query_realtime_quotes(codes)
+         except Exception as exc:  # noqa: BLE001 - expose source failure to the operator.
+             print(f"实时行情采集失败：{exc}", file=sys.stderr)
+             return 1
+         print_realtime_quotes(realtime)
+         return 0
+ 
+     t_start = time.perf_counter()
+     observed_at = datetime.now(CN_TZ)
+     today_str = observed_at.date().isoformat()
+     if observed_at.hour >= 15:
+         phase = "收盘"
+     elif (observed_at.hour == 11 and observed_at.minute >= 30) or observed_at.hour == 12:
+         phase = "午间"
+     else:
+         phase = "盘中"
+     log(f"快速扫描启动 | {today_str} | {phase} | 数据根 {args.data_root}")
+ 
+     # ① 快照（单源快速模式）
+     df, snap_source, t_snap, bse_audit = get_snapshot(args.data_root, observed_at, args.fresh)
+     snap_obs = str(df["observed_at"].iloc[0])[:19]
+     bj_info = (
+         f" | 北交所覆盖 {bse_audit.get('bj_actual', 0)}/{bse_audit.get('bj_expected', 0)}"
+         f"（缺失 {bse_audit.get('bj_missing', 0)}）"
+         if bse_audit
+         else ""
+     )
+     log(f"① 快照就绪：{len(df)} 只 | {snap_source}{bj_info} | {t_snap:.1f}s")
+     df, ind_source = ensure_industry(df, args.data_root)
+     log(f"   行业字段：{ind_source}")
+ 
+     # BYD 信号（基于完整快照，先取再过滤）
+     byd_hit = df[df["code"].astype(str).str.zfill(6) == "002594"]
+     byd_info = {"chg": float("nan"), "price": float("nan"), "triggered": False, "text": ""}
+     if not byd_hit.empty:
+         b = byd_hit.iloc[0]
+         byd_info["chg"] = float(pd.to_numeric(b["change_pct"], errors="coerce"))
+         byd_info["price"] = float(pd.to_numeric(b["price"], errors="coerce"))
+         byd_info["triggered"] = byd_info["chg"] <= -1.0
+         if byd_info["triggered"]:
+             byd_info["text"] = "收盘跌幅 ≤ -1%，信号触发：次日半导体板块历史胜率 73.3%（33/45），可关注半导体轮动机会。"
+         else:
+             byd_info["text"] = f"跌幅未达 -1%（{byd_info['chg']:+.2f}%），信号未触发：次日半导体无轮动信号加持，相关持仓按既定纪律执行。"
+     else:
+         byd_info["text"] = "快照中未找到比亚迪行情，信号状态未知。"
+ 
+     # ② 硬过滤
+     initial = len(df)
+     for col in ("is_st", "is_suspended", "delist_risk"):
+         if col not in df.columns:
+             df[col] = False
+         df[col] = df[col].fillna(False).astype(bool)
+     df = df[df["is_st"] != True]          # noqa: E712
+     df = df[df["is_suspended"] != True]   # noqa: E712
+     df = df[df["delist_risk"] != True]    # noqa: E712
+     # 名称法剔除 ST/退市风险（部分数据源 is_st 标记可能缺失）
+     name = df["name"].fillna("").astype(str)
+     df = df[~name.str.contains("ST", case=False) & ~name.str.contains("退")]
+     chg_abs = pd.to_numeric(df["change_pct"], errors="coerce").fillna(0)
+     df = df[(chg_abs < 9.9) & (chg_abs > -9.9)]  # 涨跌停近似剔除
+     df = df[df["market"] != "bj"]
+     df = df[pd.to_numeric(df["volume"], errors="coerce").fillna(0) > 0]
+     if "listed_days" in df.columns:
+         ld = pd.to_numeric(df["listed_days"], errors="coerce")
+@@ -685,122 +693,144 @@ def main() -> int:
+     after_hard = len(df)
+     log(f"② 硬过滤：{initial} -> {after_hard}")
+ 
+     # ③ 市场环境（实时）
+     valid_chg = pd.to_numeric(df["change_pct"], errors="coerce").dropna()
+     market_advance_ratio = float((valid_chg > 0).mean())
+     market_median = float(valid_chg.median())
+     if market_advance_ratio < 0.45:
+         min_score, max_tail_risk, market_mode = 45, 1, "弱市模式"
+     elif market_advance_ratio > 0.60:
+         min_score, max_tail_risk, market_mode = 40, 2, "强势模式"
+     else:
+         min_score, max_tail_risk, market_mode = 40, 1, "正常模式"
+     log(f"③ 市场环境：上涨占比 {market_advance_ratio:.1%} | 中位数 {market_median:+.2f}% | {market_mode}")
+ 
+     ind_chg_full = df.groupby("industry")["change_pct"].mean().sort_values(ascending=False)
+ 
+     # ④ 流动性过滤
+     df = df[pd.to_numeric(df["amount"], errors="coerce") >= 50_000_000]
+     df = df[pd.to_numeric(df["circ_mv"], errors="coerce") >= 3_000_000_000]
+     tor = pd.to_numeric(df["turnover_rate"], errors="coerce")
+     df = df[(tor >= 0.5) & (tor <= 15.0)]
+     log(f"④ 流动性过滤：剩余 {len(df)} 只")
+ 
+     # ⑤ 指标并行计算（官方日线缓存 + 排除当日 bar，与官方管道口径一致；
+     #    量比的 5 日均量在同一次 JSON 读取中顺带算出，不再有独立量比阶段）
+     t0 = time.perf_counter()
+     ind_df = compute_indicators_parallel(df, official_daily_cache_root(args.data_root),
+                                          today_str, args.workers)
+     avg5d = ind_df.set_index("code")["avg5d"]
+     df = df.merge(ind_df, on="code", how="left")
+     df = df.dropna(subset=["ma5", "ma10", "ma20", "ma60", "rsi14", "atr14_pct", "boll_position"])
+     df = apply_volume_ratio(df, avg5d, observed_at)
+     t_ind = time.perf_counter() - t0
+     vr_cov = int(df["volume_ratio"].notna().sum())
+     log(f"⑤ 指标+量比：{len(ind_df)} 只完成 | 量比覆盖 {vr_cov}/{len(df)} | {t_ind:.1f}s")
+ 
+     # ⑦ 趋势过滤
+     df["trend_aligned"] = (df["ma5"] > df["ma10"]) & (df["ma10"] > df["ma20"]) & (df["ma20"] > df["ma60"])
+     df["trend_near"] = (df["ma5"] > df["ma10"]) & (df["ma10"] > df["ma20"])
+     df = df[df["trend_near"]]
+     log(f"⑦ 趋势过滤（MA5>MA10>MA20）：剩余 {len(df)} 只")
+ 
+     # ⑧ 双轴评分 + 买卖区
+     scores = df.apply(lambda r: calc_opportunity_score(r, ind_chg_full), axis=1)
+     df["opportunity_score"] = [s[0] for s in scores]
+     df["opportunity_tags"] = [s[1] for s in scores]
+     df["tail_risk_tags"] = df.apply(calc_tail_risk, axis=1)
+     df["tail_risk_count"] = df["tail_risk_tags"].apply(len)
+     df["industry_chg"] = df["industry"].map(ind_chg_full)
+     df = pd.concat([df, df.apply(calc_zones, axis=1)], axis=1)
+ 
+     candidates = df[
+         (df["opportunity_score"] >= min_score)
+         & (df["tail_risk_count"] <= max_tail_risk)
+         & (df["rr_ratio"] >= 1.5)
+         & (df["industry_chg"] > 0)
+     ].sort_values("opportunity_score", ascending=False)
+     official = candidates[
+         (candidates["opportunity_score"] >= 55) & (candidates["tail_risk_count"] == 0)
+     ].head(20).copy()
+     official["fast_entry"] = official["opportunity_score"] >= 85
+     watch = candidates[~candidates.index.isin(official.index)].head(15)
+     log(f"⑧ 评分完成：候选 {len(candidates)} 只 | 正式 {len(official)} 只 | 观察 {len(watch)} 只")
+ 
+     # ⑨ 输出
+     fast_dir = args.data_root / "cache" / "fast"
+     fast_dir.mkdir(parents=True, exist_ok=True)
+     csv_path = fast_dir / f"scan_result_{observed_at.strftime('%Y%m%d')}_{observed_at.strftime('%H%M')}.csv"
+     output_cols = ["code", "name", "market", "price", "change_pct", "volume_ratio", "turnover_rate",
+                    "amount", "circ_mv", "industry", "industry_chg", "concepts",
+                    "opportunity_score", "tail_risk_count",
+                    "buy_low", "buy_high", "chase_line", "protect",
+                    "sell1_low", "sell1_high", "sell2_low", "sell2_high",
+                    "rr_ratio", "rsi14", "atr14_pct", "boll_position",
+                    "trend_aligned", "return_5d", "return_20d"]
+     out_df = candidates[[c for c in output_cols if c in candidates.columns]].copy()
+     out_df["opportunity_tags"] = candidates["opportunity_tags"].apply(lambda x: "|".join(x))
+     out_df["tail_risk_tags"] = candidates["tail_risk_tags"].apply(lambda x: "|".join(x))
+     out_df.to_csv(csv_path, index=False, encoding="utf-8-sig")
++    funnel_counts = {
++        "initial": initial,
++        "after_hard": after_hard,
++        "candidates": len(candidates),
++        "official": len(official),
++        "watch": len(watch),
++    }
++    candidate_observed_at = _snapshot_observed_iso8601(snap_obs or observed_at)
++    candidate_dt = pd.to_datetime(candidate_observed_at)
++    candidate_union_path = fast_dir / (
++        f"candidate_union_{candidate_dt.strftime('%Y%m%d')}_{candidate_dt.strftime('%H%M')}.json"
++    )
++    candidate_union = build_candidate_union(
++        candidates.copy(),
++        trade_date=today_str,
++        observed_at=candidate_observed_at,
++        market_rows=initial,
++        funnel=funnel_counts,
++    )
++    write_candidate_union(candidate_union, candidate_union_path)
++    log(f"候选并集: {candidate_union_path}")
+ 
+     total_sec = time.perf_counter() - t_start
+     html_path = args.html or (REPORT_DIR / f"全盘T1策略扫描报告_{observed_at.strftime('%Y%m%d')}_{phase}.html")
+     ctx = {
+         "date": today_str, "phase": phase,
+         "generated_at": observed_at.strftime("%Y-%m-%d %H:%M:%S"),
+         "snap_source": snap_source, "snap_obs": snap_obs, "bse": bse_audit,
+         "total_sec": total_sec, "t_snap": t_snap, "t_ind": t_ind,
+         "advance_ratio": market_advance_ratio, "median": market_median, "mode": market_mode,
+         "funnel": f"{initial} → 硬{after_hard} → 候选{len(candidates)} → 正式{len(official)}",
+         "ind_top": list(ind_chg_full.head(5).items()),
+         "ind_bottom": list(ind_chg_full.tail(5).items())[::-1],
+         "byd": byd_info,
+         "top5": official.head(5).to_dict("records"),
+         "official": official.to_dict("records"), "n_official": len(official),
+         "watch": watch.to_dict("records"), "n_watch": len(watch),
+     }
+     try:
+         html_path.parent.mkdir(parents=True, exist_ok=True)
+         html_path.write_text(render_html(ctx), encoding="utf-8")
+     except OSError as exc:
+         log(f"HTML 写入失败: {exc}")
+ 
+     # 控制台摘要
+     print("\n" + "=" * 92)
+     print(f"全盘 T+1 快速扫描 | {today_str} {phase} | {market_mode} | 总耗时 {total_sec:.0f}s")
+     print(f"上涨占比 {market_advance_ratio:.1%} | 中位数 {market_median:+.2f}% | "
+           f"BYD {byd_info['chg']:+.2f}%（{'触发' if byd_info['triggered'] else '未触发'}）")
+     print("=" * 92)
+     for i, (_, row) in enumerate(official.iterrows(), 1):
+         fast = " [快速介入]" if row["fast_entry"] else ""
+         print(f"{i:2d}. {row['code']} {row['name']} | {row['price']:.2f} | {row['change_pct']:+.2f}% | "
+               f"评分{row['opportunity_score']:.0f}{fast} | RR{row['rr_ratio']:.2f} | "
+               f"买区{row['buy_low']:.2f}-{row['buy_high']:.2f} | 保护{row['protect']:.2f} | "
+               f"禁追{row['chase_line']:.2f} | {row.get('industry', '')}({row['industry_chg']:+.1f}%)")
+     print(f"\n结果 CSV: {csv_path}")
++    print(f"候选并集: {candidate_union_path}")
+     print(f"HTML 报告: {html_path}")
+     return 0
+ 
+ 
+ if __name__ == "__main__":
+     raise SystemExit(main())
+diff --git a/strategies/full_market_t1.py b/strategies/full_market_t1.py
+new file mode 100644
+index 0000000..a121637
+--- /dev/null
++++ b/strategies/full_market_t1.py
+@@ -0,0 +1,105 @@
++from __future__ import annotations
++
++import json
++import os
++from pathlib import Path
++
++import pandas as pd
++
++PRODUCTION_MIN_PRICE = 50.0
++SHADOW_MIN_PRICE = 40.0
++RESTRICTED_PREFIXES = ("300", "301", "688")
++SCHEMA_VERSION = "1.0.0"
++
++
++def classify_price_band(code: str, market: str, price: float) -> str:
++    normalized = str(code).zfill(6)
++    if market == "bj" or normalized.startswith(RESTRICTED_PREFIXES):
++        return "excluded"
++    if price >= PRODUCTION_MIN_PRICE:
++        return "production"
++    if price >= SHADOW_MIN_PRICE:
++        return "shadow_40_50"
++    return "excluded"
++
++
++def _to_native(value):
++    if isinstance(value, list):
++        return [_to_native(item) for item in value]
++    if isinstance(value, dict):
++        return {str(key): _to_native(item) for key, item in value.items()}
++    if pd.isna(value):
++        return None
++    if hasattr(value, "item"):
++        try:
++            return value.item()
++        except (ValueError, TypeError):
++            return value
++    return value
++
++
++def _normalize_candidate_reason(value) -> list[object]:
++    native = _to_native(value)
++    if native is None:
++        return []
++    if isinstance(native, list):
++        return [item for item in native if item not in (None, "")]
++    if isinstance(native, str):
++        text = native.strip()
++        if not text:
++            return []
++        if "|" in text:
++            return [part for part in (item.strip() for item in text.split("|")) if part]
++        return [text]
++    return [native]
++
++
++def build_candidate_union(
++    frame: pd.DataFrame,
++    *,
++    trade_date: str,
++    observed_at: str,
++    market_rows: int,
++    funnel: dict[str, int],
++) -> dict[str, object]:
++    candidates: list[dict[str, object]] = []
++    normalized = frame.copy()
++    if "code" in normalized.columns:
++        normalized["code"] = normalized["code"].astype(str).str.strip().str.zfill(6)
++    if "market" not in normalized.columns:
++        normalized["market"] = ""
++
++    for row in normalized.to_dict("records"):
++        candidate = {str(key): _to_native(value) for key, value in row.items()}
++        code = str(candidate.get("code", "")).zfill(6)
++        market = str(candidate.get("market", "") or "").strip()
++        price_value = pd.to_numeric(candidate.get("price"), errors="coerce")
++        price = float(price_value) if pd.notna(price_value) else float("nan")
++        candidate["code"] = code
++        candidate["market"] = market
++        candidate["candidate_reason"] = _normalize_candidate_reason(candidate.get("opportunity_tags"))
++        candidate["price_band"] = classify_price_band(code, market, price)
++        candidate["production_buyable"] = False
++        candidate["buyable"] = False
++        candidate["only_choose_one_eligible"] = False
++        candidates.append(candidate)
++
++    return {
++        "schema_version": SCHEMA_VERSION,
++        "trade_date": trade_date,
++        "observed_at": observed_at,
++        "market_rows": int(market_rows),
++        "funnel": {str(key): int(value) for key, value in funnel.items()},
++        "candidates": candidates,
++    }
++
++
++def write_candidate_union(payload: dict[str, object], path: Path) -> Path:
++    path.parent.mkdir(parents=True, exist_ok=True)
++    tmp_path = path.with_suffix(".tmp")
++    tmp_path.write_text(
++        json.dumps(payload, ensure_ascii=False, indent=2),
++        encoding="utf-8",
++    )
++    os.replace(tmp_path, path)
++    return path
+diff --git a/tests/test_fast_t1_scan.py b/tests/test_fast_t1_scan.py
+index 046f965..e2b90a4 100644
+--- a/tests/test_fast_t1_scan.py
++++ b/tests/test_fast_t1_scan.py
+@@ -1,105 +1,251 @@
+ from __future__ import annotations
+ 
+ import json
++import sys
+ from pathlib import Path
+ 
+ import pandas as pd
+ 
+ import fast_t1_scan
+ 
+ 
+ def test_parse_realtime_codes_normalizes_and_deduplicates():
+     # 需求 7.2：按用户输入的股票顺序展示（不再排序）。
+     assert fast_t1_scan.parse_realtime_codes("603986, 002594 603986") == [
+         "603986",
+         "002594",
+     ]
+ 
+ 
+ def test_filter_realtime_quotes_preserves_requested_order_and_marks_missing():
+     quotes = pd.DataFrame(
+         [
+             {"code": "603986", "name": "兆易创新", "price": 395.0, "change_pct": 1.2},
+             {"code": "002594", "name": "比亚迪", "price": 300.0, "change_pct": -0.5},
+         ]
+     )
+     result = fast_t1_scan.filter_realtime_quotes(["002594", "000001", "603986"], quotes)
+ 
+     assert result["code"].tolist() == ["002594", "000001", "603986"]
+     assert result.loc[result["code"] == "000001", "realtime_status"].iat[0] == "未找到"
+     assert result.loc[result["code"] == "603986", "realtime_status"].iat[0] == "已获取"
+ 
+ 
+ def test_load_bse_codes_from_local_universe(tmp_path: Path):
+     cache = tmp_path / "daily_runs" / "cache" / "market_snapshot.json"
+     cache.parent.mkdir(parents=True)
+     cache.write_text(
+         json.dumps({"rows": [{"code": "430001"}, {"code": "600000"}, {"code": "830001"}]}),
+         encoding="utf-8",
+     )
+ 
+     assert fast_t1_scan.load_bse_codes(tmp_path) == ["430001", "830001"]
+ 
+ 
+ def _sina_snapshot() -> pd.DataFrame:
+     return pd.DataFrame(
+         [
+             {
+                 "code": "603986",
+                 "name": "兆易创新",
+                 "price": 395.0,
+                 "change_pct": 1.2,
+                 "volume": 1000,
+                 "amount": 2000,
+                 "ticktime": "10:47:03",
+             }
+         ]
+     )
+ 
+ 
+ def _bj_snapshot(codes: list[str]) -> tuple[pd.DataFrame, list[str]]:
+     return (
+         pd.DataFrame(
+             [
+                 {
+                     "code": "920001",
+                     "name": "北交所样例",
+                     "price": 10.0,
+                     "change_pct": 0.5,
+                     "volume": 500,
+                     "amount": 1000,
+                     "quote_time": "2026-08-27 10:47:05",
+                     "observed_at": "2026-08-27 10:47:06",
+                     "source": "tencent_bse",
+                 }
+             ]
+         ),
+         [],
+     )
+ 
+ 
+ def test_query_realtime_quotes_merges_markets_in_input_order():
+     result = fast_t1_scan.query_realtime_quotes(
+         ["920001", "603986"], shsz_fetcher=_sina_snapshot, bj_fetcher=_bj_snapshot
+     )
+     assert result["code"].tolist() == ["920001", "603986"]
+     assert result["market"].tolist() == ["bj", "sh"]
+     assert (result["realtime_status"] == "已获取").all()
+     # 沪深行无 quote_time：用 ticktime + 当日日期补齐（需求 7.1）
+     sh_row = result.loc[result["code"] == "603986"].iloc[0]
+     assert sh_row["quote_time"].endswith("10:47:03")
+     assert str(sh_row["observed_at"]).strip() != ""
+     # 北交所行保留自身行情时间
+     assert result.loc[result["code"] == "920001", "quote_time"].iat[0] == "2026-08-27 10:47:05"
+ 
+ 
+ def test_query_realtime_quotes_bj_failure_does_not_hide_shsz():
+     def failing_bj(codes: list[str]) -> tuple[pd.DataFrame, list[str]]:
+         raise ConnectionError("bj link down")
+ 
+     result = fast_t1_scan.query_realtime_quotes(
+         ["603986", "920001"], shsz_fetcher=_sina_snapshot, bj_fetcher=failing_bj
+     )
+     assert result["code"].tolist() == ["603986", "920001"]
+     assert result.loc[result["code"] == "603986", "realtime_status"].iat[0] == "已获取"
+     assert result.loc[result["code"] == "920001", "realtime_status"].iat[0] == "获取失败"
++
++
++def test_main_writes_candidate_union_with_scan_metadata(tmp_path: Path, monkeypatch):
++    fixed_now = fast_t1_scan.datetime(2026, 9, 3, 13, 45, 0, tzinfo=fast_t1_scan.CN_TZ)
++    html_path = tmp_path / "report.html"
++    observed_label = fixed_now.strftime("%Y-%m-%d %H:%M:%S")
++    captured: dict[str, object] = {}
++
++    class FixedDateTime(fast_t1_scan.datetime):
++        @classmethod
++        def now(cls, tz=None):
++            if tz is None:
++                return fixed_now.replace(tzinfo=None)
++            return fixed_now.astimezone(tz)
++
++    def fake_snapshot(data_root: Path, observed_at, fresh_minutes: int):
++        return (
++            pd.DataFrame(
++                [
++                    {
++                        "code": "600000",
++                        "name": "浦发银行",
++                        "market": "sh",
++                        "price": 52.0,
++                        "change_pct": 2.0,
++                        "volume": 1_000_000,
++                        "amount": 80_000_000,
++                        "circ_mv": 4_000_000_000,
++                        "turnover_rate": 1.2,
++                        "industry": "银行",
++                        "concepts": "金融",
++                        "observed_at": observed_label,
++                        "is_st": False,
++                        "is_suspended": False,
++                        "delist_risk": False,
++                        "listed_days": 300,
++                    }
++                ]
++            ),
++            "fixture-snapshot",
++            0.1,
++            {},
++        )
++
++    def fake_indicator_frame():
++        return pd.DataFrame(
++            [
++                {
++                    "code": "600000",
++                    "avg5d": 400_000.0,
++                    "ma5": 50.0,
++                    "ma10": 49.0,
++                    "ma20": 48.0,
++                    "ma60": 47.0,
++                    "rsi14": 55.0,
++                    "atr14": 1.0,
++                    "atr14_pct": 2.0,
++                    "boll_upper": 55.0,
++                    "boll_middle": 52.0,
++                    "boll_lower": 50.0,
++                    "boll_position": 0.5,
++                    "return_5d": 0.03,
++                    "return_10d": 0.04,
++                    "return_20d": 0.05,
++                    "upper_shadow_ratio": 0.1,
++                    "lower_shadow_ratio": 0.1,
++                    "input_rows": 250,
++                }
++            ]
++        )
++
++    def fake_compute_indicators(df, daily_root: Path, today_str: str, workers: int):
++        return fake_indicator_frame()
++
++    def fake_load_or_compute_indicators(
++        df, daily_root: Path, today_str: str, workers: int, fast_dir: Path
++    ):
++        return fake_indicator_frame()
++
++    def fake_apply_volume_ratio(df, avg5d, observed_at):
++        result = df.copy()
++        result["volume_ratio"] = 2.0
++        result["elapsed_trade_minutes"] = 135
++        return result
++
++    def fake_build_candidate_union(frame, *, trade_date, observed_at, market_rows, funnel):
++        captured["frame"] = frame.copy()
++        captured["trade_date"] = trade_date
++        captured["observed_at"] = observed_at
++        captured["market_rows"] = market_rows
++        captured["funnel"] = dict(funnel)
++        return {"trade_date": trade_date, "observed_at": observed_at, "candidates": frame.to_dict("records")}
++
++    def fake_write_candidate_union(payload, path: Path):
++        captured["payload"] = payload
++        captured["path"] = path
++        path.parent.mkdir(parents=True, exist_ok=True)
++        path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
++        return path
++
++    monkeypatch.setattr(fast_t1_scan, "datetime", FixedDateTime)
++    monkeypatch.setattr(fast_t1_scan, "get_snapshot", fake_snapshot)
++    monkeypatch.setattr(fast_t1_scan, "ensure_industry", lambda df, data_root: (df, "fixture-industry"))
++    monkeypatch.setattr(fast_t1_scan, "compute_indicators_parallel", fake_compute_indicators)
++    if hasattr(fast_t1_scan, "load_or_compute_indicators"):
++        monkeypatch.setattr(
++            fast_t1_scan,
++            "load_or_compute_indicators",
++            fake_load_or_compute_indicators,
++        )
++    monkeypatch.setattr(fast_t1_scan, "apply_volume_ratio", fake_apply_volume_ratio)
++    monkeypatch.setattr(fast_t1_scan, "official_daily_cache_root", lambda data_root: tmp_path / "daily")
++    monkeypatch.setattr(fast_t1_scan, "render_html", lambda ctx: "<html></html>")
++    monkeypatch.setattr(fast_t1_scan, "build_candidate_union", fake_build_candidate_union, raising=False)
++    monkeypatch.setattr(fast_t1_scan, "write_candidate_union", fake_write_candidate_union, raising=False)
++    monkeypatch.setattr(
++        sys,
++        "argv",
++        [
++            "fast_t1_scan.py",
++            "--data-root",
++            str(tmp_path),
++            "--fresh",
++            "0",
++            "--html",
++            str(html_path),
++        ],
++    )
++
++    rc = fast_t1_scan.main()
++
++    assert rc == 0
++    assert captured["trade_date"] == "2026-09-03"
++    assert captured["observed_at"] == "2026-09-03T13:45:00+08:00"
++    assert captured["market_rows"] == 1
++    assert captured["funnel"] == {
++        "initial": 1,
++        "after_hard": 1,
++        "candidates": 1,
++        "official": 1,
++        "watch": 0,
++    }
++    assert captured["path"] == tmp_path / "cache" / "fast" / "candidate_union_20260903_1345.json"
++    assert len(captured["frame"]) == 1
++    assert {"ma10", "ma20", "return_10d", "elapsed_trade_minutes"}.issubset(captured["frame"].columns)
+diff --git a/tests/test_full_market_t1.py b/tests/test_full_market_t1.py
+new file mode 100644
+index 0000000..3509e4c
+--- /dev/null
++++ b/tests/test_full_market_t1.py
+@@ -0,0 +1,142 @@
++from __future__ import annotations
++
++import json
++import os
++from pathlib import Path
++
++import pandas as pd
++import pytest
++
++from strategies.full_market_t1 import (
++    build_candidate_union,
++    classify_price_band,
++    write_candidate_union,
++)
++
++
++@pytest.mark.parametrize(
++    ("price", "expected"),
++    [
++        (39.99, "excluded"),
++        (40.00, "shadow_40_50"),
++        (49.99, "shadow_40_50"),
++        (50.00, "production"),
++    ],
++)
++def test_classify_price_band_boundaries(price, expected):
++    assert classify_price_band("600000", "sh", price) == expected
++
++
++def test_non_main_board_is_excluded_at_any_price():
++    assert classify_price_band("300001", "sz", 80.0) == "excluded"
++    assert classify_price_band("301001", "sz", 80.0) == "excluded"
++    assert classify_price_band("688001", "sh", 80.0) == "excluded"
++    assert classify_price_band("920001", "bj", 80.0) == "excluded"
++
++
++def test_build_candidate_union_preserves_metadata_and_normalizes_reasons():
++    frame = pd.DataFrame(
++        [
++            {
++                "code": "600000",
++                "market": "sh",
++                "name": "浦发银行",
++                "price": 52.0,
++                "amount": 80_000_000,
++                "opportunity_tags": "trend_full|vr_good(2.0)",
++            },
++            {
++                "code": "000001",
++                "market": "sz",
++                "name": "平安银行",
++                "price": 45.0,
++                "amount": 60_000_000,
++                "opportunity_tags": ["shadow_watch"],
++            },
++            {
++                "code": "600519",
++                "market": "sh",
++                "name": "贵州茅台",
++                "price": 1800.0,
++                "amount": 90_000_000,
++            },
++        ]
++    )
++
++    payload = build_candidate_union(
++        frame,
++        trade_date="2026-09-03",
++        observed_at="2026-09-03T13:45:00+08:00",
++        market_rows=5546,
++        funnel={"initial": 5546, "after_hard": 812, "candidates": 37, "official": 3},
++    )
++
++    assert payload["schema_version"] == "1.0.0"
++    assert payload["trade_date"] == "2026-09-03"
++    assert payload["observed_at"] == "2026-09-03T13:45:00+08:00"
++    assert payload["market_rows"] == 5546
++    assert payload["funnel"] == {
++        "initial": 5546,
++        "after_hard": 812,
++        "candidates": 37,
++        "official": 3,
++    }
++    assert [row["code"] for row in payload["candidates"]] == ["600000", "000001", "600519"]
++    assert payload["candidates"][0]["candidate_reason"] == ["trend_full", "vr_good(2.0)"]
++    assert payload["candidates"][0]["price_band"] == "production"
++    assert payload["candidates"][1]["candidate_reason"] == ["shadow_watch"]
++    assert payload["candidates"][1]["price_band"] == "shadow_40_50"
++    assert payload["candidates"][2]["candidate_reason"] == []
++    assert payload["candidates"][2]["amount"] == 90_000_000
++
++
++def test_candidate_union_is_never_buyable_at_generation_time():
++    frame = pd.DataFrame(
++        [
++            {"code": "600000", "market": "sh", "price": 52.0, "opportunity_tags": ["trend_full"]},
++            {"code": "000001", "market": "sz", "price": 45.0, "opportunity_tags": ["shadow_watch"]},
++        ]
++    )
++
++    payload = build_candidate_union(
++        frame,
++        trade_date="2026-09-03",
++        observed_at="2026-09-03T13:45:00+08:00",
++        market_rows=5546,
++        funnel={"initial": 5546},
++    )
++
++    assert all(row["production_buyable"] is False for row in payload["candidates"])
++    assert all(row["buyable"] is False for row in payload["candidates"])
++    assert all(row["only_choose_one_eligible"] is False for row in payload["candidates"])
++
++
++def test_write_candidate_union_writes_utf8_json_atomically(tmp_path: Path, monkeypatch):
++    target = tmp_path / "candidate_union.json"
++    target.write_text('{"old": true}', encoding="utf-8")
++    payload = {
++        "schema_version": "1.0.0",
++        "trade_date": "2026-09-03",
++        "observed_at": "2026-09-03T13:45:00+08:00",
++        "market_rows": 1,
++        "funnel": {"initial": 1},
++        "candidates": [{"code": "600000", "name": "浦发银行"}],
++    }
++    replace_calls: list[tuple[Path, Path]] = []
++    original_replace = os.replace
++
++    def record_replace(source: str | os.PathLike[str], destination: str | os.PathLike[str]) -> None:
++        src_path = Path(source)
++        dst_path = Path(destination)
++        replace_calls.append((src_path, dst_path))
++        assert src_path.exists()
++        original_replace(src_path, dst_path)
++
++    monkeypatch.setattr("strategies.full_market_t1.os.replace", record_replace)
++
++    result = write_candidate_union(payload, target)
++
++    assert result == target
++    assert replace_calls == [(target.with_suffix(".tmp"), target)]
++    assert not target.with_suffix(".tmp").exists()
++    assert json.loads(target.read_text(encoding="utf-8")) == payload
+

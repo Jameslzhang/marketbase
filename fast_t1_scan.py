@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 import warnings
@@ -432,7 +433,98 @@ def compute_indicators_parallel(df: pd.DataFrame, daily_root: Path,
     return pd.DataFrame(records)
 
 
+def load_or_compute_indicators(
+    df: pd.DataFrame,
+    daily_root: Path,
+    today_str: str,
+    workers: int,
+    fast_dir: Path,
+) -> pd.DataFrame:
+    """复用同一交易日已算出的日线指标，缺失或损坏时安全地重算。"""
+    codes = df["code"].astype(str).str.zfill(6).tolist()
+    cache_path = fast_dir / f"indicators_{today_str}.csv"
+    cached = pd.DataFrame(columns=["code"])
+    if cache_path.is_file():
+        try:
+            cached = pd.read_csv(cache_path, dtype={"code": str})
+            cached["code"] = cached["code"].astype(str).str.zfill(6)
+            cached = cached.drop_duplicates("code", keep="last")
+        except (OSError, ValueError, KeyError, pd.errors.ParserError):
+            cached = pd.DataFrame(columns=["code"])
+
+    cached_codes = set(cached["code"])
+    missing_codes = set(codes) - cached_codes
+    if missing_codes:
+        computed = compute_indicators_parallel(
+            df[df["code"].astype(str).str.zfill(6).isin(missing_codes)],
+            daily_root,
+            today_str,
+            workers,
+        )
+        if not computed.empty:
+            computed["code"] = computed["code"].astype(str).str.zfill(6)
+            cached = pd.concat([cached, computed], ignore_index=True, sort=False)
+            cached = cached.drop_duplicates("code", keep="last")
+            fast_dir.mkdir(parents=True, exist_ok=True)
+            temporary_path = cache_path.with_suffix(".tmp")
+            cached.to_csv(temporary_path, index=False, encoding="utf-8")
+            os.replace(temporary_path, cache_path)
+    if cached.empty:
+        return cached
+    return cached.set_index("code").loc[[code for code in codes if code in set(cached["code"])]].reset_index()
+
+
 # ────────────────────────── 评分与买卖区（与 v2 口径一致） ──────────────────────────
+
+def full_market_context(frame: pd.DataFrame):
+    """Market/industry statistics before price or account-permission filters."""
+    codes = frame["code"].astype(str).str.zfill(6)
+    if codes.duplicated().any():
+        raise ValueError("duplicate market codes")
+    data = frame.copy()
+    data["change_pct"] = pd.to_numeric(data["change_pct"], errors="coerce")
+    data = data[np.isfinite(data["change_pct"]) & (pd.to_numeric(data["price"], errors="coerce") > 0)]
+    if "is_suspended" in data:
+        data = data[~data["is_suspended"].fillna(False).astype(bool)]
+    if data.empty:
+        raise ValueError("no valid market quotes")
+    data["industry"] = data.get("industry", pd.Series(index=data.index, dtype=str)).fillna("未知")
+    data["advancing"] = data["change_pct"] > 0
+    industries = data[~data["industry"].isin(["", "未知", "other"])].groupby("industry").agg(
+        change_pct=("change_pct", "mean"), advance_ratio=("advancing", "mean"), members=("code", "count")
+    ).sort_values("change_pct", ascending=False)
+    return {"advance_ratio": float(data["advancing"].mean()),
+            "median": float(data["change_pct"].median()), "valid_rows": len(data)}, industries
+
+
+def research_channels(row):
+    """Independent discovery only; never grants production execution eligibility."""
+    def number(key):
+        return pd.to_numeric(row.get(key, np.nan), errors="coerce")
+    price, ma20 = number("price"), number("ma20")
+    channels = []
+    if number("ma5") > number("ma10") > ma20:
+        channels.append("stable_pullback")
+    shadow = row.get("repeated_upper_shadow", False)
+    no_distribution = pd.notna(shadow) and not bool(shadow)
+    if (price >= ma20 and number("momentum_delta_1") > 0
+            and number("return_20d") > -.05 and number("change_pct") > 0
+            and number("rsi14") < 75 and no_distribution):
+        channels.append("trend_recovery")
+    if (price > ma20 and 3 <= number("change_pct") < 9.9
+            and number("volume_ratio") >= 1.5 and number("rps20") >= 70
+            and no_distribution):
+        channels.append("high_momentum")
+    return channels
+
+
+def industry_research_eligible(industry, industries, market_median):
+    if industry not in industries.index:
+        return False
+    row = industries.loc[industry]
+    return bool(row["change_pct"] > 0 or (
+        row["change_pct"] > market_median and row["advance_ratio"] >= .4))
+
 
 def calc_opportunity_score(row, ind_chg: pd.Series):
     score = 0
@@ -531,7 +623,7 @@ def render_html(ctx: dict) -> str:
             f'<span class="tag">{t}</span>' for t in (r["opportunity_tags"][:5] if detail else [])
         )
         risk = ",".join(r["tail_risk_tags"]) if r["tail_risk_tags"] else "—"
-        fast = ' <span class="tag fast">快速介入</span>' if r.get("fast_entry") else ""
+        fast = ' <span class="tag">仅研究</span>'
         extra = f"<td class='small'>{tags}</td>" if detail else f"<td>{risk}</td>"
         return (
             f"<tr><td>{r['code']}</td><td>{r['name']}</td>"
@@ -610,25 +702,23 @@ footer{{color:#999;font-size:12px;margin-top:28px}}
 <div style="font-size:13px;margin-top:6px">{ctx['byd']['text']}</div>
 </div></div>
 
-<h2>TOP 5 精选（含买卖区）</h2>
+<h2>TOP 5 研究线索（仅研究，参考价位未经执行确认）</h2>
 <table><tr><th>代码</th><th>名称</th><th>现价</th><th>涨跌</th><th>评分</th><th>RR</th><th>买区</th><th>保护位</th><th>禁追线</th><th>卖一</th><th>行业</th><th>标签</th></tr>
 {top5_rows}</table>
 
-<h2>正式候选（{ctx['n_official']} 只）</h2>
+<h2>优先研究池（{ctx['n_official']} 只）</h2>
 <table><tr><th>代码</th><th>名称</th><th>现价</th><th>涨跌</th><th>评分</th><th>RR</th><th>买区</th><th>保护位</th><th>禁追线</th><th>卖一</th><th>行业</th><th>尾部风险</th></tr>
 {official_rows}</table>
 
-<h2>条件观察（{ctx['n_watch']} 只）</h2>
+<h2>其他研究线索（{ctx['n_watch']} 只，含待否决复核）</h2>
 <table><tr><th>代码</th><th>名称</th><th>现价</th><th>涨跌</th><th>评分</th><th>风险项</th><th>RR</th><th>行业</th></tr>
 {watch_rows}</table>
 
 <h2>执行纪律</h2>
 <div class="note">
-① 仅在价格回踩<b>买区</b>时挂限价单介入，<b>禁追线</b>为硬边界，突破不追；
-② 评分 ≥85 标记"快速介入"的标的可不等深度回踩（仍不超过禁追线）；
-③ 尾盘 14:50 仍未进入买区则放弃当日该标的；
-④ 单只仓位 ≤8%，组合合计 ≤30%；跌破保护位无条件离场（T+1 次日执行）；
-⑤ 本报告为量化筛选结果，不构成投资建议。
+本快扫仅研究，不生成可执行买入指令。表中买卖区均为待审计的参考价位；
+须以同轮 full-market-t1 决策的执行分、分钟证据、通道、风险收益和可交易性检查为准。
+研究首选与可执行首选分别报告；分数高不能替代执行确认。量化筛选不保证收益。
 </div>
 <footer>MarketBase 快速扫描 · fast_t1_scan.py · {ctx['generated_at']}</footer>
 </div></body></html>"""
@@ -687,6 +777,7 @@ def main() -> int:
     log(f"① 快照就绪：{len(df)} 只 | {snap_source}{bj_info} | {t_snap:.1f}s")
     df, ind_source = ensure_industry(df, args.data_root)
     log(f"   行业字段：{ind_source}")
+    market_context, industry_context = full_market_context(df)
 
     # BYD 信号（基于完整快照，先取再过滤）
     byd_hit = df[df["code"].astype(str).str.zfill(6) == "002594"]
@@ -754,9 +845,8 @@ def main() -> int:
     log(f"② 硬过滤：{initial} -> {after_hard}" + "（仅主板 + 现价≥40；40–49.99 仅影子）")
 
     # ③ 市场环境（实时）
-    valid_chg = pd.to_numeric(df["change_pct"], errors="coerce").dropna()
-    market_advance_ratio = float((valid_chg > 0).mean())
-    market_median = float(valid_chg.median())
+    market_advance_ratio = market_context["advance_ratio"]
+    market_median = market_context["median"]
     if market_advance_ratio < 0.45:
         min_score, max_tail_risk, market_mode = 45, 1, "弱市模式"
     elif market_advance_ratio > 0.60:
@@ -765,7 +855,7 @@ def main() -> int:
         min_score, max_tail_risk, market_mode = 40, 1, "正常模式"
     log(f"③ 市场环境：上涨占比 {market_advance_ratio:.1%} | 中位数 {market_median:+.2f}% | {market_mode}")
 
-    ind_chg_full = df.groupby("industry")["change_pct"].mean().sort_values(ascending=False)
+    ind_chg_full = industry_context["change_pct"]
 
     # ④ 流动性过滤
     df = df[pd.to_numeric(df["amount"], errors="coerce") >= 50_000_000]
@@ -789,8 +879,9 @@ def main() -> int:
     # ⑦ 趋势过滤
     df["trend_aligned"] = (df["ma5"] > df["ma10"]) & (df["ma10"] > df["ma20"]) & (df["ma20"] > df["ma60"])
     df["trend_near"] = (df["ma5"] > df["ma10"]) & (df["ma10"] > df["ma20"])
-    df = df[df["trend_near"]]
-    log(f"⑦ 趋势过滤（MA5>MA10>MA20）：剩余 {len(df)} 只")
+    df["research_channels"] = df.apply(research_channels, axis=1)
+    df = df[df["research_channels"].map(bool)].copy()
+    log(f"⑦ 三通道独立初筛：剩余 {len(df)} 只（通道标签不代表可买）")
 
     # ⑧ 双轴评分 + 买卖区
     scores = df.apply(lambda r: calc_opportunity_score(r, ind_chg_full), axis=1)
@@ -799,19 +890,21 @@ def main() -> int:
     df["tail_risk_tags"] = df.apply(calc_tail_risk, axis=1)
     df["tail_risk_count"] = df["tail_risk_tags"].apply(len)
     df["industry_chg"] = df["industry"].map(ind_chg_full)
+    df["industry_advance_ratio"] = df["industry"].map(industry_context["advance_ratio"])
+    df["industry_relative_pct"] = df["industry_chg"] - market_median
+    df["industry_research_eligible"] = df["industry"].map(
+        lambda name: industry_research_eligible(name, industry_context, market_median))
     df = pd.concat([df, df.apply(calc_zones, axis=1)], axis=1)
 
     candidates = df[
         (df["opportunity_score"] >= min_score)
-        & (df["tail_risk_count"] <= max_tail_risk)
-        & (df["rr_ratio"] >= 1.5)
-        & (df["industry_chg"] > 0)
+        & df["industry_research_eligible"]
     ].sort_values("opportunity_score", ascending=False)
     production_candidates = candidates[pd.to_numeric(candidates["price"], errors="coerce") >= 50]
     official = production_candidates[
         (production_candidates["opportunity_score"] >= 55) & (production_candidates["tail_risk_count"] == 0)
     ].head(20).copy()
-    official["fast_entry"] = official["opportunity_score"] >= 85
+    official["fast_entry"] = False
     watch = production_candidates[~production_candidates.index.isin(official.index)].head(15)
     shadow_count = int((pd.to_numeric(candidates["price"], errors="coerce") < 50).sum())
     log(
@@ -830,7 +923,8 @@ def main() -> int:
                    "sell1_low", "sell1_high", "sell2_low", "sell2_high",
                    "rr_ratio", "rsi14", "rps20", "atr14_pct", "boll_position",
                    "trend_aligned", "return_5d", "return_20d", "ma11", "ma23",
-                   "momentum_delta_1", "momentum_delta_3", "repeated_upper_shadow"]
+                   "momentum_delta_1", "momentum_delta_3", "repeated_upper_shadow",
+                   "research_channels", "industry_advance_ratio", "industry_relative_pct"]
     out_df = production_candidates[[c for c in output_cols if c in production_candidates.columns]].copy()
     out_df["opportunity_tags"] = production_candidates["opportunity_tags"].apply(lambda x: "|".join(x))
     out_df["tail_risk_tags"] = production_candidates["tail_risk_tags"].apply(lambda x: "|".join(x))
@@ -854,6 +948,8 @@ def main() -> int:
         market_rows=initial,
         funnel=funnel_counts,
     )
+    candidate_union["selection_rule_version"] = "research_discovery_v4"
+    candidate_union["market_context"] = {**market_context, "scope": "full_market_before_selection"}
     write_candidate_union(candidate_union, candidate_union_path)
     log(f"候选并集: {candidate_union_path}")
 

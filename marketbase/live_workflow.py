@@ -83,6 +83,7 @@ def acquire_live_snapshot(
         )
 
     live = pd.DataFrame()
+    primary_source = "sina"
     primary_errors: list[str] = []
     used_attempts = 0
     for attempt in range(1, max(1, attempts) + 1):
@@ -94,6 +95,10 @@ def acquire_live_snapshot(
                     f"partial live snapshot rows={len(fetched)} required={min_rows}"
                 )
             live = fetched
+            primary_source = str(fetched.attrs.get("snapshot_source", primary_source))
+            source_errors = fetched.attrs.get("source_errors", [])
+            if isinstance(source_errors, list):
+                primary_errors.extend(str(error) for error in source_errors if str(error))
             break
         except Exception as exc:  # noqa: BLE001 - aggregate source diagnostics.
             primary_errors.append(str(exc))
@@ -116,7 +121,7 @@ def acquire_live_snapshot(
     if missing_markets:
         raise ValueError("live snapshot missing required markets: " + ", ".join(missing_markets))
     report: dict[str, object] = {
-        "primary_source": "sina",
+        "primary_source": primary_source,
         "reference_source": str(
             reference.attrs.get("snapshot_source", "efinance")
         ),

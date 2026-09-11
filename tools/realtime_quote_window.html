@@ -181,6 +181,26 @@
   .edit-foot .limit-tip { font-size: 11px; color: var(--warn); display: none; }
   .edit-foot .spacer { margin-left: auto; display: flex; gap: 8px; align-items: center; }
   .auto-wrap { font-size: 11px; color: var(--text-faint); display: flex; align-items: center; gap: 4px; margin-right: 6px; }
+  .sourcebar {
+    display: flex; align-items: center; justify-content: space-between; gap: 10px;
+    padding: 7px 14px; background: rgba(255,255,255,.025); border-bottom: 1px solid var(--panel-line);
+    color: var(--text-faint); font-size: 10px;
+  }
+  .sourcebar strong { color: var(--text-dim); font-weight: 500; }
+  @media (max-width: 920px) {
+    body { flex-wrap: wrap; align-items: flex-start; }
+    .quote-panel, .edit-panel { width: min(480px, calc(100vw - 32px)); }
+  }
+  @media (max-width: 560px) {
+    body { padding: 12px 8px; gap: 10px; }
+    .quote-panel, .edit-panel { width: calc(100vw - 16px); }
+    .titlebar { flex-wrap: wrap; }
+    .bj-coverage { order: 5; flex-basis: 100%; }
+    .upd { margin-left: auto; }
+    .list-head, .stock-row { grid-template-columns: 1fr 72px 72px 52px; padding-left: 10px; padding-right: 10px; }
+    .summary { grid-template-columns: repeat(3, 1fr); row-gap: 8px; }
+    .sourcebar { align-items: flex-start; flex-direction: column; gap: 2px; }
+  }
 </style>
 </head>
 <body>
@@ -197,6 +217,10 @@
     <button class="tbtn" id="btnSettings" title="编辑个股">⚙</button>
     <button class="tbtn" id="btnMin" title="最小化">—</button>
     <button class="tbtn close" id="btnClose" title="关闭">×</button>
+  </div>
+  <div class="sourcebar" aria-label="行情数据来源">
+    <strong id="dataSource">独立实时行情链路 · 尚未采集</strong>
+    <span>与全盘扫描的 T-1 日线指标分开</span>
   </div>
 
   <div id="panelBody">
@@ -220,7 +244,7 @@
       <div class="cell"><div class="k">更新时间</div><div class="v num" id="sumTime">—</div></div>
     </div>
 
-    <div class="notice" id="notice"></div>
+    <div class="notice" id="notice" aria-live="polite"></div>
   </div>
 </section>
 
@@ -555,6 +579,7 @@ async function refresh(manual) {
     state.lastFetchAt = new Date(); state.fetchFailedAt = null;
     state.bjCoverage = data.bj || null;
     renderBjCoverage(state.bjCoverage);
+    $("dataSource").textContent = `独立实时行情链路 · ${data.fetched_at || "已采集"}`;
     if (got > 0 && missing === 0) notice(`行情已更新 ${data.fetched_at}`, "ok");
     else if (got > 0) notice(`部分行情已更新（${missing} 只未找到/失败） ${data.fetched_at}`, "warn");
     else notice("本次未获取到任何行情", "bad");
@@ -564,6 +589,7 @@ async function refresh(manual) {
   } catch (e) {
     failed = true;
     state.fetchFailedAt = new Date();
+    $("dataSource").textContent = "独立实时行情链路 · 本次采集失败，保留最近有效数据";
     notice(`刷新失败 ${fmtClock(state.fetchFailedAt)}：${e.message}（保留最近一次有效行情）`, "bad");
     updateConn();
   } finally {
@@ -575,6 +601,12 @@ async function refresh(manual) {
   }
 }
 function fmtClock(d) { return d.toTimeString().slice(0, 8); }
+async function desktopWindowAction(action) {
+  const api = window.pywebview && window.pywebview.api;
+  if (!api || typeof api.window_action !== "function") return false;
+  await api.window_action(action);
+  return true;
+}
 
 function updateConn() {
   // 红：最近一次刷新失败；黄：数据延迟或部分缺失；绿：正常（需求 4.1）
@@ -737,11 +769,13 @@ function suggestKeydown(e) {
 function bind() {
   $("btnRefresh").addEventListener("click", () => refresh(true));
   $("btnSettings").addEventListener("click", () => openEditor(true));
-  $("btnMin").addEventListener("click", () => {
+  $("btnMin").addEventListener("click", async () => {
+    if (await desktopWindowAction("minimize")) return;
     const body = $("panelBody");
     body.style.display = body.style.display === "none" ? "" : "none";
   });
-  $("btnClose").addEventListener("click", () => {
+  $("btnClose").addEventListener("click", async () => {
+    if (await desktopWindowAction("close")) return;
     window.close();
     notice("浏览器限制无法自动关闭，请手动关闭本页", "warn");
   });

@@ -58,6 +58,24 @@ def _is_daily_cache_fresh(latest_date: str, observed_at: datetime) -> bool:
     if after_close:
         return days_behind == 0
     return days_behind <= 1
+
+
+def _exclude_unsettled_current_day_bar(frame: pd.DataFrame, observed_at: datetime) -> pd.DataFrame:
+    """Keep intraday strategy inputs anchored to the last settled daily bar.
+
+    Some providers expose a mutable current-day bar before the 15:00 close.
+    That bar must not enter the T-1 cache, indicators, or quality audit.
+    """
+    from datetime import timedelta, timezone
+    from marketbase.trade_calendar import is_trading_day
+
+    local = observed_at.astimezone(timezone(timedelta(hours=8)))
+    if local.hour >= _MARKET_CLOSE_HOUR or not is_trading_day(local):
+        return frame
+    dates = pd.to_datetime(frame["date"], errors="coerce")
+    return frame.loc[dates.dt.date < local.date()].reset_index(drop=True)
+
+
 _COLUMN_ALIASES = {
     "date": ("date", "日期", "交易日期", "trade_date", "day"),
     "open": ("open", "开盘"),
@@ -234,75 +252,90 @@ def collect_daily_universe(
             existing = _read_existing_cache(cache_path, code)
             if existing is not None:
                 existing_frame, existing_meta = existing
-                latest_str = str(existing_frame["date"].iloc[-1])
-                try:
-                    latest_date = datetime.strptime(latest_str, "%Y-%m-%d").date()
-                    days_behind = (observed_dt.date() - latest_date).days
-                except ValueError:
-                    days_behind = 999
-
-                if _is_daily_cache_fresh(latest_str, observed_dt):
-                    requested_lb = int(existing_meta.get("requested_lookback", 0))
-                    if requested_lb >= lookback:
-                        # cache is fresh AND has enough lookback — reuse without any network call
-                        indicators = _compute_indicators_safe(existing_frame, observed_dt)
-                        actual_rows = len(existing_frame)
-                        with _lock:
-                            cache_hit_count += 1
-                            cached_src = str(existing_meta["source"])
-                            source_counts[cached_src] = source_counts.get(cached_src, 0) + 1
-                            _mark_completed(completed_codes, failed_codes, code)
-                            indicators_list.append({"code": code, **indicators})
-                            latest_date_distribution[latest_str] = latest_date_distribution.get(latest_str, 0) + 1
-                            latest_date_by_code[code] = latest_str
-                            if actual_rows < lookback:
-                                short_history.append({"code": code, "actual_rows": actual_rows, "reason": "short_history"})
-                            _track_indicator_quality(code, actual_rows, indicators, indicator_insufficient)
-                        return _FetchResult(
-                            code=code, source=cached_src, error="",
-                            indicators=indicators,
-                            actual_rows=actual_rows,
-                            latest_date=latest_str,
-                        )
-                    # cache date is fresh but lookback insufficient — fall through to full fetch for backfill
-                elif days_behind <= 5:
-                    # slightly stale — fetch tail only, then merge
+                filtered_existing = _exclude_unsettled_current_day_bar(existing_frame, observed_dt)
+                if filtered_existing.empty:
+                    existing = None
+                elif len(filtered_existing) != len(existing_frame):
+                    existing_frame = filtered_existing
+                    _write_cache_entry(
+                        cache_path, code, existing_frame, trading_date, lookback,
+                        str(existing_meta["source"]),
+                        _normalize_source_errors(existing_meta.get("source_errors")),
+                    )
+                if existing is not None:
+                    latest_str = str(existing_frame["date"].iloc[-1])
                     try:
-                        tail = fetcher(code, lookback_days=days_behind + 3, source="auto", retries=2)
-                        tail_frame = _normalize_history(tail, lookback)
-                        merged = _merge_frames(existing_frame, tail_frame, lookback)
-                        actual_rows = len(merged)
-                        latest_str = str(merged["date"].iloc[-1])
-                        actual_source = str(tail.attrs.get("daily_source") or "").strip()
-                        if not actual_source:
-                            raise ValueError("daily source is missing")
-                        source_errors = _normalize_source_errors(tail.attrs.get("source_errors"))
-                        _write_cache_entry(cache_path, code, merged, trading_date, lookback, actual_source, source_errors)
-                        indicators = _compute_indicators_safe(merged, observed_dt)
-                        with _lock:
-                            success_count += 1
-                            source_counts[actual_source] = source_counts.get(actual_source, 0) + 1
-                            _mark_completed(completed_codes, failed_codes, code)
-                            indicators_list.append({"code": code, **indicators})
-                            latest_date_distribution[latest_str] = latest_date_distribution.get(latest_str, 0) + 1
-                            latest_date_by_code[code] = latest_str
-                            if actual_rows < lookback:
-                                short_history.append({"code": code, "actual_rows": actual_rows, "reason": "short_history"})
-                            _track_indicator_quality(code, actual_rows, indicators, indicator_insufficient)
-                        return _FetchResult(
-                            code=code, source=actual_source, error="",
-                            indicators=indicators,
-                            actual_rows=actual_rows,
-                            latest_date=latest_str,
-                        )
-                    except Exception:
-                        # tail fetch failed — fall through to full fetch
-                        pass
+                        latest_date = datetime.strptime(latest_str, "%Y-%m-%d").date()
+                        days_behind = (observed_dt.date() - latest_date).days
+                    except ValueError:
+                        days_behind = 999
+
+                    if _is_daily_cache_fresh(latest_str, observed_dt):
+                        requested_lb = int(existing_meta.get("requested_lookback", 0))
+                        if requested_lb >= lookback:
+                            # cache is fresh AND has enough lookback — reuse without any network call
+                            indicators = _compute_indicators_safe(existing_frame, observed_dt)
+                            actual_rows = len(existing_frame)
+                            with _lock:
+                                cache_hit_count += 1
+                                cached_src = str(existing_meta["source"])
+                                source_counts[cached_src] = source_counts.get(cached_src, 0) + 1
+                                _mark_completed(completed_codes, failed_codes, code)
+                                indicators_list.append({"code": code, **indicators})
+                                latest_date_distribution[latest_str] = latest_date_distribution.get(latest_str, 0) + 1
+                                latest_date_by_code[code] = latest_str
+                                if actual_rows < lookback:
+                                    short_history.append({"code": code, "actual_rows": actual_rows, "reason": "short_history"})
+                                _track_indicator_quality(code, actual_rows, indicators, indicator_insufficient)
+                            return _FetchResult(
+                                code=code, source=cached_src, error="",
+                                indicators=indicators,
+                                actual_rows=actual_rows,
+                                latest_date=latest_str,
+                            )
+                        # cache date is fresh but lookback insufficient — fall through to full fetch for backfill
+                    elif days_behind <= 5:
+                        # slightly stale — fetch tail only, then merge
+                        try:
+                            tail = fetcher(code, lookback_days=days_behind + 3, source="auto", retries=2)
+                            tail_frame = _exclude_unsettled_current_day_bar(
+                                _normalize_history(tail, lookback), observed_dt
+                            )
+                            merged = _merge_frames(existing_frame, tail_frame, lookback)
+                            actual_rows = len(merged)
+                            latest_str = str(merged["date"].iloc[-1])
+                            actual_source = str(tail.attrs.get("daily_source") or "").strip()
+                            if not actual_source:
+                                raise ValueError("daily source is missing")
+                            source_errors = _normalize_source_errors(tail.attrs.get("source_errors"))
+                            _write_cache_entry(cache_path, code, merged, trading_date, lookback, actual_source, source_errors)
+                            indicators = _compute_indicators_safe(merged, observed_dt)
+                            with _lock:
+                                success_count += 1
+                                source_counts[actual_source] = source_counts.get(actual_source, 0) + 1
+                                _mark_completed(completed_codes, failed_codes, code)
+                                indicators_list.append({"code": code, **indicators})
+                                latest_date_distribution[latest_str] = latest_date_distribution.get(latest_str, 0) + 1
+                                latest_date_by_code[code] = latest_str
+                                if actual_rows < lookback:
+                                    short_history.append({"code": code, "actual_rows": actual_rows, "reason": "short_history"})
+                                _track_indicator_quality(code, actual_rows, indicators, indicator_insufficient)
+                            return _FetchResult(
+                                code=code, source=actual_source, error="",
+                                indicators=indicators,
+                                actual_rows=actual_rows,
+                                latest_date=latest_str,
+                            )
+                        except Exception:
+                            # tail fetch failed — fall through to full fetch
+                            pass
 
         # --- full fetch (fallback) ---
         try:
             history = fetcher(code, lookback_days=lookback, source="auto", retries=2)
-            frame = _normalize_history(history, lookback)
+            frame = _exclude_unsettled_current_day_bar(
+                _normalize_history(history, lookback), observed_dt
+            )
             actual_rows = len(frame)
             latest_str = str(frame["date"].iloc[-1])
             actual_source = str(history.attrs.get("daily_source") or "").strip()

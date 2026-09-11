@@ -15,6 +15,7 @@ import strategies.full_market_t1 as full_market_t1
 from strategies.full_market_t1 import (
     CandidateObjectiveData,
     build_candidate_union,
+    build_full_market_decision,
     build_minute_evidence,
     orchestrate_full_market_t1,
     candidate_data_status,
@@ -200,6 +201,7 @@ def _base_snapshot(**overrides):
 
 def _base_daily(**overrides):
     payload = {
+        "last_trade_date": "2026-09-02",
         "ma5": 9.9,
         "ma10": 9.8,
         "ma11": 9.8,
@@ -324,6 +326,138 @@ def _handoff(candidates, objectives, *, market=None):
         "objective_by_code": objectives,
         "market": market or _market(),
     }
+
+
+def test_v4_research_first_choice_survives_missing_minutes_without_buyable():
+    candidate = _candidate(research_channels=["trend_recovery"])
+    objective = _objective(snapshot_overrides={"price": 52.0, "code": "600000"})
+    objective = CandidateObjectiveData(objective.snapshot, objective.daily, objective.industry, None, {}, {})
+    handoff = _handoff([candidate], {"600000": objective}, market=_market(critical_ready=False, static_ready=True))
+    decision = build_full_market_decision(handoff, handoff, decision_at=datetime(2026, 9, 3, 13, 45, tzinfo=TZ_SHANGHAI))
+    assert decision.get("research_first_choice") == "600000"
+    assert decision["only_choose_one"] is None
+    choice = decision["research_choices"][0]
+    assert choice["buyable"] is False
+    assert choice["execution_status"] == "data_insufficient"
+    assert "buy_low" not in choice
+
+
+def test_v4_no_research_recommendation_when_static_data_is_not_ready():
+    candidate = _candidate()
+    handoff = _handoff([candidate], {"600000": _objective()}, market=_market(critical_ready=False, static_ready=False))
+    decision = build_full_market_decision(handoff, handoff, decision_at=datetime(2026, 9, 3, 13, 45, tzinfo=TZ_SHANGHAI))
+    assert decision.get("research_choices") == []
+    assert decision.get("research_first_choice") is None
+
+
+def test_v4_static_handoff_without_minutes_produces_research_only(tmp_path):
+    candidate = _candidate(research_channels=["trend_recovery"])
+    paths = _write_full_market_inputs(tmp_path, candidates=[candidate],
+        daily_rows=[{"code": "600000", **_base_daily()}],
+        manifest_overrides={"quality_status": "data_ready_static_only", "intraday_minutes_path": None},
+        data_audit_payload={"quality_status": "data_ready_static_only", "trade_date": "2026-09-03"})
+    decision = orchestrate_full_market_t1(data_root=paths["data_root"], candidate_union_path=paths["candidate_union_path"],
+        decision_at=datetime(2026, 9, 3, 13, 45, tzinfo=TZ_SHANGHAI), output_path=tmp_path / "decision.json")
+    assert decision["only_choose_one"] is None
+    assert decision["research_first_choice"] == "600000"
+
+
+def test_v4_explicit_handoff_ignores_changed_latest_pointer(tmp_path):
+    paths = _write_full_market_inputs(tmp_path, candidates=[_candidate()])
+    frozen = tmp_path / "frozen_handoff.json"
+    latest = paths["data_root"] / "latest_codex_input.json"
+    frozen.write_bytes(latest.read_bytes())
+    latest.write_text("{}", encoding="utf-8")
+    decision = orchestrate_full_market_t1(data_root=paths["data_root"], candidate_union_path=paths["candidate_union_path"],
+        handoff_path=frozen, decision_at=datetime(2026, 9, 3, 13, 45, tzinfo=TZ_SHANGHAI), output_path=tmp_path / "out.json")
+    assert decision["input_metadata"]["declared_inputs"]["handoff_manifest"]["path"] == str(frozen.resolve())
+
+
+@pytest.mark.parametrize("minute_path", [None, "missing-minutes.parquet"])
+def test_v6_partial_without_minutes_preserves_static_research(tmp_path, minute_path):
+    paths = _write_full_market_inputs(tmp_path, candidates=[_candidate()],
+        daily_rows=[{"code": "600000", **_base_daily()}],
+        manifest_overrides={"quality_status": "partial", "intraday_minutes_path": minute_path},
+        data_audit_payload={"quality_status": "partial", "trade_date": "2026-09-03",
+                            "quality_reason_codes": ["classification_coverage_insufficient"]})
+    decision = orchestrate_full_market_t1(data_root=paths["data_root"],
+        candidate_union_path=paths["candidate_union_path"],
+        decision_at=datetime(2026, 9, 3, 13, 45, tzinfo=TZ_SHANGHAI),
+        output_path=tmp_path / "decision.json")
+    assert decision["research_first_choice"] == "600000"
+    assert decision["only_choose_one"] is None
+    assert decision["research_status"] == "ready"
+    assert decision["execution_status"] == "data_insufficient"
+    assert decision["pipeline_status"] == "completed"
+    assert decision["market"]["minute_input_issue"] in {"minute_path_null", "minute_file_missing"}
+
+
+def test_v6_post_close_never_allows_entry_with_complete_evidence():
+    handoff = _handoff([_candidate()], {"600000": _objective(snapshot_overrides={"price": 52})},
+                       market=_market(static_ready=True))
+    decision = build_full_market_decision(handoff, handoff,
+        decision_at=datetime(2026, 9, 3, 15, 30, tzinfo=TZ_SHANGHAI))
+    assert decision["only_choose_one"] is None
+    assert all(row["buyable"] is False for row in decision["audit_rows"])
+    assert decision["research_first_choice"] == "600000"
+    assert decision["execution_status"] == "closed_session"
+    assert "closed_session" in decision["audit_rows"][0]["reason_codes"]
+
+
+@pytest.mark.parametrize("last_date", [None, "2026-09-01", "2026-09-04"])
+def test_v6_unknown_stale_or_future_daily_is_not_research(tmp_path, last_date):
+    paths = _write_full_market_inputs(tmp_path, candidates=[_candidate()],
+        daily_rows=[{"code": "600000", **_base_daily(last_trade_date=last_date)}])
+    decision = orchestrate_full_market_t1(data_root=paths["data_root"],
+        candidate_union_path=paths["candidate_union_path"],
+        decision_at=datetime(2026, 9, 3, 13, 45, tzinfo=TZ_SHANGHAI),
+        output_path=tmp_path / "decision.json")
+    assert decision["research_choices"] == []
+    assert decision["only_choose_one"] is None
+    assert decision["market"]["daily_input_issues"]["600000"] == "daily_date_invalid"
+
+
+def test_v6_old_snapshot_cannot_remain_buyable():
+    handoff = _handoff([_candidate()], {"600000": _objective(snapshot_overrides={"price": 52})},
+                       market=_market(static_ready=True))
+    decision = build_full_market_decision(handoff, handoff,
+        decision_at=datetime(2026, 9, 3, 14, 0, tzinfo=TZ_SHANGHAI))
+    assert decision["only_choose_one"] is None
+    assert decision["research_first_choice"] == "600000"
+    assert decision["execution_status"] == "stale_snapshot"
+
+
+@pytest.mark.parametrize("failed", [False, True])
+def test_v6_t_minus_one_staleness_only_allows_research_not_execution(tmp_path, failed):
+    paths = _write_full_market_inputs(tmp_path, candidates=[_candidate(is_untradable=True)],
+        daily_rows=[{"code": "600000", **_base_daily()}],
+        manifest_overrides={"quality_status": "partial", "intraday_minutes_path": None},
+        data_audit_payload={"quality_status": "partial", "trade_date": "2026-09-03",
+            "daily_staleness": {"stale_codes": ["600000"], "failed_codes": ["600000"] if failed else [],
+                                "unknown_quote_time_codes": []}})
+    decision = orchestrate_full_market_t1(data_root=paths["data_root"],
+        candidate_union_path=paths["candidate_union_path"],
+        decision_at=datetime(2026, 9, 3, 13, 45, tzinfo=TZ_SHANGHAI), output_path=tmp_path / "decision.json")
+    assert decision["research_first_choice"] == (None if failed else "600000")
+    assert decision["only_choose_one"] is None
+    assert all(not row["buyable"] for row in decision["audit_rows"])
+
+
+def test_v4_validator_rejects_research_as_buyable():
+    payload = _valid_decision_payload_for_validation()
+    payload["research_choices"] = [{"code": "600000", "buyable": True, "research_only": True}]
+    payload["research_first_choice"] = "600000"
+    with pytest.raises(ValueError, match="research"):
+        full_market_t1._validate_decision_payload(payload)
+
+
+def test_v4_research_prefers_valid_watch_then_opportunity_not_raw_execution_score():
+    rows = [
+        _candidate(code="600001", opportunity_score=80, execution_score=60, decision="reject"),
+        _candidate(code="600002", opportunity_score=70, execution_score=40, decision="conditional_watch"),
+    ]
+    choices = full_market_t1.build_research_choices(rows, {r["code"]: _objective(snapshot_overrides={"price":52}) for r in rows}, static_ready=True)
+    assert choices[0]["code"] == "600002"
 
 
 def _minute_rows():
@@ -1121,7 +1255,7 @@ def _write_full_market_inputs(
     pd.DataFrame(
         daily_rows
         or [
-            {"code": row["code"], "ma5": 51.0, "ma10": 50.8, "ma20": 50.2, "turnover_rate": 3.0}
+            {"code": row["code"], "last_trade_date": "2026-09-02", "ma5": 51.0, "ma10": 50.8, "ma20": 50.2, "turnover_rate": 3.0}
             for row in candidates
         ]
     ).to_csv(run_dir / "daily_indicators.csv", index=False, encoding="utf-8")
@@ -1405,6 +1539,7 @@ def test_orchestrate_full_market_t1_uses_only_declared_inputs_for_metadata_and_c
 
     declared_inputs = decision["input_metadata"]["declared_inputs"]
     assert set(declared_inputs) == {
+        "handoff_manifest",
         "market_snapshot_path",
         "daily_indicators_path",
         "classification_map_path",
