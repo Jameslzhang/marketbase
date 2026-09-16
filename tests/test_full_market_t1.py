@@ -914,6 +914,35 @@ def test_buyable_requires_both_scores_and_all_hard_gates():
     ]
 
 
+def test_missing_circulating_market_value_keeps_research_but_blocks_execution():
+    candidate = _candidate(opportunity_score=70.0, price_band="production")
+    candidate["circ_mv_missing"] = True
+    candidate.update({"buy_low": 51.2, "buy_high": 51.8, "chase_line": 52.3, "protect": 50.6})
+    objective = _objective(snapshot_overrides={"code": candidate["code"], "price": candidate["price"]})
+
+    row = full_market_t1.evaluate_candidate(candidate, objective, _market())
+    decision = full_market_t1.build_full_market_decision(
+        _handoff([candidate], {candidate["code"]: objective}),
+        {"critical_ready": True, "objective_by_code": {candidate["code"]: objective}, "market": _market()},
+        decision_at=datetime(2026, 9, 3, 13, 45, tzinfo=TZ_SHANGHAI),
+    )
+
+    assert row["decision"] == "data_insufficient"
+    assert row["buyable"] is False
+    assert "circ_mv_missing" in row["reason_codes"]
+    assert decision["only_choose_one"] is None
+    choice = decision["research_choices"][0]
+    assert choice["code"] == candidate["code"]
+    assert choice["buyable"] is False
+    assert choice["research_only"] is True
+    assert choice["research_reference"] == {
+        "buy_low": 51.2,
+        "buy_high": 51.8,
+        "no_chase_price": 52.3,
+        "protect": 50.6,
+    }
+
+
 def test_frozen_v2_channel_mapping_is_explicit_and_complete():
     assert full_market_t1.LIFECYCLE_TO_FROZEN_CHANNEL == {
         "strong_pullback_reclaim": "stable_pullback",

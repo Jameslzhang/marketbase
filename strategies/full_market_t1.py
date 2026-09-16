@@ -1492,6 +1492,9 @@ def evaluate_candidate(candidate: Mapping, objective: CandidateObjectiveData, ma
         objective_row.industry,
         objective_row.minute,
     )
+    if candidate_row.get("circ_mv_missing") is True:
+        candidate_status = "data_insufficient"
+        _append_unique(reason_codes, "circ_mv_missing")
     if (
         objective_row.minute is None
         and minute_evidence.get("vwap") is None
@@ -1676,6 +1679,16 @@ def build_research_choices(rows, objectives, *, static_ready):
             continue
         if _coerce_float(snapshot.get("change_pct")) is None or abs(float(snapshot["change_pct"])) >= 9.9:
             continue
+        research_reference = {
+            key: value
+            for key, value in {
+                "buy_low": _first_float(row.get("buy_low"), row.get("buy_zone_lower")),
+                "buy_high": _first_float(row.get("buy_high"), row.get("buy_zone_upper")),
+                "no_chase_price": _first_float(row.get("no_chase_price"), row.get("chase_line")),
+                "protect": _first_float(row.get("protect"), row.get("protection_price")),
+            }.items()
+            if value is not None
+        }
         choices.append({
             "rank": len(choices) + 1, "code": code, "name": name, "price": price,
             "industry": objective.industry.get("industry", row.get("industry")),
@@ -1687,6 +1700,9 @@ def build_research_choices(rows, objectives, *, static_ready):
             "candidate_reason": row.get("candidate_reason", []),
             "daily_reference_date": daily.get("last_trade_date", daily.get("last_date")),
             "research_t_minus_one_cache": daily.get("research_t_minus_one_cache", False),
+            # Keep indicative zones nested so they remain traceable research context,
+            # never an executable plan carried by the research choice itself.
+            "research_reference": research_reference,
             "research_only": True, "buyable": False,
         })
         if len(choices) == 3:

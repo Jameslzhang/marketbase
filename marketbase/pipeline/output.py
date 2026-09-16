@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import asdict
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 import math
@@ -205,12 +205,15 @@ def _write_outputs_and_manifest(
             classification_coverage["supply_chain_coverage"] = float(filled_sc.sum()) / max(total, 1)
         classification_coverage["total"] = total
 
-    trade_date = _effective_daily_date(observed_at)
+    # Observation date and most recent settled daily bar are different intraday.
+    trade_date = observed_at.astimezone(timezone(timedelta(hours=8))).date().isoformat()
+    daily_as_of_date = _effective_daily_date(observed_at)
     audit = {
         "schema_version": 1,
         "quality_status": quality_status,
         "quality_reason_codes": quality_reason_codes,
         "trade_date": trade_date,
+        "daily_as_of_date": daily_as_of_date,
         "session_phase": session_phase,
         "observed_at": observed_at.isoformat(),
         "coverage_gaps": _json_value(market_audit.get("coverage_gaps", [])),

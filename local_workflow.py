@@ -440,12 +440,15 @@ def _run_intraday_minutes_collection(
             start_time=start_time,
             batch_size=30,
             batch_interval=0.3,
-            max_workers=4,
+            max_workers=8,
+            resume=False,
             observed_at=observed_at,
             progress=emit,
             session_phase=session_phase,
         )
         emit(f"intraday OHLCV: {audit.get('actual_minutes', 0)}min x {audit.get('codes_with_data', 0)}stocks")
+        if not audit.get("codes_with_data"):
+            return {**audit, "status": "failed", "error": "No current-round minute rows; old shared file was not published"}, None
         # 复制到 run_dir
         import shutil
         dest_path = run_dir / "intraday_minutes.parquet"
@@ -486,25 +489,42 @@ def format_decision_result(decision: Mapping) -> str:
     rows = decision.get("research_choices", [])
     first = next((r for r in rows if r.get("code") == decision.get("research_first_choice")), None)
     first_text = f"{first['name']}（{first['code']}）" if first else "无；本轮未生成合格研究对象"
+    if not first and decision.get("research_status") == "data_not_ready":
+        first_text = "未生成；基础数据不完整，不能判断是否存在合格研究对象"
     lines = ["## 本轮分析结果", "", f"研究首选：{first_text}",
+             f"研究前三：{'见下表，最多三只' if rows else '未生成'}",
              f"执行首选：{decision.get('only_choose_one') or '无，当前不新开仓'}", "",
              f"数据时点：{decision.get('observed_at', '未知')}；决策时点：{decision.get('decision_at', '未知')}。",
              "", "|研究排名|股票|快照价格|机会分|执行分|预埋参考区|确认/禁追|未通过条件/状态|",
              "|---|---|---:|---:|---:|---|---|---|"]
     reasons = {"minute_missing": "缺分钟", "vwap_missing": "缺VWAP",
                "execution_score_data_missing": "执行数据不足", "stale_snapshot": "快照过期",
-               "closed_session": "已收盘", "global_data_not_ready": "执行证据未就绪"}
+               "closed_session": "已收盘", "global_data_not_ready": "执行证据未就绪",
+               "circ_mv_missing": "缺流通市值"}
+    blockers = []
+    if decision.get("research_status") == "data_not_ready":
+        blockers.append("基础数据未通过研究就绪校验")
+    if decision.get("execution_status") == "stale_snapshot":
+        blockers.append(f"至少一份输入快照超过120秒；最老快照年龄{decision.get('snapshot_age_seconds', '未知')}秒")
+    if decision.get("execution_status") == "closed_session":
+        blockers.append("已收盘，仅供下一交易日核验")
+    if blockers:
+        lines[5:5] = ["具体阻碍：" + "；".join(blockers), ""]
     for r in rows:
         why = "、".join(reasons.get(code, code) for code in r.get("reason_codes", [])) or r.get("execution_status", "待核验")
         score = r.get("execution_score")
-        buy_low, buy_high = r.get("buy_low"), r.get("buy_high")
+        reference = r.get("research_reference")
+        reference = reference if isinstance(reference, Mapping) else {}
+        buy_low = reference.get("buy_low", r.get("buy_low"))
+        buy_high = reference.get("buy_high", r.get("buy_high"))
         planned_zone = (
             f"{buy_low}-{buy_high}（仅研究参考）"
             if buy_low is not None and buy_high is not None
             else "待生成"
         )
         confirm = r.get("confirm_price") or r.get("confirmation_price")
-        chase = r.get("chase_line") or r.get("no_chase_price")
+        chase = (reference.get("no_chase_price") or r.get("chase_line")
+                 or r.get("no_chase_price"))
         confirm_text = f"确认 {confirm}; 禁追 {chase}" if confirm is not None or chase is not None else "分钟确认后再定"
         lines.append(f"|{r.get('rank')}|{r.get('name')}（{r.get('code')}）|{r.get('price')}|{r.get('opportunity_score')}|{score if score is not None else '缺失'}|{planned_zone}|{confirm_text}|{why}|")
     lines.extend(["", "研究排序不等于买入建议；快照过期时仅供原时点研究。",
@@ -522,7 +542,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     _ = parser.add_argument("--force-refresh", action="store_true", default=False,
                         help="强制重新拉取日线数据，忽略缓存")
     subcommands = parser.add_subparsers(dest="command")
-    _ = subcommands.add_parser("collect")
+    collect_parser = subcommands.add_parser("collect")
+    _ = collect_parser.add_argument("--handoff-output", type=Path)
     request_parser = subcommands.add_parser("fulfill-request")
     _ = request_parser.add_argument("--request", type=Path)
     _ = request_parser.add_argument("--response", type=Path)
@@ -634,6 +655,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             phase=getattr(arguments, "phase", None),
             force_refresh=getattr(arguments, "force_refresh", False),
         )
+        handoff_output = getattr(arguments, "handoff_output", None)
+        if handoff_output is not None:
+            handoff = json.loads(Path(summary["latest_input_path"]).read_text(encoding="utf-8"))
+            if (Path(handoff["run_dir"]).resolve() != Path(summary["run_dir"]).resolve()
+                    or handoff["generated_at"] != summary["generated_at"]):
+                raise ValueError("handoff belongs to another collection round")
+            _write_json_atomic(handoff_output, handoff)
         print(
             "客观数据采集完成: "
             + f"市场行数={summary['market_rows']} "

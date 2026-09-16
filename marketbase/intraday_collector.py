@@ -55,6 +55,7 @@ def collect_intraday_minutes(
     priority_codes: set[str] | None = None,
     observed_at: datetime | None = None,
     session_phase: str = "post_close",
+    resume: bool = True,
 ) -> dict[str, object]:
     """采集全市场 1 分钟 OHLCV 数据，写入 intraday_1m.parquet.
 
@@ -82,7 +83,7 @@ def collect_intraday_minutes(
     # 按 target_date 过滤，避免跨日跳过重新拉取
     already_collected: set[str] = set()
     existing_rows: list[dict[str, Any]] = []  # pyright: ignore[reportExplicitAny]
-    if path.exists() and path.stat().st_size > 0:
+    if resume and path.exists() and path.stat().st_size > 0:
         try:
             existing_df = pd.read_parquet(path)
             if not existing_df.empty and "code" in existing_df.columns:
@@ -116,6 +117,7 @@ def collect_intraday_minutes(
     empty_count = 0
     errors: list[dict[str, str]] = []
     start_ts = time.monotonic()
+    not_attempted = 0
 
     # Progress tracking
     progress_path = path.parent / "batch_progress.json"
@@ -132,7 +134,7 @@ def collect_intraday_minutes(
                 code = futures[future]
                 try:
                     result = future.result()
-                    if result is None:
+                    if result is None or result == []:
                         empty_count += 1
                     elif isinstance(result, list):
                         for r in result:
@@ -166,6 +168,10 @@ def collect_intraday_minutes(
             "batch_errors": errors[:200],  # which codes failed and why
         })
 
+        if success_count == 0 and failure_count == processed:
+            not_attempted = remaining - processed
+            emit(f"minute source failed for all {processed} attempted stocks; stopped, {not_attempted} not attempted")
+            break
         if batch_start + batch_size * max_workers < remaining:
             time.sleep(batch_interval)
 
@@ -177,6 +183,7 @@ def collect_intraday_minutes(
             "total_stocks": total,
             "success": 0,
             "failure": failure_count,
+            "not_attempted": not_attempted,
             "empty": empty_count,
             "rows": 0,
             "errors": errors[:50],
@@ -215,10 +222,7 @@ def _fetch_single_stock_minutes(
 
     返回 None 表示无数据，返回空列表表示解析失败.
     """
-    try:
-        raw_rows = fetch_tencent_minute_rows(code)
-    except Exception:
-        return []
+    raw_rows = fetch_tencent_minute_rows(code)
 
     if not raw_rows:
         return None

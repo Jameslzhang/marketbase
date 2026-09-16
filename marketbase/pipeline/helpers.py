@@ -15,9 +15,12 @@ import sys
 from pathlib import Path
 import tempfile
 import time
+import threading
 from typing import Any, Callable, IO, Mapping, cast
 
 import pandas as pd
+
+_LATEST_THREAD_LOCK = threading.Lock()
 
 # ── Windows / POSIX 文件锁 ───────────────────────────────────────────
 try:
@@ -239,20 +242,18 @@ def _write_json_atomic(path: Path, payload: object) -> None:
 
 
 def _publish_latest(path: Path, payload: Mapping[str, object]) -> bool:
-    import threading
-    _LATEST_THREAD_LOCK = threading.Lock()
     generated_at = _parse_generated_at(payload.get("generated_at"))
     if generated_at is None:
         raise ValueError("latest handoff generated_at is invalid")
     path.parent.mkdir(parents=True, exist_ok=True)
     lock_path = path.with_name(f".{path.name}.lock")
     with _LATEST_THREAD_LOCK, lock_path.open("a+b") as lock_handle:
-        if lock_handle.seek(0, os.SEEK_END) == 0:
-            _ = lock_handle.write(b"\0")
-            lock_handle.flush()
         _ = lock_handle.seek(0)
         _lock_file(lock_handle)
         try:
+            if lock_handle.seek(0, os.SEEK_END) == 0:
+                _ = lock_handle.write(b"\0")
+                lock_handle.flush()
             existing_at = _existing_generated_at(path)
             if existing_at is not None and generated_at < existing_at:
                 return False

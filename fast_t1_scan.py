@@ -443,12 +443,30 @@ def load_or_compute_indicators(
     """复用同一交易日已算出的日线指标，缺失或损坏时安全地重算。"""
     codes = df["code"].astype(str).str.zfill(6).tolist()
     cache_path = fast_dir / f"indicators_{today_str}.csv"
+    provenance_path = cache_path.with_suffix(".sources.json")
+    from marketbase.daily_collector import _INDICATOR_FORMULA_VERSION
+    signatures = {}
+    for code in codes:
+        try:
+            stat = (daily_root / f"{code}.json").stat()
+            signatures[code] = [_INDICATOR_FORMULA_VERSION, stat.st_mtime_ns, stat.st_size]
+        except OSError:
+            signatures[code] = [_INDICATOR_FORMULA_VERSION, None, None]
+    try:
+        provenance = json.loads(provenance_path.read_text(encoding="utf-8"))
+        if not isinstance(provenance, dict):
+            provenance = {}
+    except (OSError, ValueError):
+        provenance = {}
     cached = pd.DataFrame(columns=["code"])
     if cache_path.is_file():
         try:
             cached = pd.read_csv(cache_path, dtype={"code": str})
             cached["code"] = cached["code"].astype(str).str.zfill(6)
             cached = cached.drop_duplicates("code", keep="last")
+            cached = cached.loc[cached["code"].map(
+                lambda code: code in signatures and provenance.get(code) == signatures[code]
+            ).astype(bool)]
         except (OSError, ValueError, KeyError, pd.errors.ParserError):
             cached = pd.DataFrame(columns=["code"])
 
@@ -469,6 +487,9 @@ def load_or_compute_indicators(
             temporary_path = cache_path.with_suffix(".tmp")
             cached.to_csv(temporary_path, index=False, encoding="utf-8")
             os.replace(temporary_path, cache_path)
+            temporary_sources = provenance_path.with_suffix(".tmp")
+            temporary_sources.write_text(json.dumps(signatures), encoding="utf-8")
+            os.replace(temporary_sources, provenance_path)
     if cached.empty:
         return cached
     return cached.set_index("code").loc[[code for code in codes if code in set(cached["code"])]].reset_index()
@@ -739,6 +760,7 @@ def main() -> int:
     parser.add_argument("--fresh", type=int, default=15, help="快照复用新鲜度（分钟），0=强制新采")
     parser.add_argument("--workers", type=int, default=24, help="并行线程数")
     parser.add_argument("--html", type=Path, default=None, help="HTML 报告输出路径")
+    parser.add_argument("--candidate-output", type=Path, help="本轮固定候选交接路径")
     parser.add_argument("--realtime", type=str, default=None, help="仅查询指定股票实时行情，代码用逗号或空格分隔")
     args = parser.parse_args()
 
@@ -859,7 +881,12 @@ def main() -> int:
 
     # ④ 流动性过滤
     df = df[pd.to_numeric(df["amount"], errors="coerce") >= 50_000_000]
-    df = df[pd.to_numeric(df["circ_mv"], errors="coerce") >= 3_000_000_000]
+    circ_mv = pd.to_numeric(df["circ_mv"], errors="coerce")
+    # Tencent fallback quotes do not expose circulating market value.  Keep the
+    # row for research, but label it so the decision layer can fail closed for
+    # execution instead of treating an unknown value as a failed liquidity test.
+    df["circ_mv_missing"] = circ_mv.isna()
+    df = df[df["circ_mv_missing"] | (circ_mv >= 3_000_000_000)]
     tor = pd.to_numeric(df["turnover_rate"], errors="coerce")
     df = df[(tor >= 0.5) & (tor <= 15.0)]
     log(f"④ 流动性过滤：剩余 {len(df)} 只")
@@ -880,7 +907,7 @@ def main() -> int:
     df["trend_aligned"] = (df["ma5"] > df["ma10"]) & (df["ma10"] > df["ma20"]) & (df["ma20"] > df["ma60"])
     df["trend_near"] = (df["ma5"] > df["ma10"]) & (df["ma10"] > df["ma20"])
     df["research_channels"] = df.apply(research_channels, axis=1)
-    df = df[df["research_channels"].map(bool)].copy()
+    df = df.loc[df["research_channels"].map(bool).astype(bool)].copy()
     log(f"⑦ 三通道独立初筛：剩余 {len(df)} 只（通道标签不代表可买）")
 
     # ⑧ 双轴评分 + 买卖区
@@ -893,8 +920,9 @@ def main() -> int:
     df["industry_advance_ratio"] = df["industry"].map(industry_context["advance_ratio"])
     df["industry_relative_pct"] = df["industry_chg"] - market_median
     df["industry_research_eligible"] = df["industry"].map(
-        lambda name: industry_research_eligible(name, industry_context, market_median))
-    df = pd.concat([df, df.apply(calc_zones, axis=1)], axis=1)
+        lambda name: industry_research_eligible(name, industry_context, market_median)).astype(bool)
+    if not df.empty:
+        df = pd.concat([df, df.apply(calc_zones, axis=1)], axis=1)
 
     candidates = df[
         (df["opportunity_score"] >= min_score)
@@ -938,7 +966,7 @@ def main() -> int:
     }
     candidate_observed_at = _snapshot_observed_iso8601(snap_obs or observed_at)
     candidate_dt = pd.to_datetime(candidate_observed_at)
-    candidate_union_path = fast_dir / (
+    candidate_union_path = args.candidate_output or fast_dir / (
         f"candidate_union_{candidate_dt.strftime('%Y%m%d')}_{candidate_dt.strftime('%H%M')}.json"
     )
     candidate_union = build_candidate_union(

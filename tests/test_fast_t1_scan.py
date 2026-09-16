@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 
 import pandas as pd
+import pytest
 
 import fast_t1_scan
 
@@ -67,6 +68,11 @@ def test_indicator_cache_reuses_same_trading_day_results(tmp_path: Path, monkeyp
     assert calls == [["000001", "600000"]]
     assert first["code"].tolist() == ["000001", "600000"]
     assert second["ma5"].tolist() == [1.0, 2.0]
+    daily = tmp_path / "daily"
+    daily.mkdir()
+    (daily / "000001.json").write_text("corrected source")
+    fast_t1_scan.load_or_compute_indicators(universe, daily, "2026-09-01", 4, tmp_path / "fast")
+    assert calls[-1] == ["000001"]
 
 
 def test_indicator_cache_only_computes_codes_missing_from_cache(tmp_path: Path, monkeypatch):
@@ -80,7 +86,7 @@ def test_indicator_cache_only_computes_codes_missing_from_cache(tmp_path: Path, 
 
     def compute(frame, daily_root, today_str, workers):
         calls.append(frame["code"].tolist())
-        return pd.DataFrame([{"code": "600000", "ma5": 2.0, "avg5d": 20.0}])
+        return pd.DataFrame([{"code": code, "ma5": 2.0, "avg5d": 20.0} for code in frame["code"]])
 
     monkeypatch.setattr(fast_t1_scan, "compute_indicators_parallel", compute)
 
@@ -88,7 +94,8 @@ def test_indicator_cache_only_computes_codes_missing_from_cache(tmp_path: Path, 
         universe, tmp_path / "daily", "2026-09-01", 4, fast_dir
     )
 
-    assert calls == [["600000"]]
+    # A legacy CSV without source provenance must not be trusted.
+    assert calls == [["000001", "600000"]]
     assert result["code"].tolist() == ["000001", "600000"]
 
 
@@ -156,7 +163,9 @@ def test_query_realtime_quotes_bj_failure_does_not_hide_shsz():
     assert result.loc[result["code"] == "920001", "realtime_status"].iat[0] == "获取失败"
 
 
-def test_main_writes_candidate_union_with_scan_metadata(tmp_path: Path, monkeypatch):
+@pytest.mark.parametrize("empty_reason", [None, "liquidity", "channels", "circ_mv_missing"])
+@pytest.mark.parametrize("explicit_output", [False, True])
+def test_main_writes_candidate_union_with_scan_metadata(tmp_path: Path, monkeypatch, empty_reason, explicit_output):
     fixed_now = fast_t1_scan.datetime(2026, 9, 3, 13, 45, 0, tzinfo=fast_t1_scan.CN_TZ)
     html_path = tmp_path / "report.html"
     observed_label = fixed_now.strftime("%Y-%m-%d %H:%M:%S")
@@ -178,8 +187,8 @@ def test_main_writes_candidate_union_with_scan_metadata(tmp_path: Path, monkeypa
                 "price": price,
                 "change_pct": 2.0,
                 "volume": 1_000_000,
-                "amount": 80_000_000,
-                "circ_mv": 4_000_000_000,
+                "amount": 0 if empty_reason == "liquidity" else 80_000_000,
+                "circ_mv": None if empty_reason == "circ_mv_missing" else 4_000_000_000,
                 "turnover_rate": 1.2,
                 "industry": "银行",
                 "concepts": "金融",
@@ -266,6 +275,8 @@ def test_main_writes_candidate_union_with_scan_metadata(tmp_path: Path, monkeypa
         return path
 
     monkeypatch.setattr(fast_t1_scan, "datetime", FixedDateTime)
+    if empty_reason == "channels":
+        monkeypatch.setattr(fast_t1_scan, "research_channels", lambda row: [])
     monkeypatch.setattr(fast_t1_scan, "get_snapshot", fake_snapshot)
     monkeypatch.setattr(fast_t1_scan, "ensure_industry", lambda df, data_root: (df, "fixture-industry"))
     monkeypatch.setattr(fast_t1_scan, "compute_indicators_parallel", fake_compute_indicators)
@@ -290,7 +301,7 @@ def test_main_writes_candidate_union_with_scan_metadata(tmp_path: Path, monkeypa
             "0",
             "--html",
             str(html_path),
-        ],
+        ] + (["--candidate-output", str(tmp_path / "fixed_union.json")] if explicit_output else []),
     )
 
     rc = fast_t1_scan.main()
@@ -299,6 +310,11 @@ def test_main_writes_candidate_union_with_scan_metadata(tmp_path: Path, monkeypa
     assert captured["payload"]["trade_date"] == "2026-09-03"
     assert captured["payload"]["observed_at"] == "2026-09-03T13:45:00+08:00"
     assert captured["payload"]["market_rows"] == 4
+    if empty_reason in {"liquidity", "channels"}:
+        assert captured["payload"]["candidates"] == []
+        assert captured["payload"]["funnel"]["candidates"] == 0
+        assert html_path.exists()
+        return
     assert captured["payload"]["funnel"] == {
         "initial": 4,
         "after_hard": 3,
@@ -306,12 +322,14 @@ def test_main_writes_candidate_union_with_scan_metadata(tmp_path: Path, monkeypa
         "official": 1,
         "watch": 0,
     }
-    assert captured["path"] == tmp_path / "cache" / "fast" / "candidate_union_20260903_1345.json"
+    assert captured["path"] == (tmp_path / "fixed_union.json" if explicit_output else tmp_path / "cache" / "fast" / "candidate_union_20260903_1345.json")
     by_code = {row["code"]: row for row in captured["payload"]["candidates"]}
     assert "600039" not in by_code
     assert by_code["600040"]["price_band"] == "shadow_40_50"
     assert by_code["600049"]["price_band"] == "shadow_40_50"
     assert by_code["600050"]["price_band"] == "production"
+    if empty_reason == "circ_mv_missing":
+        assert all(row["circ_mv_missing"] is True for row in by_code.values())
     lifecycle_fields = {
         "ma11",
         "ma23",

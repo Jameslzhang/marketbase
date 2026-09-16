@@ -18,6 +18,20 @@ from marketbase.pipeline.quality import _apply_degradation_flags, _compute_minut
 NOW = datetime(2026, 7, 22, 9, 43, 30, tzinfo=timezone(timedelta(hours=8)))
 
 
+@pytest.mark.parametrize("wrong_round", [False, True])
+def test_collect_cli_exports_only_its_own_handoff(tmp_path, monkeypatch, wrong_round):
+    run_dir = tmp_path / "run"
+    latest = tmp_path / "latest_codex_input.json"
+    latest.write_text(json.dumps({"run_dir": str(tmp_path / "other" if wrong_round else run_dir), "generated_at": NOW.isoformat()}))
+    monkeypatch.setattr(local_workflow, "run_collection", lambda **_: {
+        "run_dir": str(run_dir), "generated_at": NOW.isoformat(), "latest_input_path": str(latest),
+        "market_rows": 1, "daily_success": 1, "daily_failure": 0})
+    target = tmp_path / "fixed" / "handoff.json"
+    code = local_workflow.main(["--data-root", str(tmp_path), "collect", "--handoff-output", str(target)])
+    assert code == (1 if wrong_round else 0)
+    assert target.exists() is not wrong_round
+
+
 def _market_result(cache_path: Path) -> SimpleNamespace:
     frame = pd.DataFrame(
         [
@@ -208,6 +222,9 @@ def test_run_collection_collects_every_market_code_and_writes_only_protocol_file
                 "performance_timings.json",
             }
     assert summary["market_rows"] == 3
+    assert summary["trade_date"] == "2026-07-22"
+    audit = json.loads((run_dir / "data_audit.json").read_text(encoding="utf-8"))
+    assert audit["daily_as_of_date"] == "2026-07-21"
     assert summary["daily_success"] == 0  # 2 stale（latest_date 2026-03-17 ≠ trade_date 2026-07-21）
     assert summary["daily_failure"] == 1
     assert summary["indicator_rows"] == 2
@@ -701,6 +718,50 @@ def test_lunch_break_does_not_append_a_synthetic_minute_snapshot(tmp_path, monke
     assert audit["session_phase"] == "lunch_break"
     assert audit["minute_continuity"]["status"] == "not_requested"
     assert audit["minute_continuity"]["reason"] == "session_not_tradable"
+
+
+def test_result_does_not_call_missing_research_data_no_opportunity():
+    body = local_workflow.format_decision_result({"research_status": "data_not_ready",
+        "execution_status": "stale_snapshot", "research_choices": [], "only_choose_one": None})
+    assert "基础数据不完整" in body
+    assert "研究前三：未生成" in body
+
+
+def test_result_renders_nested_research_reference_as_non_executable_context():
+    body = local_workflow.format_decision_result({
+        "research_status": "ready",
+        "execution_status": "stale_snapshot",
+        "pipeline_status": "completed",
+        "research_first_choice": "600000",
+        "only_choose_one": None,
+        "research_choices": [{
+            "rank": 1, "code": "600000", "name": "浦发银行", "price": 52.0,
+            "opportunity_score": 70.0, "execution_score": 0.0,
+            "execution_status": "data_insufficient", "reason_codes": ["circ_mv_missing"],
+            "research_reference": {
+                "buy_low": 51.2, "buy_high": 51.8,
+                "no_chase_price": 52.3, "protect": 50.6,
+            },
+        }],
+    })
+
+    assert "51.2-51.8（仅研究参考）" in body
+    assert "禁追 52.3" in body
+    assert "缺流通市值" in body
+
+
+def test_empty_minute_refresh_does_not_publish_old_shared_file(tmp_path, monkeypatch):
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    (cache / "intraday_1m.parquet").write_bytes(b"old data")
+    run = tmp_path / "run"
+    run.mkdir()
+    monkeypatch.setattr(local_workflow, "collect_intraday_minutes", lambda *a, **k: {"status": "empty", "rows": 0})
+    audit, path = local_workflow._run_intraday_minutes_collection(
+        ["600000"], cache, run, datetime.fromisoformat("2026-09-15T13:45:00+08:00"), lambda _: None, "intraday_1400")
+    assert audit["status"] == "failed"
+    assert path is None
+    assert not (run / "intraday_minutes.parquet").exists()
 
 
 def test_minute_snapshot_audits_run_local_parquet_before_shared_cache(tmp_path):

@@ -23,6 +23,27 @@ from marketbase.intraday_collector import collect_intraday_minutes
 from marketbase.intraday_collector import _generate_trading_minutes
 
 
+def test_production_refreshes_existing_same_day_minutes(tmp_path):
+    path = tmp_path / "minutes.parquet"
+    with patch("marketbase.intraday_collector.fetch_tencent_minute_rows", side_effect=[
+        _make_minute_data(end="09:35"), _make_minute_data(end="09:40")
+    ]) as fetch:
+        for _ in range(2):
+            collect_intraday_minutes(["600000"], path, target_date="2026-09-15",
+                start_time="09:30", max_workers=1, batch_interval=0, resume=False)
+    assert fetch.call_count == 2
+    assert pd.to_datetime(pd.read_parquet(path)["timestamp"]).max().minute == 40
+
+
+def test_complete_source_outage_stops_after_first_batch(tmp_path):
+    with patch("marketbase.intraday_collector.fetch_tencent_minute_rows", side_effect=ConnectionError("service unavailable")) as fetch:
+        audit = collect_intraday_minutes([f"{n:06d}" for n in range(20)], tmp_path / "minutes.parquet",
+            batch_size=2, max_workers=1, batch_interval=0, resume=False)
+    assert fetch.call_count == 2
+    assert audit["failure"] == 2
+    assert audit["not_attempted"] == 18
+
+
 # ── Mock 数据生成工具 ──
 
 def _make_minute_data(
@@ -166,10 +187,9 @@ class TestIntradayMock:
                 max_workers=2,
             )
 
-        # 注意：_fetch_single_stock_minutes 捕获异常后返回 []（空列表），
-        # collect_intraday_minutes 将 [] 视为成功（无数据）
-        assert audit["success"] == 2
-        assert audit["failure"] == 0
+        assert audit["success"] == 1
+        assert audit["failure"] == 1
+        assert "timeout" in audit["errors"][0]["error"]
         assert audit["codes_with_data"] == 1  # 只有 000002 有实际数据
 
     def test_sparse_data(self, tmp_path: Path):

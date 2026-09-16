@@ -18,6 +18,24 @@ from marketbase.daily_collector import (
 NOW = datetime(2026, 7, 22, 9, 30, tzinfo=timezone.utc)
 
 
+@pytest.mark.parametrize("now,latest,expected", [
+    ("2026-09-14T13:45:00+08:00", "2026-09-11", True),
+    ("2026-09-14T13:45:00+08:00", "2026-09-10", False),
+    ("2026-09-14T15:30:00+08:00", "2026-09-11", False),
+    ("2026-09-14T15:30:00+08:00", "2026-09-14", True),
+    ("2026-10-08T10:00:00+08:00", "2026-09-30", True),
+    ("2026-09-15T01:30:00+00:00", "2026-09-14", True),
+])
+def test_cache_freshness_uses_settled_trading_day(monkeypatch, now, latest, expected):
+    from datetime import date
+    from marketbase import trade_calendar
+    from marketbase.daily_collector import _is_daily_cache_fresh
+    days = {date.fromisoformat(d) for d in ["2026-09-10", "2026-09-11", "2026-09-14", "2026-09-15", "2026-09-30", "2026-10-08"]}
+    monkeypatch.setattr(trade_calendar, "_calendar_dates", days)
+    monkeypatch.setattr(trade_calendar, "_calendar_loaded", True)
+    assert _is_daily_cache_fresh(latest, datetime.fromisoformat(now)) is expected
+
+
 def _history(rows: int = 3, *, source: str = "fixture") -> pd.DataFrame:
     dates = pd.date_range("2026-07-01", periods=rows, freq="D")
     result = pd.DataFrame(
@@ -467,7 +485,7 @@ def test_failure_is_isolated_and_reports_source_counts_and_neutral_errors(tmp_pa
     assert report.failure_count == 1
     assert report.pending_count == 0
     assert report.source_counts == {"sina": 1}
-    assert report.errors == {"000002": "数据数据数据数据数据 transport closed"}
+    assert report.errors == {"000002": "datadatadatadatadata transport closed"}
     assert all(term not in next(iter(report.errors.values())) for term in ("候选", "推荐", "买入", "卖出", "概率"))
 
 
@@ -581,14 +599,15 @@ def test_atomic_cache_and_checkpoint_write_failure_keeps_existing_files(tmp_path
     cache_path.write_text('{"old": "cache"}', encoding="utf-8")
     checkpoint_path.write_text('{"old": "checkpoint"}', encoding="utf-8")
 
-    original_replace = Path.replace
+    import os
+    original_replace = os.replace
 
     def fail_replace(self, target):
-        if self.suffix == ".tmp":
+        if Path(self).suffix == ".tmp":
             raise OSError("replace denied")
         return original_replace(self, target)
 
-    monkeypatch.setattr(Path, "replace", fail_replace)
+    monkeypatch.setattr(os, "replace", fail_replace)
     with pytest.raises(OSError, match="replace denied"):
         daily_collector._atomic_write_json(cache_path, {"new": "cache"})
     with pytest.raises(OSError, match="replace denied"):

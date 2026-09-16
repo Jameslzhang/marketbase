@@ -6,6 +6,7 @@ from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime
+import hashlib
 import json
 from pathlib import Path
 import threading
@@ -28,36 +29,28 @@ _SCHEMA_VERSION = 1
 _DAILY_COLUMNS = ("date", "open", "high", "low", "close", "volume", "amount")
 _MIN_INDICATOR_ROWS = 50  # 指标计算所需最少历史行数
 _MARKET_CLOSE_HOUR = 15  # A 股收盘时间 15:00 北京时间
+_INDICATOR_FORMULA_VERSION = "settled-v1:" + hashlib.sha256(
+    Path(__file__).with_name("indicators.py").read_bytes()
+).hexdigest()
 
 
 def _is_daily_cache_fresh(latest_date: str, observed_at: datetime) -> bool:
-    """根据当前时间判断日线缓存是否足够新鲜。
-
-    - 收盘后（北京时间 ≥15:00 且为交易日）：最新日期必须等于今天。
-    - 交易时段中或开盘前：最新日期与今天相差不超过 1 天（昨天数据可用）。
-    - 非交易日（周末）：最新日期与今天相差不超过 2 天（上周五数据可用）。
-    """
+    """Match the last settled trading day, including weekends and long holidays."""
     from datetime import timezone, timedelta
 
     try:
         latest = datetime.strptime(latest_date, "%Y-%m-%d").date()
     except ValueError:
         return False
-    today = observed_at.date()
-    days_behind = (today - latest).days
-    if days_behind < 0:
-        return False  # future date in cache
+    return latest == _settled_trading_day(observed_at)
 
+
+def _settled_trading_day(observed_at: datetime):
+    from datetime import timezone, timedelta
     local = observed_at.astimezone(timezone(timedelta(hours=8)))
-    after_close = local.hour >= _MARKET_CLOSE_HOUR
-
-    from marketbase.trade_calendar import is_trading_day
-
-    if not is_trading_day(local):  # weekend or holiday
-        return days_behind <= 2
-    if after_close:
-        return days_behind == 0
-    return days_behind <= 1
+    from marketbase.trade_calendar import latest_trading_day
+    cutoff = local.date() if local.hour >= _MARKET_CLOSE_HOUR else local.date() - timedelta(days=1)
+    return latest_trading_day(cutoff)
 
 
 def _exclude_unsettled_current_day_bar(frame: pd.DataFrame, observed_at: datetime) -> pd.DataFrame:
@@ -152,7 +145,7 @@ def collect_daily_universe(
     """Collect daily histories concurrently with incremental update.
 
     When *incremental* is True (default), existing caches are reused if their
-    latest date is within 1 day of today; only the tail is fetched if the cache
+    latest date is the last settled trading day; only the tail is fetched if the cache
     is stale by a few days.  A full refetch is only triggered when the cache is
     missing or more than 5 days stale.
     """
@@ -161,8 +154,16 @@ def collect_daily_universe(
         raise ValueError("lookback must be between 1 and 260")
 
     cache_dir = Path(cache_root)
+    memo_path = cache_dir / "_indicator_memo.json"
+    try:
+        indicator_memo = json.loads(memo_path.read_text(encoding="utf-8"))
+        if not isinstance(indicator_memo, dict):
+            indicator_memo = {}
+    except (OSError, ValueError):
+        indicator_memo = {}
     checkpoint = Path(checkpoint_path)
     observed_at = _coerce_now(now)
+    settled_date = _settled_trading_day(observed_at).isoformat()
     trading_date = observed_at.date().isoformat()
     started_at = observed_at.isoformat()
     start_monotonic = time.monotonic()
@@ -270,11 +271,11 @@ def collect_daily_universe(
                     except ValueError:
                         days_behind = 999
 
-                    if _is_daily_cache_fresh(latest_str, observed_dt):
+                    if latest_str == settled_date:
                         requested_lb = int(existing_meta.get("requested_lookback", 0))
                         if requested_lb >= lookback:
                             # cache is fresh AND has enough lookback — reuse without any network call
-                            indicators = _compute_indicators_safe(existing_frame, observed_dt)
+                            indicators = _cached_indicators(existing_frame, observed_dt, cache_path, memory=indicator_memo)
                             actual_rows = len(existing_frame)
                             with _lock:
                                 cache_hit_count += 1
@@ -309,7 +310,7 @@ def collect_daily_universe(
                                 raise ValueError("daily source is missing")
                             source_errors = _normalize_source_errors(tail.attrs.get("source_errors"))
                             _write_cache_entry(cache_path, code, merged, trading_date, lookback, actual_source, source_errors)
-                            indicators = _compute_indicators_safe(merged, observed_dt)
+                            indicators = _cached_indicators(merged, observed_dt, cache_path, memory=indicator_memo)
                             with _lock:
                                 success_count += 1
                                 source_counts[actual_source] = source_counts.get(actual_source, 0) + 1
@@ -343,7 +344,7 @@ def collect_daily_universe(
                 raise ValueError("daily source is missing")
             source_errors = _normalize_source_errors(history.attrs.get("source_errors"))
             _write_cache_entry(cache_path, code, frame, trading_date, lookback, actual_source, source_errors)
-            indicators = _compute_indicators_safe(frame, observed_dt)
+            indicators = _cached_indicators(frame, observed_dt, cache_path, memory=indicator_memo)
             with _lock:
                 success_count += 1
                 source_counts[actual_source] = source_counts.get(actual_source, 0) + 1
@@ -391,7 +392,7 @@ def collect_daily_universe(
         existing_frame, existing_meta = existing
         latest_str = str(existing_frame["date"].iloc[-1])
         actual_rows = len(existing_frame)
-        indicators = _compute_indicators_safe(existing_frame, observed_at)
+        indicators = _cached_indicators(existing_frame, observed_at, cache_path, memory=indicator_memo)
         cached_src = str(existing_meta["source"])
         with _lock:
             cache_hit_count += 1
@@ -430,6 +431,10 @@ def collect_daily_universe(
                 completed_after_last_log = 0
 
     _write_checkpoint()
+    try:
+        _atomic_write_json(memo_path, indicator_memo)
+    except OSError:
+        pass
     _emit_progress()
 
     elapsed = max(time.monotonic() - start_monotonic, 0.0)
@@ -617,6 +622,36 @@ def _read_existing_cache(
         return None
     metadata = {key: value for key, value in payload.items() if key != "rows"}
     return frame, metadata
+
+
+def _cached_indicators(frame: pd.DataFrame, observed_at: datetime, cache_path: Path,
+                       *, memory: dict | None = None) -> dict[str, object]:
+    """Reuse only identical daily inputs, date/phase and indicator implementation.
+
+    Preserve calculated_at from the actual calculation; this is never a quote cache.
+    Cache I/O failure does not make usable price history unavailable.
+    """
+    from datetime import timedelta, timezone
+    local = observed_at.astimezone(timezone(timedelta(hours=8)))
+    digest = hashlib.sha256(pd.util.hash_pandas_object(frame, index=True).values.tobytes())
+    digest.update(str(tuple(frame.columns)).encode())
+    key = f"{_INDICATOR_FORMULA_VERSION}:{local.date()}:{local.hour >= 15}:{digest.hexdigest()}"
+    try:
+        cached = memory.get(cache_path.stem, {}) if memory is not None else json.loads(cache_path.read_text(encoding="utf-8"))
+        if cached.get("key") == key and isinstance(cached.get("indicators"), dict) and cached["indicators"]:
+            return cached["indicators"]
+    except (OSError, ValueError, AttributeError):
+        pass
+    result = _compute_indicators_safe(frame, local)
+    if result:
+        if memory is not None:
+            memory[cache_path.stem] = {"key": key, "indicators": result}
+            return result
+        try:
+            _atomic_write_json(cache_path, {"key": key, "indicators": result})
+        except OSError:
+            pass
+    return result
 
 
 def _compute_indicators_safe(
