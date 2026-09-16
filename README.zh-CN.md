@@ -1,5 +1,9 @@
 <div align="center">
 
+[English](README.md) | [简体中文](README.zh-CN.md)
+
+<br>
+
 # 📊 MarketBase
 
 **A 股客观数据采集管道**
@@ -8,16 +12,14 @@
 
 <br>
 
-[![Python](https://img.shields.io/badge/Python-3.12+-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://python.org)
-[![Tests](https://img.shields.io/badge/测试-211%20通过-34D058?style=for-the-badge&logo=pytest&logoColor=white)](https://github.com/Jameslzhang/marketbase)
-[![License](https://img.shields.io/badge/许可-MIT-586069?style=for-the-badge&logo=github&logoColor=white)](LICENSE)
+[![Python](https://img.shields.io/badge/Python-3.10+-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://python.org)
+[![Tests](https://img.shields.io/badge/测试-530%20通过-34D058?style=for-the-badge&logo=pytest&logoColor=white)](https://github.com/Jameslzhang/marketbase)
+[![License](https://img.shields.io/badge/许可-Apache--2.0-586069?style=for-the-badge&logo=github&logoColor=white)](LICENSE)
 [![Akshare](https://img.shields.io/badge/akshare-1.18-F7A81B?style=for-the-badge&logo=python&logoColor=white)](https://github.com/akshare/akshare)
 
 </div>
 
 <br>
-
----
 
 ## 🚀 快速开始
 
@@ -155,6 +157,43 @@ MA · RSI · MACD · ATR
 
 ---
 
+## ⚡ 扫描与定时任务
+
+除数据管道外，MarketBase 还内置全盘 T+1 快速扫描器和有界定时运行器：
+
+<table>
+<tr>
+<td width="50%" bgcolor="#f6f8fa">
+
+**🔎 快速 T+1 扫描** — `fast_t1_scan.py`
+
+一条命令完成全盘扫描：快照 → 指标（量比单遍并入）→ 评分 → HTML 报告。
+跳过重量级的审计/分类阶段以提速；当日快照在新鲜窗口内直接复用。
+
+```bash
+python fast_t1_scan.py            # 快照 15 分钟内复用
+python fast_t1_scan.py --fresh 0  # 强制重新采集
+```
+
+</td>
+<td width="50%" bgcolor="#f6f8fa">
+
+**⏰ 定时管道** — `marketbase/scheduled_pipeline.py`
+
+将 采集 → 固定交接 → 扫描 → 决策 → 报告 封装为单个有界作业：
+每阶段超时控制、非交易日预检、每次运行落盘 `result.json` 证据。
+可配合 Windows 任务计划 / cron 使用。
+
+```bash
+python -m marketbase.scheduled_pipeline --slot 1530
+```
+
+</td>
+</tr>
+</table>
+
+---
+
 ## ⚡ 命令
 
 <table>
@@ -213,9 +252,14 @@ python local_workflow.py fulfill-request
 ├── 📊 market_snapshot.csv
 ├── 📊 market_snapshot.json
 ├── 📈 daily_indicators.csv
+├── 📊 index_data.csv
+├── 📈 industry_agg.csv
+├── 📈 market_breadth.json
 ├── 🗂️ classification_map.csv
+├── ⏱️ intraday_minutes.parquet
 ├── 🔍 data_audit.json
 ├── 📋 manifest.json
+├── 📋 run_status.json
 └── 📝 workflow.log
 ```
 
@@ -223,8 +267,16 @@ python local_workflow.py fulfill-request
 <td width="40%">
 
 > 🔗 `latest_codex_input.json`
-> 始终指向最新完成的
-> 数据交接。
+> 指向最新完成的数据交接。
+>
+> 🔗 `latest_full_ready.json`
+> 指向数据质量完整（full）的最新运行。
+>
+> 🔗 `latest_static_ready.json`
+> 指向静态数据齐备（static）的最新运行。
+>
+> 🔗 `latest_complete.json`
+> 兼容旧版 —— 始终指向最新可用运行。
 
 </td>
 </tr>
@@ -272,7 +324,7 @@ python local_workflow.py fulfill-request
 ```bash
 python -m pytest -q
 ```
-<sub>**211** 个测试</sub>
+<sub>**530** 个测试</sub>
 
 </td>
 <td bgcolor="#f0fff0" align="center">
@@ -298,7 +350,13 @@ python -m build
 
 <div align="center">
 
-📖 [SKILL.md](SKILL.md) — Agent 接口说明 &nbsp;|&nbsp; 🇬🇧 [English](README.md)
+📖 [SKILL.md](SKILL.md) — Agent 接口说明
+
+<br>
+
+[English](README.md) | [简体中文](README.zh-CN.md)
+
+<br>
 
 <sub>本项目仅提供数据采集和中性派生指标，不构成投资建议。</sub>
 

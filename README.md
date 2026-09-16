@@ -1,5 +1,9 @@
 <div align="center">
 
+[English](README.md) | [简体中文](README.zh-CN.md)
+
+<br>
+
 # 📊 MarketBase
 
 **A-Share Objective Data Pipeline**
@@ -8,16 +12,14 @@
 
 <br>
 
-[![Python](https://img.shields.io/badge/Python-3.12+-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://python.org)
-[![Tests](https://img.shields.io/badge/Tests-312%20passed-34D058?style=for-the-badge&logo=pytest&logoColor=white)](https://github.com/Jameslzhang/marketbase)
-[![License](https://img.shields.io/badge/License-MIT-586069?style=for-the-badge&logo=github&logoColor=white)](LICENSE)
+[![Python](https://img.shields.io/badge/Python-3.10+-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://python.org)
+[![Tests](https://img.shields.io/badge/Tests-530%20passed-34D058?style=for-the-badge&logo=pytest&logoColor=white)](https://github.com/Jameslzhang/marketbase)
+[![License](https://img.shields.io/badge/License-Apache--2.0-586069?style=for-the-badge&logo=github&logoColor=white)](LICENSE)
 [![Akshare](https://img.shields.io/badge/akshare-1.18-F7A81B?style=for-the-badge&logo=python&logoColor=white)](https://github.com/akshare/akshare)
 
 </div>
 
 <br>
-
----
 
 ## 🚀 Quick Start
 
@@ -155,6 +157,45 @@ Snapshot + daily cache
 
 ---
 
+## ⚡ Scan & Scheduled Jobs
+
+Beyond the data pipeline, MarketBase ships a fast full-market T+1 scanner and a
+bounded scheduled runner:
+
+<table>
+<tr>
+<td width="50%" bgcolor="#f6f8fa">
+
+**🔎 Fast T+1 Scan** — `fast_t1_scan.py`
+
+Single-command full-market scan: snapshot → indicators (volume ratio in one
+pass) → scoring → HTML report. Skips heavy audit/classification stages for
+speed; reuses fresh snapshots within the day.
+
+```bash
+python fast_t1_scan.py            # reuse snapshot < 15 min old
+python fast_t1_scan.py --fresh 0  # force fresh snapshot
+```
+
+</td>
+<td width="50%" bgcolor="#f6f8fa">
+
+**⏰ Scheduled Pipeline** — `marketbase/scheduled_pipeline.py`
+
+Runs collection → fixed handoffs → scan → decision → report as one bounded
+job with per-stage timeouts, non-trading-day preflight and per-run
+`result.json` evidence. Pair with Windows Task Scheduler / cron.
+
+```bash
+python -m marketbase.scheduled_pipeline --slot 1530
+```
+
+</td>
+</tr>
+</table>
+
+---
+
 ## ⚡ Commands
 
 <table>
@@ -213,10 +254,10 @@ Every successful run produces a timestamped directory with these artifacts:
 ├── 📊 market_snapshot.csv
 ├── 📊 market_snapshot.json
 ├── 📈 daily_indicators.csv
-├── � index_data.csv
+├── 📊 index_data.csv
 ├── 📈 industry_agg.csv
 ├── 📈 market_breadth.json
-├── �️ classification_map.csv
+├── 🗂️ classification_map.csv
 ├── ⏱️ intraday_minutes.parquet
 ├── 🔍 data_audit.json
 ├── 📋 manifest.json
@@ -285,7 +326,7 @@ Every successful run produces a timestamped directory with these artifacts:
 ```bash
 python -m pytest -q
 ```
-<sub>**312** tests</sub>
+<sub>**530** tests</sub>
 
 </td>
 <td bgcolor="#f0fff0" align="center">
@@ -311,7 +352,13 @@ python -m build
 
 <div align="center">
 
-📖 [SKILL.md](SKILL.md) — Agent contract &nbsp;|&nbsp; 🇨🇳 [中文说明](README.zh-CN.md)
+📖 [SKILL.md](SKILL.md) — Agent contract
+
+<br>
+
+[English](README.md) | [简体中文](README.zh-CN.md)
+
+<br>
 
 <sub>This software supplies data collection and neutral indicators only. Not investment advice.</sub>
 
