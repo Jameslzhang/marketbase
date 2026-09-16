@@ -8,3 +8,6 @@ data/
 *.log
 .venv/
 local/
+_scratch/
+.pytest_cache/
+.ruff_cache/
