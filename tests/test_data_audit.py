@@ -1,7 +1,10 @@
 from datetime import datetime, timedelta, timezone
 
+from datetime import datetime, timedelta, timezone
+
 import pandas as pd
 
+import marketbase.data_audit as audit_module
 from marketbase.data_audit import audit_market_snapshot
 
 
@@ -118,3 +121,20 @@ def test_audit_marks_each_expected_market_that_is_missing():
     audit = audit_market_snapshot(frame, observed_at=OBSERVED_AT)
 
     assert audit["coverage_gaps"] == ["missing_market_sz", "missing_market_bj"]
+
+
+def test_freshness_summary_reuses_parsed_quote_times(monkeypatch):
+    calls = 0
+
+    def fake_freshness(_quote_time, _observed_at, _status):
+        nonlocal calls
+        calls += 1
+        return "current", "intraday"
+
+    monkeypatch.setattr(audit_module, "_quote_freshness", fake_freshness)
+    frame = pd.DataFrame({"quote_time": ["10:00:00", "10:00:00", "10:00:00"]})
+
+    result = audit_module._freshness_summary(frame, OBSERVED_AT, "live_session")
+
+    assert result == {"current|intraday": 3}
+    assert calls == 1

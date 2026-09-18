@@ -10,6 +10,24 @@ import pytest
 import fast_t1_scan
 
 
+def test_targets_use_nearest_observed_resistance_not_atr_extension():
+    zones = fast_t1_scan.calc_zones(pd.Series({
+        "price": 100., "atr14": 4., "boll_lower": 80.,
+        "boll_upper": 120., "high": 102., "high_20d": 108.,
+    }))
+    assert zones.sell1_low == zones.sell1_high == 102.
+    assert zones.sell2_low == zones.sell2_high == 108.
+
+
+def test_missing_overhead_resistance_does_not_invent_profit_target():
+    zones = fast_t1_scan.calc_zones(pd.Series({
+        "price": 100., "atr14": 4., "boll_lower": 80., "boll_upper": 95.,
+    }))
+    assert pd.isna(zones.sell1_low)
+    assert pd.isna(zones.sell2_low)
+
+
+
 def test_parse_realtime_codes_normalizes_and_deduplicates():
     # 需求 7.2：按用户输入的股票顺序展示（不再排序）。
     assert fast_t1_scan.parse_realtime_codes("603986, 002594 603986") == [
@@ -41,6 +59,45 @@ def test_load_bse_codes_from_local_universe(tmp_path: Path):
     )
 
     assert fast_t1_scan.load_bse_codes(tmp_path) == ["430001", "830001"]
+
+
+def test_fill_missing_market_values_from_same_round_snapshot(tmp_path: Path):
+    snapshot_dir = tmp_path / "daily_runs" / "2026-09-18" / "105718_intraday"
+    snapshot_dir.mkdir(parents=True)
+    pd.DataFrame([
+        {
+            "code": "603306",
+            "price": 80.0,
+            "circ_mv": 8_000_000_000,
+            "total_mv": 10_000_000_000,
+            "observed_at": "2026-09-18T10:57:18+08:00",
+        }
+    ]).to_csv(snapshot_dir / "market_snapshot.csv", index=False)
+    newer_dir = tmp_path / "daily_runs" / "2026-09-18" / "105800_intraday"
+    newer_dir.mkdir(parents=True)
+    pd.DataFrame([
+        {
+            "code": "603306",
+            "price": 81.0,
+            "circ_mv": None,
+            "total_mv": 10_125_000_000,
+            "observed_at": "2026-09-18T10:58:00+08:00",
+        }
+    ]).to_csv(newer_dir / "market_snapshot.csv", index=False)
+    live = pd.DataFrame([
+        {"code": "603306", "price": 82.0, "circ_mv": None, "total_mv": None}
+    ])
+
+    result, source = fast_t1_scan.fill_missing_market_values(
+        live,
+        tmp_path,
+        fast_t1_scan.datetime(2026, 9, 18, 10, 58, 30, tzinfo=fast_t1_scan.CN_TZ),
+    )
+
+    assert result.loc[0, "circ_mv"] == pytest.approx(8_200_000_000)
+    assert result.loc[0, "total_mv"] == pytest.approx(10_250_000_000)
+    assert result.loc[0, "market_value_source"] == "same_round_snapshot_scaled"
+    assert "105718_intraday" in source
 
 
 def test_indicator_cache_reuses_same_trading_day_results(tmp_path: Path, monkeypatch):

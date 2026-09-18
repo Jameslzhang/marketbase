@@ -129,6 +129,8 @@ def run_collection(
     providers: Mapping[str, object] | None = None,
     phase: str | None = None,
     force_refresh: bool = False,
+    daily_cache_only: bool = False,
+    defer_intraday_minutes: bool = False,
 ) -> dict[str, object]:
     """Collect current market facts and associated daily/cache evidence."""
     root = Path(data_root).expanduser().resolve()
@@ -167,7 +169,11 @@ def run_collection(
 
     try:
         try:
-            result = _run_collection_locked(root, observed_at, configured, progress, phase=phase, force_refresh=force_refresh)
+            result = _run_collection_locked(
+                root, observed_at, configured, progress, phase=phase,
+                force_refresh=force_refresh, daily_cache_only=daily_cache_only,
+                defer_intraday_minutes=defer_intraday_minutes,
+            )
             _notify_windows("MarketBase 采集完成", f"运行目录: {result.get('run_dir', 'N/A')}")
             return result
         except Exception as exc:
@@ -226,6 +232,8 @@ def _run_collection_locked(
     _progress: Callable[[str], None],
     phase: str | None = None,
     force_refresh: bool = False,
+    daily_cache_only: bool = False,
+    defer_intraday_minutes: bool = False,
 ) -> dict[str, object]:
     """持有文件锁后执行核心采集流程：快照 → 日线 → 指标 → 量比 → 审计 → 分类 → 交接."""
     collection_started_at = datetime.now().astimezone().isoformat()
@@ -290,12 +298,17 @@ def _run_collection_locked(
     emit("market_snapshot.csv and data_audit.json written (static snapshot)")
 
     # ①.5 完整 1 分钟 OHLCV 采集（盘中下午时段）—— 必须在分钟快照之前，确保分钟事实使用本次新采集的完整 parquet
-    intraday_minutes_audit, intraday_minutes_path = timed(
-        "intraday_minutes_collection",
-        lambda: _run_intraday_minutes_collection(
-            codes, cache_root, run_dir, observed_at, emit, session_phase
-        ),
-    )
+    if defer_intraday_minutes:
+        intraday_minutes_audit, intraday_minutes_path = None, None
+        stage_timings["intraday_minutes_collection"] = 0.0
+        emit("intraday OHLCV deferred until screened candidates are known")
+    else:
+        intraday_minutes_audit, intraday_minutes_path = timed(
+            "intraday_minutes_collection",
+            lambda: _run_intraday_minutes_collection(
+                codes, cache_root, run_dir, observed_at, emit, session_phase
+            ),
+        )
     # ①.6 分钟快照追加与 VWAP 计算（优先读取 intraday_1m.parquet）
     if session_phase == "lunch_break":
         minute_audit = {
@@ -337,6 +350,7 @@ def _run_collection_locked(
         lambda: _run_daily_collection(
             codes, cache_root, observed_at, emit, configured,
             bse_codes=bse_codes, force_refresh=force_refresh,
+            cache_only=daily_cache_only,
         ),
     )
     # ③ 量比实时计算
@@ -487,16 +501,24 @@ def fulfill_request(
 def format_decision_result(decision: Mapping) -> str:
     """Render the decision itself so CLI completion cannot hide research results."""
     rows = decision.get("research_choices", [])
+    plan_bundle = decision.get("plan_bundle")
+    plan_bundle = plan_bundle if isinstance(plan_bundle, Mapping) else {}
+    plans = [plan for plan in plan_bundle.get("plans", []) if isinstance(plan, Mapping)]
+    plan_by_code = {str(plan.get("code", "")).zfill(6): plan for plan in plans}
     first = next((r for r in rows if r.get("code") == decision.get("research_first_choice")), None)
     first_text = f"{first['name']}（{first['code']}）" if first else "无；本轮未生成合格研究对象"
     if not first and decision.get("research_status") == "data_not_ready":
         first_text = "未生成；基础数据不完整，不能判断是否存在合格研究对象"
-    lines = ["## 本轮分析结果", "", f"研究首选：{first_text}",
-             f"研究前三：{'见下表，最多三只' if rows else '未生成'}",
-             f"执行首选：{decision.get('only_choose_one') or '无，当前不新开仓'}", "",
+    executable = decision.get("only_choose_one")
+    entry_text = str(executable) if executable else "无"
+    lines = ["## 本轮分析结果", "", f"当前可开仓：{entry_text}",
+             f"执行首选：{executable or '无，当前不新开仓'}",
+             f"研究首选：{first_text}",
+             f"研究前三：{'见下表，最多三只' if rows else '未生成'}", "",
              f"数据时点：{decision.get('observed_at', '未知')}；决策时点：{decision.get('decision_at', '未知')}。",
-             "", "|研究排名|股票|快照价格|机会分|执行分|预埋参考区|确认/禁追|未通过条件/状态|",
-             "|---|---|---:|---:|---:|---|---|---|"]
+             "", "### 研究观察榜（不可据此直接买入）", "",
+             "|研究排名|股票|快扫旧价→刷新价|刷新时间/来源|机会分|执行分|费后收益风险比|预埋参考区|确认/禁追|未通过条件/状态|",
+             "|---|---|---:|---|---:|---:|---:|---|---|---|"]
     reasons = {"minute_missing": "缺分钟", "vwap_missing": "缺VWAP",
                "execution_score_data_missing": "执行数据不足", "stale_snapshot": "快照过期",
                "closed_session": "已收盘", "global_data_not_ready": "执行证据未就绪",
@@ -508,25 +530,92 @@ def format_decision_result(decision: Mapping) -> str:
         blockers.append(f"至少一份输入快照超过120秒；最老快照年龄{decision.get('snapshot_age_seconds', '未知')}秒")
     if decision.get("execution_status") == "closed_session":
         blockers.append("已收盘，仅供下一交易日核验")
+    if decision.get("execution_status") in {"stale_snapshot", "data_insufficient", "blocked"}:
+        blockers.append("本轮未取得可执行结论，不等于策略已证明没有买入机会")
+    if decision.get("prior_plan_review_status") == "missing":
+        blockers.append(f"未找到同日{decision.get('prior_plan_slot', '此前')}冻结计划，本轮当前计划仍独立校验")
     if blockers:
         lines[5:5] = ["具体阻碍：" + "；".join(blockers), ""]
     for r in rows:
         why = "、".join(reasons.get(code, code) for code in r.get("reason_codes", [])) or r.get("execution_status", "待核验")
         score = r.get("execution_score")
+        frozen_plan = plan_by_code.get(str(r.get("code", "")).zfill(6), {})
         reference = r.get("research_reference")
         reference = reference if isinstance(reference, Mapping) else {}
-        buy_low = reference.get("buy_low", r.get("buy_low"))
-        buy_high = reference.get("buy_high", r.get("buy_high"))
+        frozen_zone = frozen_plan.get("buy_zone")
+        frozen_zone = frozen_zone if isinstance(frozen_zone, Mapping) else {}
+        buy_low = frozen_zone.get("low", reference.get("buy_low", r.get("buy_low")))
+        buy_high = frozen_zone.get("high", reference.get("buy_high", r.get("buy_high")))
         planned_zone = (
             f"{buy_low}-{buy_high}（仅研究参考）"
             if buy_low is not None and buy_high is not None
             else "待生成"
         )
-        confirm = r.get("confirm_price") or r.get("confirmation_price")
-        chase = (reference.get("no_chase_price") or r.get("chase_line")
+        confirm = (frozen_plan.get("confirmation_price") or r.get("confirm_price")
+                   or r.get("confirmation_price"))
+        chase = (frozen_plan.get("no_chase_price") or reference.get("no_chase_price") or r.get("chase_line")
                  or r.get("no_chase_price"))
-        confirm_text = f"确认 {confirm}; 禁追 {chase}" if confirm is not None or chase is not None else "分钟确认后再定"
-        lines.append(f"|{r.get('rank')}|{r.get('name')}（{r.get('code')}）|{r.get('price')}|{r.get('opportunity_score')}|{score if score is not None else '缺失'}|{planned_zone}|{confirm_text}|{why}|")
+        confirm_text = f"确认 {confirm if confirm is not None else '待核验'}; 禁追 {chase}" if confirm is not None or chase is not None else "分钟确认后再定"
+        scan_price = r.get("scan_price")
+        price_display = f"{scan_price}→{r.get('price')}" if scan_price is not None else str(r.get("price"))
+        price_evidence = f"{r.get('price_observed_at', '缺失')} / {r.get('price_source', '快照')}"
+        lines.append(
+            f"|{r.get('rank')}|{r.get('name')}（{r.get('code')}）|{price_display}|{price_evidence}|"
+            f"{r.get('opportunity_score')}|{score if score is not None else '缺失'}|"
+            f"{r.get('fee_adjusted_rr', '缺失')}|{planned_zone}|{confirm_text}|{why}|"
+        )
+    if plans:
+        lines.extend([
+            "", f"### 版本化条件计划（plan_status={decision.get('plan_status', plan_bundle.get('plan_status', '未知'))}）", "",
+            "以下价格均直接来自本轮保存的版本化计划；参考买区不等于可直接挂单。",
+            "", "|计划编号|首次发布时间|股票与快照|参考买区|确认条件/确认价|禁追线|保护位|第一目标区|第二目标区|有效期|当前状态|失效条件/缺口|",
+            "|---|---|---|---|---|---:|---:|---|---|---|---|---|",
+        ])
+
+        def price_range(value: object) -> str:
+            item = value if isinstance(value, Mapping) else {}
+            low, high = item.get("low"), item.get("high")
+            return f"{low}-{high}" if low is not None and high is not None else "缺失"
+
+        for plan in plans:
+            confirm = plan.get("confirmation_price")
+            confirm_text = (
+                f"{plan.get('confirmation_condition', '完整分钟门禁确认')}；确认价 {confirm}"
+                if confirm is not None else plan.get("confirmation_condition", "尚无可核验确认价")
+            )
+            invalidation = "、".join(str(value) for value in plan.get("invalidation_conditions", [])) or "缺失"
+            missing = "、".join(str(value) for value in plan.get("missing_fields", []))
+            if missing:
+                invalidation += f"；缺口：{missing}"
+            errors = plan.get("validation_errors", [])
+            if errors:
+                invalidation += "；结构错误：" + "、".join(errors)
+            if plan.get("target_rule_version") == "nearest_resistance_v1":
+                invalidation += f"；目标依据：{plan.get('target_1_source')}/{plan.get('target_2_source')}；第二目标仅突破第一压力后观察，不承诺达到"
+            invalidation += "；参考买区为ATR模型区间，触价不等于可买；若反弹走弱，不以等待第二目标代替退出评估"
+            state = "当前可以买" if plan.get("currently_buyable") is True else plan.get("publication_state", "等待确认")
+            stock = f"{plan.get('name')}（{plan.get('code')}）@{plan.get('snapshot_price')} / {plan.get('snapshot_time')}"
+            lines.append(
+                f"|{plan.get('plan_id')}|{plan.get('first_published_at')}|{stock}|{price_range(plan.get('buy_zone'))}|"
+                f"{confirm_text}|{plan.get('no_chase_price', '缺失')}|{plan.get('protection_price', '缺失')}|"
+                f"{price_range(plan.get('target_1'))}|{price_range(plan.get('target_2'))}|{plan.get('valid_until', '缺失')}|"
+                f"{state}|{invalidation}|"
+            )
+    reviews = [review for review in decision.get("prior_plan_reviews", []) if isinstance(review, Mapping)]
+    if reviews:
+        prior_slot = str(decision.get("prior_plan_slot") or "此前")
+        lines.extend([
+            "", f"### {prior_slot}冻结计划逐只复核", "",
+            "|原计划|股票|排名变化|机会分变化|执行分变化|当前价|复核结论|具体原因|",
+            "|---|---|---|---|---|---:|---|---|",
+        ])
+        for review in reviews:
+            lines.append(
+                f"|{review.get('plan_id')}|{review.get('name')}（{review.get('code')}）|{review.get('rank_change')}|"
+                f"{review.get('original_opportunity_score')}→{review.get('current_opportunity_score')}|"
+                f"{review.get('original_execution_score')}→{review.get('current_execution_score')}|"
+                f"{review.get('current_price')}|{review.get('review_status')}|{review.get('review_reason')}|"
+            )
     lines.extend(["", "研究排序不等于买入建议；快照过期时仅供原时点研究。",
                   f"研究状态：{decision.get('research_status', '未知')}；执行状态：{decision.get('execution_status', '未知')}；程序状态：{decision.get('pipeline_status', '未知')}。"])
     return "\n".join(lines)
@@ -541,6 +630,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                         help="采集阶段: 留空则根据观测时间自动判定")
     _ = parser.add_argument("--force-refresh", action="store_true", default=False,
                         help="强制重新拉取日线数据，忽略缓存")
+    _ = parser.add_argument("--daily-cache-only", action="store_true", default=False,
+                        help="日线只读现有缓存，不访问日线网络接口；缺失或过期由质量审计如实降级")
+    _ = parser.add_argument("--defer-intraday-minutes", action="store_true", default=False,
+                        help="先完成全市场筛选，随后仅由定时管道采集候选分钟线")
     subcommands = parser.add_subparsers(dest="command")
     collect_parser = subcommands.add_parser("collect")
     _ = collect_parser.add_argument("--handoff-output", type=Path)
@@ -650,11 +743,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             print("\n结果正文开始\n" + result_text + "\n结果正文结束")
             print(f"结果正文文件：{result_path}")
             return 0
-        summary = run_collection(
-            data_root=getattr(arguments, "data_root", None) or default_root,
-            phase=getattr(arguments, "phase", None),
-            force_refresh=getattr(arguments, "force_refresh", False),
-        )
+        collection_options: dict[str, object] = {
+            "data_root": getattr(arguments, "data_root", None) or default_root,
+            "phase": getattr(arguments, "phase", None),
+            "force_refresh": getattr(arguments, "force_refresh", False),
+            "daily_cache_only": getattr(arguments, "daily_cache_only", False),
+        }
+        if getattr(arguments, "defer_intraday_minutes", False):
+            collection_options["defer_intraday_minutes"] = True
+        summary = run_collection(**collection_options)
         handoff_output = getattr(arguments, "handoff_output", None)
         if handoff_output is not None:
             handoff = json.loads(Path(summary["latest_input_path"]).read_text(encoding="utf-8"))

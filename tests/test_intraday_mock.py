@@ -20,7 +20,26 @@ import pandas as pd
 import pytest
 
 from marketbase.intraday_collector import collect_intraday_minutes
-from marketbase.intraday_collector import _generate_trading_minutes
+from marketbase.intraday_collector import _generate_trading_minutes, _audit_intraday_minutes
+
+
+def test_minute_audit_treats_naive_collector_timestamps_as_china_time():
+    frame = pd.DataFrame(
+        {
+            "code": ["600000"] * 17,
+            "timestamp": [f"2026-09-18T09:{minute:02d}:00" for minute in range(31, 48)],
+            "volume": [100.0] * 17,
+        }
+    )
+
+    audit = _audit_intraday_minutes(
+        frame, "2026-09-18", "09:30", 1, 1, 0, 0, [], ["600000"],
+        observed_at=datetime(2026, 9, 18, 9, 48, tzinfo=timezone(timedelta(hours=8))),
+        session_phase="candidate_only",
+    )
+
+    assert audit["missing_periods"] == ["09:30-09:30"]
+    assert audit["market_minute_coverage"]["09:45"] == 1
 
 
 def test_production_refreshes_existing_same_day_minutes(tmp_path):

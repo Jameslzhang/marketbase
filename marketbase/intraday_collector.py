@@ -393,7 +393,13 @@ def _audit_intraday_minutes(
     audit["latest_time"] = unique_times[-1] if unique_times else None
 
     # 缺失时段检测
-    present_times = set(pd.to_datetime(unique_times))
+    parsed_times = pd.DatetimeIndex(pd.to_datetime(unique_times))
+    china_tz = timezone(timedelta(hours=8))
+    if parsed_times.tz is None:
+        parsed_times = parsed_times.tz_localize(china_tz)
+    else:
+        parsed_times = parsed_times.tz_convert(china_tz)
+    present_times = set(parsed_times)
     expected_times = _generate_trading_minutes(target_date, start_time, end_time)
     missing = sorted(set(expected_times) - present_times)
     audit["missing_minute_count"] = len(missing)

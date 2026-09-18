@@ -93,6 +93,7 @@ def collect_market_snapshot(
     reference_fetcher: Callable[[], pd.DataFrame] | None = None,
     bse_codes: list[str] | None = None,
     min_rows: int = 1000,
+    fast_primary: bool = False,
 ) -> MarketCollectionResult:
     """先采集沪深市场，再独立采集北交所。北交所失败不阻断沪深输出."""
     observed_at = now or datetime.now().astimezone()
@@ -107,6 +108,17 @@ def collect_market_snapshot(
         if primary_fetcher is not None:
             frame = primary_fetcher()
         else:
+            if fast_primary:
+                try:
+                    frame = _fetch_tencent_primary_snapshot(
+                        cached_reference,
+                        min_rows=min_rows,
+                        public_error=None,
+                    )
+                    captured["primary"] = frame
+                    return frame
+                except Exception as fast_error:
+                    _emit(progress, observed_at, f"腾讯快路径失败，回退公共源: {_neutral_error(str(fast_error))}")
             try:
                 frame = fetch_snapshot_with_fallback(
                     ["sina", "efinance", "akshare_em"],
@@ -260,7 +272,7 @@ def _fetch_tencent_primary_snapshot(
     cached_reference: pd.DataFrame,
     *,
     min_rows: int,
-    public_error: Exception,
+    public_error: Exception | None,
 ) -> pd.DataFrame:
     """Refresh the cached full-market code universe through Tencent quotes."""
     if cached_reference.empty or "code" not in cached_reference.columns:
@@ -281,7 +293,7 @@ def _fetch_tencent_primary_snapshot(
             f"Tencent full-market fallback rows={len(frame)} required={min_rows}: {details}"
         ) from public_error
     frame.attrs["snapshot_source"] = "tencent"
-    frame.attrs["source_errors"] = [str(public_error), *errors]
+    frame.attrs["source_errors"] = ([str(public_error)] if public_error is not None else []) + errors
     return frame
 
 

@@ -141,6 +141,7 @@ def collect_daily_universe(
     max_workers: int = 15,
     incremental: bool = True,
     force_refresh: bool = False,
+    cache_only: bool = False,
 ) -> DailyCollectionReport:
     """Collect daily histories concurrently with incremental update.
 
@@ -178,6 +179,9 @@ def collect_daily_universe(
     completed_codes: list[str] = list(state["completed_codes"])
     failed_codes: list[str] = []  # always retry previously failed codes
     total = len(normalized_codes)
+    if force_refresh:
+        completed_codes = []
+        failed_codes = []
     # If the checkpoint shows all codes completed (previous run finished),
     # reset to empty so the incremental cache path can recompute indicators.
     if len(completed_codes) == total:
@@ -247,6 +251,43 @@ def collect_daily_universe(
         nonlocal latest_date_distribution, latest_date_by_code, short_history, invalid_or_missing, indicator_insufficient
         cache_path = cache_dir / f"{code}.json"
         observed_dt = _coerce_now(now)
+
+        if cache_only:
+            existing = _read_existing_cache(cache_path, code)
+            if existing is not None:
+                existing_frame, existing_meta = existing
+                existing_frame = _exclude_unsettled_current_day_bar(existing_frame, observed_dt)
+                if not existing_frame.empty:
+                    latest_str = str(existing_frame["date"].iloc[-1])
+                    actual_rows = len(existing_frame)
+                    indicators = _cached_indicators(
+                        existing_frame, observed_dt, cache_path, memory=indicator_memo
+                    )
+                    cached_src = str(existing_meta["source"])
+                    with _lock:
+                        cache_hit_count += 1
+                        source_counts[cached_src] = source_counts.get(cached_src, 0) + 1
+                        _mark_completed(completed_codes, failed_codes, code)
+                        indicators_list.append({"code": code, **indicators})
+                        latest_date_distribution[latest_str] = latest_date_distribution.get(latest_str, 0) + 1
+                        latest_date_by_code[code] = latest_str
+                        if actual_rows < lookback:
+                            short_history.append({"code": code, "actual_rows": actual_rows, "reason": "short_history"})
+                        _track_indicator_quality(code, actual_rows, indicators, indicator_insufficient)
+                    return _FetchResult(
+                        code=code, source=cached_src, error="",
+                        indicators=indicators, actual_rows=actual_rows, latest_date=latest_str,
+                    )
+            error = "cache_only_missing_or_invalid"
+            with _lock:
+                failure_count += 1
+                errors[code] = error
+                _mark_failed(completed_codes, failed_codes, code)
+                invalid_or_missing.append({"code": code, "reason": error})
+            return _FetchResult(
+                code=code, source="", error=error,
+                indicators=None, actual_rows=0, latest_date="",
+            )
 
         # --- incremental: try to reuse existing cache (skip if force_refresh) ---
         if incremental and not force_refresh:
@@ -635,11 +676,24 @@ def _cached_indicators(frame: pd.DataFrame, observed_at: datetime, cache_path: P
     local = observed_at.astimezone(timezone(timedelta(hours=8)))
     digest = hashlib.sha256(pd.util.hash_pandas_object(frame, index=True).values.tobytes())
     digest.update(str(tuple(frame.columns)).encode())
-    key = f"{_INDICATOR_FORMULA_VERSION}:{local.date()}:{local.hour >= 15}:{digest.hexdigest()}"
+    # The normalized frame already excludes an unsettled current-day bar.  The
+    # indicator values therefore depend on the formula version and exact daily
+    # rows, not on which intraday slot reads them.  Keeping date/phase in this
+    # key forced all 5,000+ indicators to be recomputed every morning.
+    key = f"{_INDICATOR_FORMULA_VERSION}:{digest.hexdigest()}"
     try:
         cached = memory.get(cache_path.stem, {}) if memory is not None else json.loads(cache_path.read_text(encoding="utf-8"))
-        if cached.get("key") == key and isinstance(cached.get("indicators"), dict) and cached["indicators"]:
-            return cached["indicators"]
+        cached_key = str(cached.get("key") or "")
+        digest_matches_legacy = (
+            cached_key.startswith(f"{_INDICATOR_FORMULA_VERSION}:")
+            and cached_key.rsplit(":", 1)[-1] == digest.hexdigest()
+        )
+        if ((cached_key == key or digest_matches_legacy)
+                and isinstance(cached.get("indicators"), dict) and cached["indicators"]):
+            result = dict(cached["indicators"])
+            if memory is not None and cached_key != key:
+                memory[cache_path.stem] = {"key": key, "indicators": dict(cached["indicators"])}
+            return result
     except (OSError, ValueError, AttributeError):
         pass
     result = _compute_indicators_safe(frame, local)

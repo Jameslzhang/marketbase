@@ -262,6 +262,7 @@ def get_snapshot(data_root: Path, observed_at: datetime, fresh_minutes: int) -> 
         progress=progress,
         reference_fetcher=lambda: pd.DataFrame(),  # 单源快速模式：跳过参考源（build_live_snapshot 对空参考源直接跳过补全）
         bse_codes=load_bse_codes(data_root),
+        fast_primary=True,
     )
     df = result.frame.copy()
     df["code"] = df["code"].astype(str).str.strip().str.zfill(6)
@@ -300,6 +301,73 @@ def ensure_industry(df: pd.DataFrame, data_root: Path) -> tuple[pd.DataFrame, st
             df["industry"] = mapped
         return df, f"回补自 {path.parent.parent.name}/{path.parent.name}"
     return df, "缺失（无回补源）"
+
+
+def fill_missing_market_values(
+    df: pd.DataFrame, data_root: Path, observed_at: datetime
+) -> tuple[pd.DataFrame, str]:
+    """Fill missing market values from a same-round official snapshot.
+
+    Tencent fallback quotes omit market value.  A recent official snapshot has
+    the share-count evidence needed to scale its market values to the newer live
+    price without replacing that live price or timestamp.
+    """
+    result = df.copy()
+    result["code"] = result["code"].astype(str).str.zfill(6)
+    result["market_value_source"] = np.where(
+        pd.to_numeric(result.get("circ_mv"), errors="coerce").notna(),
+        "live_snapshot",
+        None,
+    )
+    date_dir = data_root / "daily_runs" / observed_at.astimezone(CN_TZ).date().isoformat()
+    paths = sorted(date_dir.glob("*/market_snapshot.csv"), reverse=True)
+    filled_sources: list[str] = []
+    for path in paths:
+        try:
+            ref = pd.read_csv(path, dtype={"code": str})
+            ref_observed = pd.to_datetime(ref["observed_at"].dropna().iloc[0])
+            if ref_observed.tzinfo is None:
+                ref_observed = ref_observed.tz_localize(CN_TZ)
+            else:
+                ref_observed = ref_observed.tz_convert(CN_TZ)
+            age = (observed_at - ref_observed.to_pydatetime()).total_seconds()
+            # Market values are converted to share counts using the reference
+            # price, then repriced with the live quote.  The share count is a
+            # same-trading-day static fact, so the quote TTL does not apply to it.
+            if age < -30:
+                continue
+        except (OSError, KeyError, IndexError, ValueError, TypeError):
+            continue
+        required = {"code", "price", "circ_mv", "total_mv"}
+        if not required.issubset(ref.columns):
+            continue
+        ref = ref[list(required)].copy()
+        ref["code"] = ref["code"].astype(str).str.zfill(6)
+        ref = ref.drop_duplicates("code").rename(columns={
+            "price": "_ref_price", "circ_mv": "_ref_circ_mv", "total_mv": "_ref_total_mv"
+        })
+        result = result.merge(ref, on="code", how="left")
+        live_price = pd.to_numeric(result["price"], errors="coerce")
+        ref_price = pd.to_numeric(result["_ref_price"], errors="coerce")
+        scale = live_price / ref_price.where(ref_price > 0)
+        filled_any = pd.Series(False, index=result.index)
+        for field, ref_field in (("circ_mv", "_ref_circ_mv"), ("total_mv", "_ref_total_mv")):
+            current = pd.to_numeric(result.get(field), errors="coerce")
+            reference = pd.to_numeric(result[ref_field], errors="coerce")
+            fill_mask = current.isna() & reference.notna() & scale.notna()
+            result[field] = current.where(~fill_mask, reference * scale)
+            filled_any |= fill_mask
+        result.loc[filled_any, "market_value_source"] = "same_round_snapshot_scaled"
+        result = result.drop(columns=["_ref_price", "_ref_circ_mv", "_ref_total_mv"])
+        if filled_any.any():
+            filled_sources.append(path.parent.name)
+        missing_circ = pd.to_numeric(result["circ_mv"], errors="coerce").isna()
+        missing_total = pd.to_numeric(result["total_mv"], errors="coerce").isna()
+        if not (missing_circ | missing_total).any():
+            break
+    if filled_sources:
+        return result, "回补自 " + ",".join(filled_sources)
+    return result, "无同轮回补源"
 
 
 # ────────────────────────── 量比（5日均量，与指标同遍计算） ──────────────────────────
@@ -422,15 +490,42 @@ def compute_indicators_parallel(df: pd.DataFrame, daily_root: Path,
     codes = df["code"].tolist()
     records: list[dict] = []
     t0 = time.perf_counter()
-    with ThreadPoolExecutor(max_workers=max(workers, 48)) as pool:
-        for i, item in enumerate(pool.map(
-                lambda c: _indicator_record(c, daily_root, today_str),
-                codes, chunksize=16), 1):
-            if item is not None:
-                records.append(item)
-            if i % 1000 == 0:
-                log(f"  指标进度 {i}/{len(codes)}（{time.perf_counter() - t0:.0f}s）")
+    # 2026-09-18 性能改造：优先进程池（绕 GIL，6×12 逻辑核实测 2.6x 于线程池——
+    # 5551 只全量指标 120s → 47s）；任何异常（Windows spawn 限制/超时）自动回退线程池。
+    # 每进程一次拿 64 只摊薄 spawn 成本；子进程内重算，无共享状态，口径与线程池完全一致。
+    proc_ok = True
+    chunks = [((daily_root, today_str, codes[i:i + 64])) for i in range(0, len(codes), 64)]
+    try:
+        from concurrent.futures import ProcessPoolExecutor
+        with ProcessPoolExecutor(max_workers=6) as pool:
+            for i, chunk in enumerate(pool.map(_indicator_chunk, chunks), 1):
+                for item in chunk:
+                    if item is not None:
+                        records.append(item)
+                if (i * 64) % 1000 < 64:
+                    log(f"  指标进度 {min(i*64, len(codes))}/{len(codes)}（{time.perf_counter() - t0:.0f}s）")
+    except Exception as exc:
+        log(f"  进程池指标计算失败（{type(exc).__name__}: {exc}），回退线程池")
+        proc_ok = False
+    if not proc_ok:
+        records = []
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=max(workers, 48)) as pool:
+            for i, item in enumerate(pool.map(
+                    lambda c: _indicator_record(c, daily_root, today_str),
+                    codes, chunksize=16), 1):
+                if item is not None:
+                    records.append(item)
+                if i % 1000 == 0:
+                    log(f"  指标进度 {i}/{len(codes)}（{time.perf_counter() - t0:.0f}s）")
     return pd.DataFrame(records)
+
+
+def _indicator_chunk(args: tuple) -> list:
+    """进程池 worker：一批 64 只。参数显式传 (daily_root, today_str, codes)——
+    Windows spawn 不继承父进程运行时修改的全局（实测 sentinel 验证），必须走参数。"""
+    daily_root, today_str, codes = args
+    return [_indicator_record(c, daily_root, today_str) for c in codes]
 
 
 def load_or_compute_indicators(
@@ -620,10 +715,17 @@ def calc_zones(row) -> pd.Series:
     buy_high = round(price - atr * 0.1, 2)
     chase_line = round((buy_high + atr * 0.3) * 1.005, 2)  # 禁追线含 0.5% 容差
     protect = round(buy_low - atr * 0.5, 2)
-    sell1_low = round(boll_upper * 0.99, 2)
-    sell1_high = round(boll_upper, 2)
-    sell2_low = round(sell1_high + atr * 0.3, 2)
-    sell2_high = round(sell1_high + atr * 0.8, 2)
+    # Use the nearest supplied overhead level; never stretch a target to pass RR.
+    # Missing resistance stays missing rather than a percentage/ATR projection.
+    resistance = []
+    for field in ("high", "high_20d", "boll_upper"):
+        value = pd.to_numeric(row.get(field), errors="coerce")
+        if pd.notna(value) and np.isfinite(value) and round(float(value), 2) > buy_high:
+            resistance.append((round(float(value), 2), field))
+    resistance.sort()
+    levels = sorted({value for value, _ in resistance})
+    sell1_low = sell1_high = levels[0] if levels else np.nan
+    sell2_low = sell2_high = levels[1] if len(levels) > 1 else np.nan
     reward = sell1_low - buy_high
     risk = buy_high - protect
     rr = round(reward / risk, 2) if risk > 0 else 0.0
@@ -633,6 +735,9 @@ def calc_zones(row) -> pd.Series:
         "sell1_low": sell1_low, "sell1_high": sell1_high,
         "sell2_low": sell2_low, "sell2_high": sell2_high,
         "rr_ratio": rr, "atr": round(atr, 3),
+        "target_rule_version": "nearest_resistance_v1",
+        "target_1_source": next((key for value, key in resistance if value == sell1_low), None),
+        "target_2_source": next((key for value, key in resistance if value == sell2_low), None),
     })
 
 
@@ -797,6 +902,8 @@ def main() -> int:
         else ""
     )
     log(f"① 快照就绪：{len(df)} 只 | {snap_source}{bj_info} | {t_snap:.1f}s")
+    df, market_value_source = fill_missing_market_values(df, args.data_root, observed_at)
+    log(f"   市值字段：{market_value_source}")
     df, ind_source = ensure_industry(df, args.data_root)
     log(f"   行业字段：{ind_source}")
     market_context, industry_context = full_market_context(df)
@@ -842,9 +949,10 @@ def main() -> int:
     rps_universe_df = select_rps20_universe(df)
     t0 = time.perf_counter()
     fast_dir = args.data_root / "cache" / "fast"
+    _daily_root = official_daily_cache_root(args.data_root)
     full_ind_df = compute_full_market_indicators(
         rps_universe_df,
-        official_daily_cache_root(args.data_root),
+        _daily_root,
         today_str,
         args.workers,
         fast_dir,
@@ -956,6 +1064,61 @@ def main() -> int:
     out_df = production_candidates[[c for c in output_cols if c in production_candidates.columns]].copy()
     out_df["opportunity_tags"] = production_candidates["opportunity_tags"].apply(lambda x: "|".join(x))
     out_df["tail_risk_tags"] = production_candidates["tail_risk_tags"].apply(lambda x: "|".join(x))
+    # 2026-09-18 提速：执行分（charter §四）与预挂价/早盘状态内置到 CSV——模型不再
+    # 逐只跑 python 计算（省 5-10 个工具调用轮次 ≈ 5-15 分钟/轮）。快照含 high/low
+    # 与 amount/volume 时才可算；缺列时安全留空，模型回退会话内计算。
+    def _exec_score(r) -> float:
+        try:
+            price = float(r["price"]); hi = float(r.get("high", price)); lo = float(r.get("low", price))
+            amount = float(r.get("amount", 0) or 0); vol = float(r.get("volume", 0) or 0)
+            chg = float(r.get("change_pct", 0) or 0); tor = float(r.get("turnover_rate", 2) or 2)
+            if price <= 0 or vol <= 0:
+                return float("nan")
+            vwap = amount / vol
+            amp = (hi - lo) / price * 100 if price > 0 else 0.0
+            s = 50.0
+            if price >= vwap: s += min(2.0, (price - vwap) / vwap * 100 * 2)
+            else: s -= min(4.0, (vwap - price) / vwap * 100 * 2)
+            if 0.5 <= chg <= 5: s += 2
+            elif chg < 0: s -= min(8.0, abs(chg) * 2)
+            dd = (hi - price) / hi * 100 if hi > 0 else 0.0
+            if dd <= 1: s += 4
+            else: s -= min(12.0, 3 + (dd - 1) * 3)
+            if amp <= 3: s += 3
+            elif amp > 6: s -= 8
+            if 1 <= tor <= 8: s += 2
+            return round(s, 1)
+        except Exception:
+            return float("nan")
+
+    def _prehang(r) -> float:
+        try:
+            bh = float(r["buy_high"]); cl = float(r["chase_line"])
+            return round(min(bh * 1.01, cl), 2)
+        except Exception:
+            return float("nan")
+
+    out_df["vwap"] = (production_candidates["amount"].astype(float) /
+                      production_candidates["volume"].astype(float)).round(3)
+    out_df["exec_score"] = production_candidates.apply(_exec_score, axis=1)
+    out_df["prehang_price"] = production_candidates.apply(_prehang, axis=1)
+    out_df["exec_state"] = production_candidates.apply(
+        lambda r: ("buy_watch" if (not pd.isna(r.get("exec_score", float("nan"))) and float(r["exec_score"]) >= 68)
+                   else ("reclaim_watch" if (not pd.isna(r.get("exec_score", float("nan"))) and float(r["exec_score"]) >= 55)
+                         else "stop_loss_watch")), axis=1)
+    try:
+        bl = out_df["buy_low"].astype(float); bh = out_df["buy_high"].astype(float)
+        pr = out_df["price"].astype(float); cl = out_df["chase_line"].astype(float)
+        s1l = out_df["sell1_low"].astype(float)
+        out_df["intraday_state"] = pd.NA
+        # 2026-09-18 用户裁决：四态判定，in_sell_zone = 现价已入卖一区（≥ sell1_low）
+        # → 对应的卖点无法买入（上行空间被卖点吃掉，追买等于在卖点接盘），只执行卖出纪律。
+        out_df.loc[pr >= s1l, "intraday_state"] = "in_sell_zone"
+        out_df.loc[(pr < s1l) & (pr >= cl), "intraday_state"] = "beyond_chase"
+        out_df.loc[(pr < s1l) & (pr >= bl) & (pr <= bh), "intraday_state"] = "in_zone"
+        out_df.loc[(pr < s1l) & (pr > bh) & (pr < cl), "intraday_state"] = "wait_pullback"
+    except Exception:
+        pass
     out_df.to_csv(csv_path, index=False, encoding="utf-8-sig")
     funnel_counts = {
         "initial": initial,

@@ -1661,7 +1661,7 @@ def build_research_choices(rows, objectives, *, static_ready):
         snapshot, daily = objective.snapshot, objective.daily
         if not snapshot or not daily or not objective.industry:
             continue
-        price = _coerce_float(snapshot.get("price"))
+        price = _first_float(row.get("price"), snapshot.get("price"))
         if price is None or classify_price_band(code, str(row.get("market", "")), price) != "production":
             continue
         if not code.startswith(("60", "00")) or (_coerce_float(row.get("opportunity_score")) or 0) < 55:
@@ -1691,10 +1691,14 @@ def build_research_choices(rows, objectives, *, static_ready):
         }
         choices.append({
             "rank": len(choices) + 1, "code": code, "name": name, "price": price,
+            "scan_price": row.get("scan_price"),
+            "price_observed_at": row.get("price_observed_at"),
+            "price_source": row.get("price_source", "market_snapshot"),
             "industry": objective.industry.get("industry", row.get("industry")),
             "research_channels": row.get("research_channels", []),
             "opportunity_score": row.get("opportunity_score"),
             "execution_score": row.get("execution_score"),
+            "fee_adjusted_rr": row.get("fee_adjusted_rr"),
             "execution_status": row.get("decision"),
             "reason_codes": row.get("reason_codes", []),
             "candidate_reason": row.get("candidate_reason", []),
@@ -1725,7 +1729,12 @@ def build_full_market_decision(candidate_union: Mapping, handoff: Mapping, *, de
     static_ready = market.get("static_ready", effective_critical_ready) is True
     local_decision_at = decision_at.astimezone(timezone(timedelta(hours=8)))
     closed_session = local_decision_at.hour >= 15 or market.get("session_phase") == "post_close"
-    observations = [candidate_union_row.get("observed_at"), handoff_row.get("observed_at")]
+    # The execution quote-age contract applies to the screened candidate snapshot.
+    # The handoff timestamp describes the static T-1 cache and can legitimately
+    # predate a later same-round candidate quote refresh; static evidence is
+    # validated by its own cache/date gates below, not by the 120-second quote TTL.
+    candidate_observed_at = candidate_union_row.get("observed_at")
+    observations = [candidate_observed_at] if candidate_observed_at else [handoff_row.get("observed_at")]
     snapshot_ages = [(decision_at - _parse_iso8601(value, label="observed_at")).total_seconds()
                      for value in observations if value]
     stale_snapshot = not snapshot_ages or any(age > 120 or age < -30 for age in snapshot_ages)

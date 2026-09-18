@@ -18,6 +18,35 @@ from marketbase.pipeline.quality import _apply_degradation_flags, _compute_minut
 NOW = datetime(2026, 7, 22, 9, 43, 30, tzinfo=timezone(timedelta(hours=8)))
 
 
+def test_decision_body_leads_with_current_entry_status_not_research_rank():
+    decision = {
+        "observed_at": "2026-09-18T10:15:00+08:00",
+        "decision_at": "2026-09-18T10:15:30+08:00",
+        "research_status": "ready",
+        "execution_status": "ready",
+        "pipeline_status": "completed",
+        "only_choose_one": None,
+        "research_first_choice": "603083",
+        "research_choices": [{
+            "rank": 1, "code": "603083", "name": "剑桥科技", "price": 228.68,
+            "scan_price": 226.0, "price_observed_at": "2026-09-18T10:15:00+08:00",
+            "price_source": "candidate_minutes_last_close", "fee_adjusted_rr": 0.22,
+            "opportunity_score": 80.0, "execution_score": 75.0,
+            "reason_codes": ["buy_zone_not_ready"],
+        }],
+    }
+
+    body = local_workflow.format_decision_result(decision)
+
+    assert "当前可开仓：无" in body
+    assert body.index("当前可开仓：无") < body.index("研究首选：")
+    assert "研究观察榜（不可据此直接买入）" in body
+    assert "快扫旧价" in body
+    assert "226.0→228.68" in body
+    assert "candidate_minutes_last_close" in body
+    assert "0.22" in body
+
+
 @pytest.mark.parametrize("wrong_round", [False, True])
 def test_collect_cli_exports_only_its_own_handoff(tmp_path, monkeypatch, wrong_round):
     run_dir = tmp_path / "run"
@@ -636,7 +665,12 @@ def test_cli_accepts_data_root_as_a_global_option(tmp_path, monkeypatch):
     )
 
     assert local_workflow.main(["--data-root", str(tmp_path), "collect"]) == 0
-    assert calls == [{"data_root": tmp_path, "phase": None, "force_refresh": False}]
+    assert calls == [{
+        "data_root": tmp_path,
+        "phase": None,
+        "force_refresh": False,
+        "daily_cache_only": False,
+    }]
 
 
 def test_vscode_launch_configuration_uses_objective_collection_without_args():
@@ -748,6 +782,63 @@ def test_result_renders_nested_research_reference_as_non_executable_context():
     assert "51.2-51.8（仅研究参考）" in body
     assert "禁追 52.3" in body
     assert "缺流通市值" in body
+
+
+def test_result_renders_versioned_plan_and_prior_plan_reviews_from_decision():
+    plan = {
+        "plan_id": "2026-09-16-1130-600000-v1",
+        "code": "600000", "name": "浦发银行", "rank": 1,
+        "first_published_at": "2026-09-16T11:40:00+08:00",
+        "snapshot_price": 10.5, "snapshot_time": "2026-09-16T11:39:58+08:00",
+        "buy_zone": {"low": 9.8, "high": 10.2},
+        "confirmation_price": 10.25,
+        "confirmation_condition": "价格达到确认价且分钟VWAP、量能及全部执行门禁通过",
+        "no_chase_price": 10.8, "protection_price": 9.5,
+        "target_1": {"low": 10.9, "high": 11.1},
+        "target_2": {"low": 11.4, "high": 11.8},
+        "valid_until": "2026-09-16T14:50:00+08:00",
+        "invalidation_conditions": ["跌破保护位", "越过禁追线"],
+        "publication_state": "等待回踩", "currently_buyable": False,
+        "missing_fields": [],
+    }
+    body = local_workflow.format_decision_result({
+        "research_status": "ready", "execution_status": "ready",
+        "pipeline_status": "completed", "plan_status": "ready",
+        "research_first_choice": "600000", "only_choose_one": None,
+        "research_choices": [{
+            "rank": 1, "code": "600000", "name": "浦发银行", "price": 10.5,
+            "opportunity_score": 75.0, "execution_score": 70.0,
+            "execution_status": "reject", "reason_codes": [],
+        }],
+        "plan_bundle": {"plan_status": "ready", "plans": [plan]},
+        "prior_plan_reviews": [{
+            "plan_id": "2026-09-16-1130-600001-v1", "code": "600001",
+            "name": "旧首选", "rank_change": "跌出前三", "review_status": "触及未确认",
+            "review_reason": "发布后进入参考买区，但当前完整执行门禁未通过",
+            "original_opportunity_score": 80.0, "current_opportunity_score": 70.0,
+            "original_execution_score": None, "current_execution_score": 60.0,
+            "current_price": 10.0,
+            "frozen_plan": {
+                "buy_zone": {"low": 9.7, "high": 9.9}, "no_chase_price": 10.3,
+            },
+        }],
+    })
+
+    assert "2026-09-16-1130-600000-v1" in body
+    assert "2026-09-16T11:40:00+08:00" in body
+    assert "9.8-10.2" in body
+    assert "10.25" in body
+    assert "10.8" in body
+    assert "9.5" in body
+    assert "10.9-11.1" in body
+    assert "11.4-11.8" in body
+    assert "2026-09-16T14:50:00+08:00" in body
+    assert "等待回踩" in body
+    assert "跌破保护位、越过禁追线" in body
+    assert "旧首选（600001）" in body
+    assert "跌出前三" in body
+    assert "触及未确认" in body
+    assert "发布后进入参考买区" in body
 
 
 def test_empty_minute_refresh_does_not_publish_old_shared_file(tmp_path, monkeypatch):

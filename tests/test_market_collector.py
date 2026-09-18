@@ -181,6 +181,39 @@ def test_collect_default_primary_falls_back_when_sina_is_empty(monkeypatch, tmp_
     assert result.report["primary_source"] == "efinance"
 
 
+def test_collect_fast_primary_uses_tencent_before_public_sources(monkeypatch, tmp_path):
+    cache_path = tmp_path / "market.json"
+    cache_path.write_text(
+        json.dumps({"rows": _live_quotes().to_dict(orient="records")}),
+        encoding="utf-8",
+    )
+    tencent = _live_quotes(include_bj=False)
+    tencent.attrs["snapshot_source"] = "tencent"
+    public_called = False
+
+    def public_fallback(*_args, **_kwargs):
+        nonlocal public_called
+        public_called = True
+        raise AssertionError("public sources should not run after fast success")
+
+    monkeypatch.setattr("marketbase.market_collector.fetch_snapshot_with_fallback", public_fallback)
+    monkeypatch.setattr("marketbase.market_collector._fetch_tencent_primary_snapshot", lambda *_args, **_kwargs: tencent)
+    monkeypatch.setattr(
+        "marketbase.market_collector.fetch_reference_snapshot_with_bse_fallback",
+        lambda _cached: _reference_quotes(),
+    )
+    monkeypatch.setattr(
+        "marketbase.market_collector.collect_bse_snapshot",
+        lambda **_kwargs: (pd.DataFrame(), {"bj_actual": 0, "bj_expected": 0, "bj_missing": 0, "source": "", "errors": []}),
+    )
+
+    result = collect_market_snapshot(cache_path=cache_path, now=OBSERVED_AT, min_rows=1, fast_primary=True)
+
+    assert result.report["primary_source"] == "tencent"
+    assert public_called is False
+    assert result.audit["provider_errors"] == []
+
+
 def test_collect_default_primary_falls_back_to_tencent_after_public_sources_fail(monkeypatch, tmp_path):
     cache_path = tmp_path / "market.json"
     cache_path.write_text(

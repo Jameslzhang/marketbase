@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from datetime import datetime
+import threading
+import time
 
 import pandas as pd
 import pytest
@@ -182,3 +184,26 @@ def test_strategy_interpretation_helpers_are_not_exposed():
         "fetch_eastmoney_stock_profile",
     }
     assert all(not hasattr(live, name) for name in removed)
+
+
+def test_fetch_tencent_bse_overlaps_independent_batches(monkeypatch):
+    active = 0
+    peak = 0
+    lock = threading.Lock()
+
+    def fake_batch(codes, *, offset, session, attempts, timeout):
+        nonlocal active, peak
+        with lock:
+            active += 1
+            peak = max(peak, active)
+        time.sleep(0.03)
+        with lock:
+            active -= 1
+        return pd.DataFrame({"code": codes, "price": [10.0] * len(codes)}), []
+
+    monkeypatch.setattr(live, "_fetch_tencent_bse_batch", fake_batch)
+    frame, errors = live._fetch_tencent_bse([f"43{i:04d}" for i in range(120)], batch_size=60)
+
+    assert len(frame) == 120
+    assert errors == []
+    assert peak > 1

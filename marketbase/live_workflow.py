@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from datetime import datetime, time as clock_time, timezone, timedelta
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 import re
 import threading
@@ -785,3 +786,98 @@ def _fetch_sina_bse(
 
 def _pct_from_sina(fields: list[str]) -> float:
     return _quote_float(fields, 4)
+
+
+def _fetch_tencent_bse_batch(
+    batch: list[str],
+    *,
+    offset: int,
+    session: requests.Session,
+    attempts: int,
+    timeout: float,
+) -> tuple[pd.DataFrame, list[str]]:
+    """Fetch and parse one BSE quote batch for concurrent orchestration."""
+    symbols = ",".join(f"bj{code}" for code in batch)
+    text = ""
+    last_error = ""
+    for attempt in range(1, max(1, attempts) + 1):
+        try:
+            response = session.get(
+                "https://qt.gtimg.cn/q=" + symbols,
+                headers={"User-Agent": "Mozilla/5.0", "Referer": "https://gu.qq.com/"},
+                timeout=(10, timeout),
+            )
+            response.raise_for_status()
+            text = response.content.decode("gb18030", errors="ignore")
+            break
+        except Exception as exc:
+            last_error = str(exc)
+            if attempt < max(1, attempts):
+                time.sleep(0.2 * attempt)
+    if not text:
+        return pd.DataFrame(), [f"batch {offset}: {last_error}"]
+
+    refreshed: list[dict[str, object]] = []
+    for match in re.finditer(r'v_bj(\d{6})="([^"]*)";', text):
+        code, body = match.groups()
+        fields = body.split("~")
+        price = _quote_float(fields, 3)
+        if price <= 0:
+            continue
+        refreshed.append({
+            "code": code,
+            "name": fields[1].strip() if len(fields) > 1 else "",
+            "price": price,
+            "pre_close": _quote_float(fields, 4),
+            "open": _quote_float(fields, 5),
+            "high": _quote_float(fields, 33),
+            "low": _quote_float(fields, 34),
+            "change_pct": _quote_float(fields, 32),
+            "volume": _quote_float(fields, 36) * 100,
+            "amount": _quote_amount(fields),
+            "turnover_rate": _quote_float(fields, 38),
+            "total_mv": _quote_float(fields, 45),
+            "circ_mv": _quote_float(fields, 47),
+            "pe_ratio": _quote_float(fields, 44),
+            "pb_ratio": _quote_float(fields, 46),
+            "volume_ratio": float("nan"),
+            "quote_time": _quote_time(fields),
+            "source": "tencent_bse",
+            "market": "bj",
+        })
+    return pd.DataFrame(refreshed), []
+
+
+def _fetch_tencent_bse(
+    codes: list[str],
+    *,
+    batch_size: int = 60,
+    attempts: int = 3,
+    timeout: float = 30.0,
+) -> tuple[pd.DataFrame, list[str]]:
+    """Fetch BSE batches concurrently while keeping per-batch audit errors."""
+    session = _get_live_session()
+    batches = [(offset, codes[offset : offset + batch_size]) for offset in range(0, len(codes), batch_size)]
+    frames: list[pd.DataFrame] = []
+    errors: list[str] = []
+    with ThreadPoolExecutor(max_workers=min(4, max(1, len(batches)))) as pool:
+        futures = {
+            pool.submit(
+                _fetch_tencent_bse_batch,
+                batch,
+                offset=offset,
+                session=session,
+                attempts=attempts,
+                timeout=timeout,
+            ): offset
+            for offset, batch in batches
+        }
+        for future in as_completed(futures):
+            frame, batch_errors = future.result()
+            if not frame.empty:
+                frames.append(frame)
+            errors.extend(batch_errors)
+    if not frames:
+        return pd.DataFrame(), errors
+    frame = pd.concat(frames, ignore_index=True).drop_duplicates("code", keep="last")
+    return frame.reset_index(drop=True), errors

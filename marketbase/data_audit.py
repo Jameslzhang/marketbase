@@ -315,8 +315,11 @@ def _stale_row_count(frame: pd.DataFrame, observed_at: datetime, trading_status:
         return 0
     row_times = pd.to_datetime(frame["observed_at"], errors="coerce", utc=True)
     quote_times = _column_as_text(frame, "quote_time")
+    parsed_quote_times: dict[str, pd.Timestamp | None] = {}
     for index, quote_time in quote_times.items():
-        supplier_time = _supplier_quote_timestamp(quote_time, observed_at)
+        if quote_time not in parsed_quote_times:
+            parsed_quote_times[quote_time] = _supplier_quote_timestamp(quote_time, observed_at)
+        supplier_time = parsed_quote_times[quote_time]
         if supplier_time is not None:
             row_times.loc[index] = supplier_time
     observed_utc = observed_at.astimezone(timezone.utc)
@@ -335,8 +338,11 @@ def _freshness_summary(
     """Summarize quote freshness categories."""
     quote_times = _column_as_text(frame, "quote_time")
     counts: dict[str, int] = {}
+    parsed: dict[str, tuple[str, str]] = {}
     for qt in quote_times:
-        freshness, quote_status = _quote_freshness(qt, observed_at, trading_status)
+        if qt not in parsed:
+            parsed[qt] = _quote_freshness(qt, observed_at, trading_status)
+        freshness, quote_status = parsed[qt]
         key = f"{freshness}|{quote_status}"
         counts[key] = counts.get(key, 0) + 1
     return counts

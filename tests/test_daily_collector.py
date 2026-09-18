@@ -124,6 +124,88 @@ def test_first_success_writes_normalized_cache_and_checkpoint(tmp_path):
     assert checkpoint["failed_codes"] == []
 
 
+def test_cache_only_daily_collection_never_calls_network_and_reports_missing_cache(tmp_path):
+    cache_root, checkpoint_path = _paths(tmp_path)
+    cache_root.mkdir(parents=True)
+    (cache_root / "000001.json").write_text(
+        json.dumps(_valid_cache_payload(), ensure_ascii=False), encoding="utf-8"
+    )
+    calls: list[str] = []
+
+    def fetcher(code, **_kwargs):
+        calls.append(code)
+        raise AssertionError("cache-only mode must not call a daily provider")
+
+    report = collect_daily_universe(
+        ["000001", "000002"],
+        cache_root=cache_root,
+        checkpoint_path=checkpoint_path,
+        fetcher=fetcher,
+        now=NOW,
+        cache_only=True,
+    )
+
+    assert calls == []
+    assert report.cache_hit_count == 1
+    assert report.failure_count == 1
+    assert report.errors["000002"] == "cache_only_missing_or_invalid"
+    assert report.latest_date_by_code["000001"] == "2026-07-01"
+
+
+def test_indicator_memo_reuses_identical_daily_rows_across_runs_and_preserves_calculation_time(monkeypatch, tmp_path):
+    from marketbase import daily_collector
+
+    frame = _history()
+    memory: dict[str, object] = {}
+    calls: list[datetime] = []
+
+    def compute(_frame, observed_at):
+        calls.append(observed_at)
+        return {"ma20": 10.0, "calculated_at": observed_at.isoformat()}
+
+    monkeypatch.setattr(daily_collector, "_compute_indicators_safe", compute)
+    first_at = NOW
+    second_at = NOW + timedelta(days=1, minutes=32)
+    first = daily_collector._cached_indicators(
+        frame, first_at, tmp_path / "000001.json", memory=memory
+    )
+    second = daily_collector._cached_indicators(
+        frame, second_at, tmp_path / "000001.json", memory=memory
+    )
+
+    assert len(calls) == 1
+    assert datetime.fromisoformat(first["calculated_at"]) == first_at
+    assert datetime.fromisoformat(second["calculated_at"]) == first_at
+
+
+def test_indicator_memo_accepts_legacy_date_key_when_daily_digest_matches(monkeypatch, tmp_path):
+    from marketbase import daily_collector
+
+    frame = _history()
+    digest = daily_collector.hashlib.sha256(
+        pd.util.hash_pandas_object(frame, index=True).values.tobytes()
+    )
+    digest.update(str(tuple(frame.columns)).encode())
+    memory = {
+        "000001": {
+            "key": f"{daily_collector._INDICATOR_FORMULA_VERSION}:2026-07-21:False:{digest.hexdigest()}",
+            "indicators": {"ma20": 10.0, "calculated_at": "2026-07-21T10:00:00+08:00"},
+        }
+    }
+    monkeypatch.setattr(
+        daily_collector,
+        "_compute_indicators_safe",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("matching legacy memo must be reused")),
+    )
+
+    result = daily_collector._cached_indicators(
+        frame, NOW, tmp_path / "000001.json", memory=memory
+    )
+
+    assert result["ma20"] == 10.0
+    assert result["calculated_at"] == "2026-07-21T10:00:00+08:00"
+
+
 def test_intraday_collection_excludes_unsettled_current_day_bar(tmp_path):
     cache_root, checkpoint_path = _paths(tmp_path)
     observed_at = datetime(2026, 9, 3, 11, 30, tzinfo=timezone(timedelta(hours=8)))
@@ -234,6 +316,35 @@ def test_retries_only_previous_failures_and_preserves_input_order(tmp_path):
     assert second_calls == ["000002"]
     assert second.success_count == 1
     assert second.cache_hit_count == 2
+
+
+def test_force_refresh_ignores_partial_same_day_checkpoint(tmp_path):
+    cache_root, checkpoint_path = _paths(tmp_path)
+    codes = ["000001", "000002", "000003"]
+    collect_daily_universe(
+        codes,
+        cache_root=cache_root,
+        checkpoint_path=checkpoint_path,
+        fetcher=lambda *args, **kwargs: _history(),
+        now=NOW,
+    )
+    checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+    checkpoint["completed_codes"] = codes[:2]
+    checkpoint_path.write_text(json.dumps(checkpoint), encoding="utf-8")
+    calls: list[str] = []
+
+    report = collect_daily_universe(
+        codes,
+        cache_root=cache_root,
+        checkpoint_path=checkpoint_path,
+        fetcher=lambda code, **kwargs: calls.append(code) or _history(),
+        now=NOW,
+        force_refresh=True,
+    )
+
+    assert calls == codes
+    assert report.success_count == 3
+    assert report.cache_hit_count == 0
 
 
 def test_missing_or_corrupt_cache_refetches_even_when_checkpoint_marks_complete(tmp_path):

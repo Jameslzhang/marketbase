@@ -26,6 +26,35 @@ from strategies.full_market_t1 import (
 
 
 TZ_SHANGHAI = timezone(timedelta(hours=8))
+
+
+def test_research_choice_uses_refreshed_candidate_price_evidence():
+    row = {
+        "code": "603083", "name": "剑桥科技", "market": "sh",
+        "price": 233.1, "scan_price": 226.0,
+        "price_observed_at": "2026-09-18T10:05:00+08:00",
+        "price_source": "candidate_minutes_last_close",
+        "price_band": "production", "opportunity_score": 80.0,
+        "execution_score": 75.0, "decision": "conditional_watch",
+        "reason_codes": ["buy_zone_not_ready"], "executability": {"is_untradable": False},
+        "fee_adjusted_rr": 0.22,
+    }
+    objective = CandidateObjectiveData(
+        snapshot={"price": 226.0, "change_pct": 3.0, "is_untradable": False},
+        daily={"ma20": 200.0, "rsi14": 60.0, "rps20": 90.0, "return_20d": 0.2,
+               "last_trade_date": "2026-09-17"},
+        industry={"industry": "通信设备"}, minute=None, minute_evidence={}, executability={},
+    )
+
+    choices = full_market_t1.build_research_choices(
+        [row], {"603083": objective}, static_ready=True
+    )
+
+    assert choices[0]["price"] == 233.1
+    assert choices[0]["scan_price"] == 226.0
+    assert choices[0]["price_observed_at"] == "2026-09-18T10:05:00+08:00"
+    assert choices[0]["price_source"] == "candidate_minutes_last_close"
+    assert choices[0]["fee_adjusted_rr"] == 0.22
 SAVED_REPLAY_TRADE_DATE = "2026-09-03"
 SAVED_REPLAY_OBSERVED_AT = "2026-09-03T14:41:00+08:00"
 SAVED_REPLAY_GENERATED_AT = "2026-09-03T14:43:09.708426+08:00"
@@ -425,6 +454,18 @@ def test_v6_old_snapshot_cannot_remain_buyable():
     assert decision["only_choose_one"] is None
     assert decision["research_first_choice"] == "600000"
     assert decision["execution_status"] == "stale_snapshot"
+
+
+def test_v6_fresh_candidate_snapshot_is_not_blocked_by_older_static_handoff():
+    handoff = _handoff([_candidate()], {"600000": _objective(snapshot_overrides={"price": 52})},
+                       market=_market(static_ready=True))
+    candidate_union = {**handoff, "observed_at": "2026-09-03T13:59:00+08:00"}
+
+    decision = build_full_market_decision(candidate_union, handoff,
+        decision_at=datetime(2026, 9, 3, 14, 0, tzinfo=TZ_SHANGHAI))
+
+    assert decision["execution_status"] == "evaluated"
+    assert decision["snapshot_age_seconds"] == 60.0
 
 
 @pytest.mark.parametrize("failed", [False, True])

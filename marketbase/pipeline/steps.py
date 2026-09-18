@@ -134,6 +134,7 @@ def _run_daily_collection(
     configured: dict[str, object],
     bse_codes: set[str] | None = None,
     force_refresh: bool = False,
+    cache_only: bool = False,
 ) -> tuple[pd.DataFrame, DailyCollectionReport]:
     """Collect daily history for all codes and return indicators DataFrame."""
     daily_fetcher = cast(Callable[..., pd.DataFrame], configured.get("daily_fetcher", fetch_daily_history))
@@ -146,6 +147,7 @@ def _run_daily_collection(
         progress=lambda event: _write_progress_line(_daily_progress_message(event)),
         now=observed_at,
         force_refresh=force_refresh,
+        cache_only=cache_only,
     )
     _clear_progress_line()
     cache_valid = daily_report.success_count + daily_report.cache_hit_count
